@@ -88,6 +88,27 @@ const pipelineStages = [
   },
 ];
 
+const motivationCards = [
+  {
+    tag: 'Env-Grounded Eval',
+    title: 'Static Eval Is Insufficient',
+    description:
+      'Agents must interact with live network state to verify hypotheses — static eval is insufficient.',
+  },
+  {
+    tag: 'Non-Reproducible Faults',
+    title: 'No Controlled Baseline Exists',
+    description:
+      'Real DCN incidents occur once and cannot be re-staged — no controlled baseline exists.',
+  },
+  {
+    tag: 'Long Dev Cycles',
+    title: 'Trial-and-Error Costs Mount',
+    description:
+      'Without a replayable testbed, comparing strategies is slow — trial-and-error costs mount.',
+  },
+];
+
 const benchmarkCards = [
   {
     src: '/assets/benchmark/fig_avg_score.png',
@@ -197,8 +218,25 @@ export default function HomePage() {
           <div className={styles.sectionLabel}>Research-Industry Gap</div>
           <h2 className={styles.sectionTitle}>Agentic RCA lacks production-grade evaluation</h2>
           <p className={styles.sectionDesc}>
-            Despite Agentic RCA progress, 71% of large enterprises hesitate to fully automate network operations [1]. NetOpsBench bridges this gap by providing an evidence-oriented, reproducible benchmark for LLM-driven diagnosis.
+            Despite Agentic RCA progress, 71% of large enterprises hesitate to fully automate
+            network operations [1]. Three structural barriers block principled evaluation:
           </p>
+          <div className={styles.motivationGrid}>
+            {motivationCards.map((card) => (
+              <article key={card.tag} className={styles.motivationCard}>
+                <div className={styles.motivationCardTag}>{card.tag}</div>
+                <h3 className={styles.motivationCardTitle}>{card.title}</h3>
+                <p className={styles.motivationCardDesc}>{card.description}</p>
+              </article>
+            ))}
+          </div>
+          <div className={styles.propositionBox}>
+            <p>
+              <strong>NetOpsBench</strong> provides controlled, reproducible DCN fault environments
+              with <strong>localization-first scoring</strong> accounting for physical equivalences
+              — enabling principled, repeatable agent evaluation.
+            </p>
+          </div>
           <div className={styles.archImgWrap}>
             <img
               className={styles.archImg}

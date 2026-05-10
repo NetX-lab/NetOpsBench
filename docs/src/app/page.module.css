@@ -294,6 +294,70 @@
   margin: 0 0 40px;
 }
 
+.motivationGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 24px;
+}
+
+.motivationCard {
+  background: #ffffff;
+  border: 1px solid #cfd9ea;
+  border-radius: 14px;
+  padding: 22px 24px;
+  box-shadow: 0 2px 8px rgba(30, 64, 175, 0.04);
+}
+
+.motivationCardTag {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #1e3a8a;
+  background: #dbeafe;
+  border: 1px solid #93c5fd;
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-bottom: 12px;
+}
+
+.motivationCardTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0 0 8px;
+  line-height: 1.35;
+}
+
+.motivationCardDesc {
+  margin: 0;
+  font-size: 0.92rem;
+  color: #475569;
+  line-height: 1.65;
+}
+
+.propositionBox {
+  background: linear-gradient(135deg, rgba(29, 78, 216, 0.05) 0%, rgba(30, 64, 175, 0.08) 100%);
+  border: 1px solid rgba(29, 78, 216, 0.2);
+  border-left: 4px solid #1d4ed8;
+  border-radius: 10px;
+  padding: 18px 22px;
+  margin-bottom: 40px;
+}
+
+.propositionBox p {
+  margin: 0;
+  font-size: 0.975rem;
+  color: #1e3a8a;
+  line-height: 1.7;
+}
+
+.propositionBox strong {
+  color: #1e3a8a;
+}
+
 .archImgWrap {
   border-radius: 14px;
   overflow: hidden;
@@ -648,6 +712,10 @@
 
 @media (max-width: 900px) {
   .featuresGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .motivationGrid {
     grid-template-columns: 1fr;
   }
 
