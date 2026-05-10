@@ -1,0 +1,94 @@
+---
+title: Quickstart
+description: The shortest successful path from clone to one benchmark run.
+---
+
+This page is the shortest supported path from a fresh clone to one completed `BenchmarkReport`. It intentionally stops after the first run; use [Build Your Agent](/docs/build-your-agent/custom-agents) and [Python API](/docs/api/quickstart) once the environment is working.
+
+## Requirements
+
+<Callout title="Linux host required" type="warn">
+NetOpsBench requires a **Linux host**. Windows and macOS are not supported because Containerlab and the underlying network simulation depend on Linux kernel features (network namespaces, veth pairs).
+</Callout>
+
+- Python 3.11+
+- Docker
+- Containerlab
+- One supported LLM API key such as `OPENAI_API_KEY`
+
+Install Docker:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # re-login after this step
+docker run --rm hello-world
+```
+
+Install Containerlab:
+
+```bash
+bash -c "$(curl -sL https://get.containerlab.dev)"
+containerlab version
+```
+
+Full installation guide: [containerlab.dev/install](https://containerlab.dev/install/).
+
+## Install
+
+```bash
+git clone https://github.com/NetX-lab/NetOpsBench.git
+cd NetOpsBench
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[agent]"
+```
+
+## Run one benchmark case
+
+```bash
+netopsbench benchmark prepare --scales xs
+export OPENAI_API_KEY=...
+PYTHONPATH=. python examples/01_run_scenario.py --vendor openai
+```
+
+The first successful run should produce a `BenchmarkReport` with case-level scores, timing, and artifact paths. The exact score depends on the generated scenario, provider, model, and current runtime state.
+
+For more command-line asset generation, result inspection, and runtime cleanup commands, see [CLI Reference](/docs/api/cli).
+
+## What the command does
+
+<Steps>
+  <Step>
+    ### Provision the runtime
+
+    The runtime is provisioned on Containerlab.
+  </Step>
+  <Step>
+    ### Start observability
+
+    Observability services are ensured and worker telemetry starts.
+  </Step>
+  <Step>
+    ### Run traffic and fault episode
+
+    Traffic is brought up and the fault episode runs.
+  </Step>
+  <Step>
+    ### Invoke the diagnostic agent
+
+    Your agent receives the diagnosis context.
+  </Step>
+  <Step>
+    ### Score the report
+
+    The benchmark scores detection, localization, and verdict quality.
+  </Step>
+</Steps>
+
+## Next steps
+
+- [Build Your Agent](/docs/build-your-agent/custom-agents) explains how to plug in your own RCA strategy.
+- [Benchmark Methodology](/docs/benchmark/methodology) defines detection, localization, and efficiency scoring.
+- [Benchmark Results](/docs/benchmark/results) shows a completed cross-model run.
+- [Examples](/docs/examples/run-scenario-vs-suite) compares single-scenario, suite, scale, and batch scripts.
+- [Operations](/docs/operations/observability) covers Grafana, buckets, and manual inspection.

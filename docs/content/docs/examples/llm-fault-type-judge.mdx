@@ -1,0 +1,61 @@
+---
+title: LLM Fault Type Judge
+description: Enable optional semantic matching for free-form fault type answers.
+---
+
+`examples/06_llm_fault_type_judge.py` runs a BGP-neighbor-misconfiguration scenario and optionally enables an LLM-as-judge evaluator for fault-type matching.
+
+This feature is useful when an agent localizes correctly but describes the fault type in natural language, for example "BGP peer AS mismatch" or "BGP session down", instead of the canonical taxonomy value `bgp_neighbor_misconfig`.
+
+## Deterministic default
+
+By default, NetOpsBench uses deterministic canonical matching. No API key is required:
+
+```bash
+PYTHONPATH=. python examples/06_llm_fault_type_judge.py --vendor openai
+```
+
+The report still includes the standard localization and verdict scores.
+
+## Enable semantic matching
+
+Set the judge environment variables before launching the script:
+
+```bash
+export NETOPSBENCH_FAULT_TYPE_JUDGE_ENABLED=1
+export NETOPSBENCH_FAULT_TYPE_JUDGE_MODEL=gpt-4o-mini
+export NETOPSBENCH_FAULT_TYPE_JUDGE_API_KEY=sk-...
+
+PYTHONPATH=. python examples/06_llm_fault_type_judge.py --vendor openai
+```
+
+For OpenAI-compatible non-OpenAI endpoints, also set:
+
+```bash
+export NETOPSBENCH_FAULT_TYPE_JUDGE_BASE_URL=https://api.deepseek.com
+```
+
+`NETOPSBENCH_FAULT_TYPE_JUDGE_API_KEY` may be omitted when `OPENAI_API_KEY` is already set and the judge uses that provider.
+
+## What changes
+
+Only fault-type matching changes. The judge is used for non-exact semantic cases after deterministic matching has not already resolved the answer.
+
+The following still use deterministic benchmark logic:
+
+- verdict scoring
+- device localization
+- interface localization
+- timing, tool-call, and token summaries
+
+The detailed report includes a `fault_type_judgment` field. Its `mode` is `deterministic` when the canonical fast path matched and `llm_judge` when the judge was invoked.
+
+## When to use it
+
+Use LLM-as-judge when comparing agents that produce useful free-form RCA labels. Leave it disabled when you need strict taxonomy compliance or fully offline deterministic scoring.
+
+## Related docs
+
+- [Benchmark Methodology](/docs/benchmark/methodology)
+- [Run Scenario vs Run Suite](/docs/examples/run-scenario-vs-suite)
+- [Custom Diagnostic Agents](/docs/build-your-agent/custom-agents)

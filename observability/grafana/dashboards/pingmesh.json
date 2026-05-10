@@ -1,0 +1,687 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Fabric Health Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 1 },
+      "id": 300,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "last"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"_field\", \"path_type\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Global Path Health (same_rack vs cross_rack)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 9 },
+      "id": 301,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"cross_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
+          "refId": "A"
+        }
+      ],
+      "title": "Cross-rack P99 (Current)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 9 },
+      "id": 302,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"same_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
+          "refId": "A"
+        }
+      ],
+      "title": "Same-rack P99 (Current)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 9 },
+      "id": 303,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> max(column: \"_value\")\n  |> group()\n  |> last()",
+          "refId": "A"
+        }
+      ],
+      "title": "Packet Loss (Current)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 101,
+      "title": "Leaf Pair Analysis",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "custom": {
+            "align": "left",
+            "cellOptions": { "mode": "gradient", "type": "color-background" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 15 },
+      "id": 304,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "rtt_p99" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> filter(fn: (r) => r.dst_leaf == \"${dst_leaf}\" or \"${dst_leaf}\" == \"all\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Leaf → Leaf Matrix (Last P99 / Loss)",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "left",
+            "cellOptions": { "type": "auto" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 15 },
+      "id": 305,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "rtt_p99" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)\n  |> limit(n: 12)",
+          "refId": "A"
+        }
+      ],
+      "title": "Top Worst Leaf Pairs (P99)",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "id": 306,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "last"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> group(columns: [\"dst_leaf\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)",
+          "refId": "A"
+        }
+      ],
+      "title": "Leaf-level Trend by Destination Leaf (P99)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 102,
+      "panels": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": { "type": "linear" },
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": { "group": "A", "mode": "none" },
+                "thresholdsStyle": { "mode": "off" }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 10 }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 33 },
+          "id": 200,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "last"],
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
+              "refId": "A"
+            }
+          ],
+          "title": "Ping Latency: ${src_host} → ${dst_host} (Avg, P90, P99)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 2 },
+                  { "color": "red", "value": 5 }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 7, "w": 8, "x": 0, "y": 42 },
+          "id": 201,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "refId": "A"
+            }
+          ],
+          "title": "Current P90 Latency",
+          "type": "gauge"
+        },
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 5 },
+                  { "color": "red", "value": 10 }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 7, "w": 8, "x": 8, "y": 42 },
+          "id": 202,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "refId": "A"
+            }
+          ],
+          "title": "Current P99 Latency",
+          "type": "gauge"
+        },
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [
+                { "options": { "0": { "color": "green", "index": 0, "text": "0%" } }, "type": "value" }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.1 },
+                  { "color": "red", "value": 1 }
+                ]
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 7, "w": 8, "x": 16, "y": 42 },
+          "id": 203,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "refId": "A"
+            }
+          ],
+          "title": "Current Packet Loss",
+          "type": "gauge"
+        },
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "custom": { "align": "left", "cellOptions": { "type": "auto" }, "inspect": false },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 2 },
+                  { "color": "red", "value": 5 }
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "packet_loss" },
+                "properties": [
+                  { "id": "unit", "value": "percent" },
+                  { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 1 }] } }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 49 },
+          "id": 207,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+            "showHeader": true,
+            "sortBy": [{ "desc": true, "displayName": "rtt_p99" }]
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\", \"_field\"])\n  |> last()\n  |> pivot(rowKey: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)",
+              "refId": "A"
+            }
+          ],
+          "title": "Host-level Detailed Metrics",
+          "type": "table"
+        }
+      ],
+      "title": "Host Drilldown",
+      "type": "row"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["pingmesh", "network", "dcn"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "netopsbench", "value": "netopsbench" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "buckets()\n  |> keep(columns: [\"name\"])\n  |> rename(columns: {name: \"_value\"})\n  |> filter(fn: (r) => r._value == \"netopsbench\" or r._value =~ /^network_data_.*/)\n  |> keep(columns: [\"_value\"])\n  |> sort(columns: [\"_value\"])",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Bucket",
+        "multi": false,
+        "name": "bucket",
+        "options": [],
+        "query": "buckets()\n  |> keep(columns: [\"name\"])\n  |> rename(columns: {name: \"_value\"})\n  |> filter(fn: (r) => r._value == \"netopsbench\" or r._value =~ /^network_data_.*/)\n  |> keep(columns: [\"_value\"])\n  |> sort(columns: [\"_value\"])",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": "all",
+        "current": { "selected": true, "text": "All", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"topology_id\",\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Topology",
+        "multi": false,
+        "name": "topology_id",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"topology_id\",\n  start: -1h\n)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "all", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "all,same_rack,cross_rack",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Path Type",
+        "multi": false,
+        "name": "path_type",
+        "options": [
+          { "selected": true, "text": "all", "value": "all" },
+          { "selected": false, "text": "same_rack", "value": "same_rack" },
+          { "selected": false, "text": "cross_rack", "value": "cross_rack" }
+        ],
+        "query": "all,same_rack,cross_rack",
+        "refresh": 2,
+        "sort": 0,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": true, "text": "all", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "all",
+        "label": "Source Leaf",
+        "multi": false,
+        "name": "src_leaf",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "all", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "all",
+        "label": "Destination Leaf",
+        "multi": false,
+        "name": "dst_leaf",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "all", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "all",
+        "label": "Source Host",
+        "multi": false,
+        "name": "src_host",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": { "selected": true, "text": "all", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "all",
+        "label": "Destination Host",
+        "multi": false,
+        "name": "dst_host",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "",
+  "title": "Pingmesh Analysis",
+  "uid": "pingmesh-analysis",
+  "version": 0,
+  "weekStart": ""
+}

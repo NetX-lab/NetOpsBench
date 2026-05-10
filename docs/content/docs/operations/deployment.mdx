@@ -1,0 +1,83 @@
+---
+title: Observability Reproduction
+description: Reproduce the NetOpsBench observability stack (InfluxDB, Telegraf, Grafana) outside an SDK-managed runtime.
+---
+
+For benchmark execution, use the Python SDK ([Quickstart](/docs/api/quickstart)) — it provisions the runtime, observability, and Pingmesh, then tears them down. This page is only for reproducing the **observability stack** by hand, for example to inspect dashboards or debug Telegraf without an active benchmark run.
+
+For the dashboard guide, see [Observability Guide](/docs/operations/observability).
+
+## Prerequisites
+
+NetOpsBench targets **Linux hosts only** with Docker, Containerlab, and non-interactive sudo:
+
+```bash
+sudo bash -c 'echo "<your-username> ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/netopsbench'
+sudo chmod 440 /etc/sudoers.d/netopsbench
+```
+
+## Manual deploy
+
+```bash
+# 1. Generate a topology (xs / small / medium / large)
+bash scripts/runtime/deploy.sh xs lab-topology
+
+# 2. Point tooling at the active topology
+export NETOPSBENCH_TOPOLOGY_DIR="$PWD/lab-topology/generated_topology_xs"
+```
+
+`deploy.sh` generates the Containerlab topology, writes `topology.json`, renders `observability/telegraf.conf` from the live device list, starts InfluxDB / Telegraf / Grafana, and deploys Pingmesh agents.
+
+## Topology scales
+
+| Scale  | Spines | Leafs | Clients/Leaf | Total Clients | Total Switches |
+|--------|--------|-------|--------------|---------------|----------------|
+| xs     | 2      | 2     | 1            | 2             | 4              |
+| small  | 2      | 4     | 2            | 8             | 6              |
+| medium | 4      | 8     | 2            | 16            | 12             |
+| large  | 4      | 16    | 4            | 64            | 20             |
+
+## Common environment overrides
+
+```bash
+# Management subnet (when the default conflicts with existing Docker networks)
+export NETOPSBENCH_MGMT_SUBNET=172.31.250.0/24
+
+# SONiC gNMI access
+export SONIC_GNMI_PORT=50051
+export SONIC_GNMI_USERNAME=admin
+export SONIC_GNMI_PASSWORD=<your-password>
+
+# sFlow / syslog collectors
+export NETOPSBENCH_SYSLOG_COLLECTOR=172.20.20.200
+export NETOPSBENCH_SFLOW_COLLECTOR=172.20.20.200
+```
+
+The default SONiC image is `yyyyyt123/netopsbench-sonic-vs-202505-telemetry:202505-telemetry`. Containerlab pulls it on first deploy; pre-pull manually if you want to fail early on registry issues.
+
+## Accessing services
+
+After deploy:
+
+- **Grafana**: http://localhost:3000 (`admin` / `admin`)
+- **InfluxDB**: http://localhost:8086
+
+If this host has an HTTP proxy, use the host's actual IP rather than `localhost`, or set `NO_PROXY=localhost,127.0.0.1`.
+
+## Verifying the stack
+
+```bash
+docker ps | grep -E "clab-dcn|influxdb|telegraf|grafana"
+docker exec clab-dcn-spine1 vtysh -c "show version"
+docker logs telegraf | tail -20
+```
+
+## Teardown
+
+Always pass the same topology directory you deployed from:
+
+```bash
+bash scripts/runtime/teardown.sh lab-topology/generated_topology_xs
+```
+
+This destroys the Containerlab topology and stops the observability stack.

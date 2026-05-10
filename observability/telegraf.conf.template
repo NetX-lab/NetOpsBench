@@ -1,0 +1,197 @@
+[global_tags]
+  user = "admin"
+  topology_id = "{{TOPOLOGY_ID}}"
+
+[agent]
+  interval = "10s"
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  collection_jitter = "0s"
+  flush_interval = "10s"
+  flush_jitter = "0s"
+  precision = ""
+  debug = true
+
+# --- OUTPUTS ---
+[[outputs.influxdb_v2]]
+  urls = ["{{INFLUXDB_URL}}"]
+  token = "{{INFLUXDB_TOKEN}}"
+  organization = "{{INFLUXDB_ORG}}"
+  bucket = "{{INFLUXDB_BUCKET}}"
+
+  # Removed tagdrop as we are filtering in Starlark
+
+
+# --- INPUTS ---
+
+# 1. Syslog (UDP 514)
+[[inputs.syslog]]
+  server = "udp://:514"
+
+
+# Map Management IPs to Hostnames - DYNAMIC
+[[processors.regex]]
+  # namepass = ["netflow"] # Apply to all metrics
+{{IP_MAPPINGS}}
+
+# Normalize source tag across inputs
+[[processors.starlark]]
+  source = '''
+def apply(metric):
+    if "source" not in metric.tags:
+        if "agent_host" in metric.tags:
+            metric.tags["source"] = metric.tags["agent_host"]
+        elif "agent_ip" in metric.tags:
+            metric.tags["source"] = metric.tags["agent_ip"]
+    return metric
+'''
+
+
+# --- PROCESSORS ---
+# Filter out noisy debug logs
+[[processors.regex]]
+  namepass = ["syslog"]
+
+  # Drop logs tagged as drop_me
+[[processors.printer]]
+  # This processor prints to stdout, useful for debugging if needed, but we mainly want to filter.
+
+[[processors.regex]]
+  namepass = ["syslog"]
+
+# Syslog filtering using Starlark
+[[processors.starlark]]
+  namepass = ["syslog"]
+  source = '''
+def apply(metric):
+    msg = str(metric.fields.get("message", ""))
+    # Filter out debug logs and other noise
+    if "debug|" in msg or "pam_unix" in msg:
+        return None
+    return metric
+'''
+
+# Syslog Structure Parser
+[[processors.regex]]
+  namepass = ["syslog"]
+
+  # BGP Down
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*Peer .* moved from higher state ESTABLISHED to lower state.*"
+    replacement = "BGP_DOWN"
+    result_key = "event_category"
+
+  # BGP Up
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*Peer .* moved from .* to .* state ESTABLISHED.*"
+    replacement = "BGP_UP"
+    result_key = "event_category"
+
+  # Link Down/Up (Generic)
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*interface .* (down|up).*"
+    replacement = "LINK_STATE"
+    result_key = "event_category"
+
+  # Config Change
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*configuration changed.*"
+    replacement = "CONFIG_CHANGE"
+    result_key = "event_category"
+
+  # Extract Interface Name (for Link events)
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*interface ([a-zA-Z0-9/-]+) .*"
+    replacement = "${1}"
+    result_key = "interface"
+
+  # Extract BGP Peer IP
+  [[processors.regex.fields]]
+    key = "message"
+    pattern = ".*Peer ([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+).*"
+    replacement = "${1}"
+    result_key = "bgp_peer"
+
+# 4. gNMI - Interface Counters - DYNAMIC
+[[inputs.gnmi]]
+  addresses = [
+       {{GNMI_ADDRESSES}}
+  ]
+  username = "{{GNMI_USERNAME}}"
+  password = "{{GNMI_PASSWORD}}"
+  encoding = "{{GNMI_ENCODING}}"
+  redial = "10s"
+  path_guessing_strategy = "subscription"
+  tls_enable = false
+  insecure_skip_verify = true
+  target = "{{GNMI_TARGET}}"
+
+{{GNMI_SUBSCRIPTIONS}}
+
+[[processors.regex]]
+  namepass = ["interfaces"]
+
+  [[processors.regex.tags]]
+    key = "path"
+    pattern = "^/?COUNTERS/(Ethernet[0-9]+).*$"
+    replacement = "${1}"
+    result_key = "name"
+
+[[processors.rename]]
+  namepass = ["interfaces"]
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_IN_OCTETS"
+    dest = "in_octets"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_OUT_OCTETS"
+    dest = "out_octets"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_IN_UCAST_PKTS"
+    dest = "in_unicast_pkts"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_OUT_UCAST_PKTS"
+    dest = "out_unicast_pkts"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_IN_DISCARDS"
+    dest = "in_discarded_packets"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_OUT_DISCARDS"
+    dest = "out_discarded_packets"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_IN_ERRORS"
+    dest = "in_errors"
+
+  [[processors.rename.replace]]
+    field = "SAI_PORT_STAT_IF_OUT_ERRORS"
+    dest = "out_errors"
+
+# 5. sFlow - Flow Samples - DYNAMIC
+[[inputs.sflow]]
+  service_address = "{{SFLOW_SERVICE_ADDRESS}}"
+
+
+# --- PINGMESH INPUTS ---
+# Pingmesh metrics collection
+[[inputs.tail]]
+  files = ["/var/log/pingmesh/metrics.log"]
+  data_format = "influx"
+  name_override = "pingmesh"
+
+# BGP neighbor snapshots collected by the worker host-side poller
+[[inputs.tail]]
+  files = ["/var/lib/netopsbench/bgp_neighbors.lp"]
+  from_beginning = false
+  data_format = "influx"

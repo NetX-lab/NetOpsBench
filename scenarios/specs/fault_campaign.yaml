@@ -1,0 +1,144 @@
+version: v1
+
+defaults:
+  traffic_profile: standard
+  count_per_fault: 4
+  baseline_duration_seconds: 20
+  fault_duration_seconds: 30
+  recovery_duration_seconds: 20
+  baseline_stabilization_seconds: 5
+  fault_stabilization_seconds: 5
+  recovery_stabilization_seconds: 10
+
+fault_templates:
+  - name: link_down_core
+    fault_type: link_down
+    difficulty: easy
+    device_role: leaf
+    fault_stabilization_seconds: 5
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: blackhole_route_leaf
+    fault_type: blackhole_route
+    difficulty: medium
+    device_role: leaf
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: mtu_mismatch_core
+    fault_type: mtu_mismatch
+    difficulty: hard
+    device_role: spine
+    mtu: 1400
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: high_latency_leaf
+    fault_type: high_latency
+    difficulty: medium
+    device_role: leaf
+    latency_ms: 120
+    traffic_profile: stress
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: static_route_misconfig
+    fault_type: static_route_misconfig
+    difficulty: hard
+    device_role: leaf
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: packet_loss_edge
+    fault_type: packet_loss
+    difficulty: medium
+    device_role: leaf
+    interface_role: uplink
+    loss_pct: 30
+    traffic_profile: stress
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: packet_corruption_edge
+    fault_type: packet_corruption
+    difficulty: hard
+    device_role: leaf
+    interface_role: uplink
+    corruption_pct: 25
+    traffic_profile: stress
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: link_flapping_core
+    fault_type: link_flapping
+    difficulty: hard
+    device_role: leaf
+    interface_role: uplink
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: bgp_neighbor_misconfig_leaf
+    fault_type: bgp_neighbor_misconfig
+    difficulty: hard
+    device_role: leaf
+    parameters:
+      misconfig_kind: peer_as_mismatch
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: route_policy_misconfig_leaf
+    fault_type: route_policy_misconfig
+    difficulty: hard
+    device_role: leaf
+    parameters:
+      misconfig_kind: network_statement_missing
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: device_down_leaf
+    fault_type: device_down
+    difficulty: easy
+    device_role: leaf
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: acl_misconfig_leaf
+    fault_type: acl_misconfig
+    difficulty: hard
+    device_role: leaf
+    count_per_scale:
+      xs: 1
+      small: 1
+      medium: 2
+
+  - name: healthy_network
+    fault_type: none
+    difficulty: easy
+    count_per_scale:
+      xs: 2
+      small: 3
+      medium: 4
+      large: 4

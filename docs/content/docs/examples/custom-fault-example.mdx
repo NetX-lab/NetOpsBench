@@ -1,0 +1,68 @@
+---
+title: Custom Fault Example
+description: Run the public custom fault extension example through the SDK.
+---
+
+`examples/04_custom_faults.py` shows the shortest runnable path for a project-local fault extension. It registers the example fault pack under `examples/faults/custom_fault_pack/`, then runs a scenario that references `fault_type: demo_custom_latency`.
+
+Use this page as the runnable example. Use [Custom Fault Packs](/docs/contribute/custom-faults) when you want the full contributor-facing API guide.
+
+## Command
+
+```bash
+PYTHONPATH=. python examples/04_custom_faults.py --vendor openai --repo-root .
+```
+
+The custom scenario is checked into the repository at:
+
+```text
+examples/faults/custom_fault_pack/scenario.yaml
+```
+
+## What the example registers
+
+The fault implementation lives in `examples/faults/custom_fault_pack/custom_fault.py`. It uses the public SDK helper `simple_fault(...)`:
+
+```python
+fault_pack = simple_fault(
+    "demo_custom_latency",
+    inject=inject,
+    recover=recover,
+    requires_interface=True,
+    required_parameters=("delay_ms",),
+    aliases=["demo_custom_delay"],
+)
+```
+
+Before running the scenario, the script registers the pack:
+
+```python
+with NetOpsBench(workspace=str(repo)) as bench:
+    bench.faults.register_pack(build_fault_pack())
+    raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor)
+    run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
+    report = run.wait(raise_on_failure=True)
+```
+
+The `with` block and `bench.agents.wrap(...)` mirror the other public examples: SDK-managed resources and wrapped agents are closed when the example exits.
+
+## Fault function contract
+
+The example fault is intentionally small:
+
+- `inject(ctx)` applies `tc netem` latency to the target container interface.
+- `recover(ctx)` removes the `tc` qdisc from that interface.
+- Each function receives `FaultContext`.
+- Each function may return a plain `dict` or `FaultExecutionResult`.
+
+Plain dict results are normalized by the SDK wrapper before the scenario execution path consumes them.
+
+## When to use this example
+
+Use `examples/04_custom_faults.py` when you want to verify the extension mechanism end to end. For a production-quality fault pack, add validation, clear recovery behavior, and tests around malformed parameters and idempotent cleanup.
+
+## Related docs
+
+- [Custom Fault Packs](/docs/contribute/custom-faults)
+- [Built-in Fault Types](/docs/contribute/fault-types)
+- [Python API Guide](/docs/api/quickstart)

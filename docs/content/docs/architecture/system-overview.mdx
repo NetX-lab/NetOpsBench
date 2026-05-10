@@ -1,0 +1,61 @@
+---
+title: System Overview
+description: The benchmark architecture from fault injection to scored diagnosis reports.
+---
+
+NetOpsBench evaluates diagnosis agents through a closed loop: inject a controlled data-center network fault, observe the fabric through active and passive signals, pass a structured diagnosis context to an agent, and score the result against ground truth.
+
+![NetOpsBench pipeline architecture](/assets/pipeline_architecture.png)
+
+## End-to-end loop
+
+| Stage | What happens | Why it matters |
+|---|---|---|
+| Scenario and topology | A generated scenario selects topology scale, traffic profile, fault type, target device, and target interface when applicable. | Every benchmark case has explicit ground truth. |
+| Runtime provisioning | The SDK provisions a Linux/Containerlab runtime, starts observability, and prepares Pingmesh workers. | Users can run a benchmark without hand-managing the lab. |
+| Fault episode | NetOpsBench injects the selected fault and runs the observation window. | The agent sees symptoms produced by an actual running network, not a static prompt. |
+| Diagnosis context | The platform assembles topology, symptoms, Pingmesh summaries, runtime metadata, and tool access into `DiagnosticContext`. | Agents receive a consistent machine-readable input surface. |
+| Agent reasoning | A custom agent investigates evidence and returns `DiagnosisResult`. | Different RCA strategies can plug into the same benchmark loop. |
+| Scoring and reporting | The evaluator compares verdict, fault type, device, and interface against ground truth, then emits reports and artifacts. | Results are comparable across agents and runs. |
+
+## Alert-driven diagnosis
+
+Pingmesh comes early in the loop. It provides path-level symptoms such as packet loss, latency, reachability, and cross-rack degradation before the agent starts deeper tool use.
+
+That alert-driven entry point narrows the search space. A routing error, ACL misconfiguration, MTU mismatch, impaired link, or device failure may first appear as end-to-end path degradation; the agent then correlates that symptom with topology, BGP, interface, route, syslog, and observability evidence.
+
+## Evidence available to agents
+
+| Evidence source | Typical use |
+|---|---|
+| Topology metadata | Identify spines, leaves, clients, links, racks, and candidate paths. |
+| Pingmesh summaries | Detect unhealthy source-destination pairs and affected path domains. |
+| BGP state and routes | Distinguish control-plane failures from data-plane impairments. |
+| Interface state and counters | Localize down links, drops, errors, congestion, or MTU-related symptoms. |
+| Syslog and telemetry | Correlate operational events with the benchmark fault window. |
+| Connectivity checks | Validate current reachability and path selection. |
+
+## Parallel benchmark execution
+
+Suite-level benchmark runs use a worker pool so multiple scenarios can execute against isolated runtime environments at the same time. The high-level loop stays the same, but `workers=N` expands it into scenario assignment, worker-local runtime execution, and final report aggregation.
+
+For the detailed execution path, read [Worker Pool Execution](/docs/architecture/worker-pool-execution).
+
+## Public workflow
+
+For benchmark users, the workflow is intentionally short:
+
+1. Generate or load scenarios.
+2. Construct an agent object.
+3. Run `bench.sessions.run_scenario(...)` or `run_suite(...)`.
+4. Inspect the returned report and artifacts.
+
+In shorthand: **scenario -> agent -> session -> report**.
+
+## Continue reading
+
+- [Worker Pool Execution](/docs/architecture/worker-pool-execution) explains parallel execution, worker isolation, and report aggregation.
+- [Examples](/docs/examples/run-scenario-vs-suite) shows runnable scripts for the main paths.
+- [Benchmark Methodology](/docs/benchmark/methodology) explains how diagnosis outputs are scored.
+- [Custom Diagnostic Agents](/docs/build-your-agent/custom-agents) explains how external RCA strategies plug into the loop.
+- [Python API Guide](/docs/api/quickstart) shows how to run NetOpsBench from Python.

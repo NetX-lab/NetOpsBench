@@ -1,0 +1,157 @@
+---
+title: CLI Reference
+description: Prepare benchmark assets, inspect scenarios and results, and manage runtimes from the netopsbench command.
+---
+
+The `netopsbench` CLI is the supported command-line surface for preparing benchmark assets, checking scenario files, inspecting reports, and cleaning up runtimes.
+
+Agent benchmark execution still goes through the checked-in examples or the Python API. The CLI does not currently provide `run_scenario` or `run_suite` commands.
+
+## Command overview
+
+| Task | Commands | Use when |
+|---|---|---|
+| Prepare benchmark assets | `benchmark prepare` | Generate topology metadata and scenario YAML files before a run. |
+| Work with scenarios | `scenario list`, `scenario validate`, `scenario generate` | Discover, check, or regenerate scenario files. |
+| Inspect results | `result list`, `result show` | Find generated `report.json` files and print report summaries. |
+| Manage runtimes | `status`, `runtime list`, `runtime show`, `runtime teardown` | Inspect SDK-visible runtimes and clean up preserved labs. |
+| Advanced generation | `topology generate` | Generate topology metadata directly when you do not want the full benchmark preparation helper. |
+
+All commands accept the global workspace option:
+
+```bash
+netopsbench --workspace . <command>
+```
+
+## Prepare benchmark assets
+
+Use `benchmark prepare` for the standard setup path. It generates topology metadata and generated scenarios for one or more scales.
+
+```bash
+netopsbench benchmark prepare --scales xs
+```
+
+Useful options:
+
+| Option | Meaning |
+|---|---|
+| `--scales xs,small` | Comma-separated scale list. Defaults to all supported scales. |
+| `--spec scenarios/specs/fault_campaign.yaml` | Scenario generation spec. |
+| `--seed 42` | Random seed for reproducible scenario generation. |
+
+Recommended use:
+
+```bash
+netopsbench benchmark prepare --scales xs --seed 42
+netopsbench benchmark prepare --scales xs,small
+```
+
+## Work with scenarios
+
+List scenario files:
+
+```bash
+netopsbench scenario list scenarios/generated/xs
+```
+
+Validate one scenario:
+
+```bash
+netopsbench scenario validate scenarios/generated/xs/generated_link_down_xs_001.yaml
+```
+
+Generate scenarios for one scale when topology metadata already exists:
+
+```bash
+netopsbench scenario generate \
+  --scale xs \
+  --spec scenarios/specs/fault_campaign.yaml \
+  --topology-dir lab-topology/generated_topology_xs \
+  --out scenarios/generated/xs \
+  --seed 42
+```
+
+For most users, `benchmark prepare` is simpler because it runs topology generation and scenario generation together.
+
+## Inspect results
+
+List reports under the default results directory:
+
+```bash
+netopsbench result list
+```
+
+List reports under a custom directory:
+
+```bash
+netopsbench result list --dir scenario_results
+```
+
+Pretty-print a report:
+
+```bash
+netopsbench result show scenario_results/<run-id>/report.json
+```
+
+Use these commands after examples or Python API runs have written `report.json` files.
+
+## Manage runtimes
+
+Check SDK-visible platform state:
+
+```bash
+netopsbench status
+```
+
+List known runtimes:
+
+```bash
+netopsbench runtime list
+```
+
+Show one runtime:
+
+```bash
+netopsbench runtime show <runtime-name>
+```
+
+Tear down one preserved runtime:
+
+```bash
+netopsbench runtime teardown <runtime-name>
+```
+
+Tear down all known runtimes:
+
+```bash
+netopsbench runtime teardown --all
+```
+
+Use runtime commands after manual runtime workflows or failed runs that leave Containerlab resources behind.
+
+## Advanced topology generation
+
+Generate topology metadata directly:
+
+```bash
+netopsbench topology generate --scale xs
+```
+
+Write to a custom output directory:
+
+```bash
+netopsbench topology generate --scale xs --out lab-topology/generated_topology_xs
+```
+
+Prefer `benchmark prepare` unless you specifically need to generate topology metadata separately from scenarios.
+
+## Recommended paths
+
+| User goal | Recommended CLI usage |
+|---|---|
+| New user | Run `netopsbench benchmark prepare --scales xs`, then continue with [Quickstart](/docs/getting-started). |
+| Agent author | Use CLI only for asset preparation and report inspection; run benchmarks through [Examples](/docs/examples/run-scenario-vs-suite) or [Python API Guide](/docs/api/quickstart). |
+| Runtime debugging | Use `runtime list`, `runtime show`, and `runtime teardown`. |
+| Scenario contributor | Use `scenario validate` before sending changes, and `scenario generate` when regenerating from a spec. |
+
+`netopsbench-pingmesh-agent` is an internal runtime entrypoint used inside deployed clients and is not part of the public CLI workflow.

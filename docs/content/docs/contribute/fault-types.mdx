@@ -1,0 +1,53 @@
+---
+title: Built-in Fault Types
+description: Reference for all fault types that ship with NetOpsBench.
+---
+
+NetOpsBench ships with the fault types listed below. Each is registered as a `FaultSpec` in `netopsbench/platform/faults/builtin/` and can be referenced from scenario YAML via `fault_type: <name>`.
+
+For adding your own faults, see [Custom Fault Packs](/docs/contribute/custom-faults). For a runnable end-to-end custom fault, see [Custom Fault Example](/docs/examples/custom-fault-example).
+
+## Fault catalog
+
+| Fault type | Category | Requires interface | Notes |
+|---|---|:---:|---|
+| `link_down` | Link | yes | Brings the target interface down. |
+| `link_flapping` | Link | no | Repeatedly toggles a link. Parameters: `iterations`, `down_time`, `up_time`. |
+| `mtu_mismatch` | Impairment | yes | Changes interface MTU to break path MTU. |
+| `packet_loss` | Impairment | no | Adds tc-based loss on the target device. |
+| `packet_corruption` | Impairment | no | Adds tc-based corruption. |
+| `high_latency` | Impairment | no | Adds tc-based delay. Parameter: `latency_ms`. |
+| `bgp_neighbor_misconfig` | Routing (BGP) | no | Misconfigures a BGP neighbor (AS, password, etc.). |
+| `static_route_misconfig` | Routing (Static) | no | Installs an incorrect static route. Alias: `static_route_misconfiguration`. |
+| `blackhole_route` | Routing (Static) | no | Installs a route pointing to a null next-hop. Requires `target_prefix`. |
+| `route_policy_misconfig` | Routing (Policy) | no | Misconfigures a prefix list or route-map. |
+| `device_down` | System | no | Brings the target device offline (interfaces or process-level). |
+| `acl_misconfig` | ACL | no | Adds an ACL that blocks expected traffic. Alias: `acl_misconfiguration`. |
+
+## Common scenario fields
+
+Every scenario references one fault type and provides:
+
+- `target_device` — the device the fault is applied to
+- `target_interface` — required for `link_down` and `mtu_mismatch`
+- `target_prefix` — required for `blackhole_route`
+- `parameters` — fault-specific values (e.g. `latency_ms`, `iterations`)
+- `metadata` — descriptive benchmark annotations (not consumed by injection logic)
+
+See [`scenarios/README.md`](https://github.com/netx-lab/NetOpsBench/blob/main/scenarios/README.md) for the full episode schema.
+
+## Symmetric (link-like) faults
+
+The scorer accepts an equivalent peer-side location for `link_down`, `link_flapping`, `packet_loss`, `packet_corruption`, `high_latency`, and `mtu_mismatch`, since these naturally affect both ends of a link. See [Benchmark Methodology](/docs/benchmark/methodology#symmetric-fault-locations).
+
+## Source of truth
+
+The authoritative spec list lives in:
+
+- `netopsbench/platform/faults/builtin/link_specs.py`
+- `netopsbench/platform/faults/builtin/impairment_specs.py`
+- `netopsbench/platform/faults/builtin/routing_specs.py`
+- `netopsbench/platform/faults/builtin/system_specs.py`
+- `netopsbench/platform/faults/builtin/acl_specs.py`
+
+Inject and recover handlers live alongside in `netopsbench/platform/faults/handlers/`.

@@ -1,0 +1,84 @@
+---
+title: Benchmark Methodology
+description: What NetOpsBench measures and how diagnosis outputs are scored.
+---
+
+NetOpsBench is localization-first. The benchmark rewards agents that detect a fault and identify the correct operational fault domain, not agents that only produce a broad narrative.
+
+## Evaluation target
+
+Each benchmark case pairs a generated scenario with ground truth:
+
+- expected verdict: fault detected or network healthy
+- expected fault type
+- expected device
+- expected interface when the fault is interface-applicable
+- equivalent locations for symmetric link-like faults
+
+The agent returns a `DiagnosisResult` containing a verdict, location, confidence, evidence, reasoning, and optional metadata such as tool calls or token usage.
+
+## Core scoring dimensions
+
+| Dimension | Meaning |
+|---|---|
+| Detection accuracy | Whether the agent correctly distinguishes faulty cases from healthy negative samples. |
+| Device localization | Whether the predicted device matches the ground-truth device or an accepted equivalent location. |
+| Interface localization | Whether the predicted interface matches when interface-level ground truth exists. |
+| Fault type classification | Whether the predicted fault label matches the ground-truth fault type. |
+| Runtime efficiency | Diagnosis time, tool calls, and token usage used to reach the answer. |
+
+Fault-type classification uses deterministic canonical matching by default. When the optional fault-type judge is enabled, NetOpsBench uses an LLM judge only for non-exact semantic cases; verdict, device localization, interface localization, and efficiency scoring remain deterministic.
+
+## Fault-case scoring
+
+Fault-case score is verdict-gated. If the agent misses the fault verdict, localization score is zero.
+
+When an interface is applicable, NetOpsBench uses a localization-first score:
+
+```text
+score = 0.6 * device_correct + 0.4 * interface_correct
+```
+
+When interface ground truth is unavailable, device localization receives the full score.
+
+## Healthy negative samples
+
+Healthy cases are evaluated differently. For negative samples, only the verdict matters:
+
+- `network_healthy` receives full credit.
+- a false positive receives zero score.
+
+This prevents agents from gaining localization credit by hallucinating a fault in a healthy network.
+
+## Symmetric fault locations
+
+Some faults are naturally bidirectional or link-symmetric, such as link down, packet loss, packet corruption, high latency, link flapping, and MTU mismatch. In those cases, the scorer can accept an equivalent peer-side location when the topology proves both answers refer to the same impaired link or path segment.
+
+## Optional semantic fault-type judge
+
+Set `NETOPSBENCH_FAULT_TYPE_JUDGE_ENABLED=1` to allow semantic matching for free-form fault type descriptions. This helps when an agent writes a meaningful phrase such as "BGP peer AS mismatch" for the canonical `bgp_neighbor_misconfig` label.
+
+The judge does not change localization scoring. The detailed result includes `fault_type_judgment` so reports show whether the match came from deterministic canonical matching or the LLM judge.
+
+## Interpreting aggregate metrics
+
+A full benchmark report aggregates case-level outcomes into summary metrics:
+
+| Metric | Interpretation |
+|---|---|
+| `detection_accuracy` | Fault/healthy verdict quality. |
+| `device_localization_rate` | Device-level RCA precision. |
+| `interface_localization_rate` | Interface-level RCA precision for applicable cases. |
+| `localization_composite_score` | Combined localization signal used for ranking. |
+| `average_score` | Mean case score over the run. |
+| `avg_time_seconds` | Mean diagnosis latency per case. |
+| `avg_tool_calls` | Mean number of tool calls per case. |
+
+## Source of truth
+
+The implementation lives in `netopsbench.evaluator.scorer` and the session scoring helpers under `netopsbench.platform.session.scoring`.
+
+## Continue reading
+
+- [Architecture](/docs/architecture/system-overview) explains where diagnosis evidence comes from.
+- [Benchmark Results](/docs/benchmark/results) shows a completed benchmark summary.

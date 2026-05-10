@@ -1,0 +1,115 @@
+---
+title: SDK Reference
+description: Supported public modules, extension contracts, and stability expectations.
+---
+
+This page defines the compatibility boundary for code that imports NetOpsBench. It is a reference for library users, agent authors, and contributors; start with [Python API Guide](/docs/api/quickstart) if you want the runnable integration path.
+
+## Supported public modules
+
+These modules are intended for external use:
+
+- `netopsbench.sdk`
+- `netopsbench.sdk.core`
+- `netopsbench.sdk.scenarios`
+- `netopsbench.sdk.agents`
+- `netopsbench.sdk.mcp`
+- `netopsbench.sdk.faults`
+- `netopsbench.sdk.reports`
+- `netopsbench.sdk.artifacts`
+- `netopsbench.sdk.evaluators`
+- `netopsbench.sdk.types`
+
+These non-SDK modules are also public by convention because they define extension contracts or examples:
+
+- `netopsbench.agents.base`
+- `examples.agents.*`
+- `scripts/*`
+
+The documented command-line surface is also public for user workflows:
+
+- `benchmark prepare`
+- `scenario list|validate|generate`
+- `result list|show`
+- `runtime list|show|teardown`
+- `status`
+
+`examples/_common.py` is not a public API. It exists only to keep the checked-in example scripts small and consistent. External integrations should copy the relevant pattern or use `netopsbench.sdk` directly instead of importing helper functions from `_common.py`.
+
+## Stability expectations
+
+### Stable
+
+- `netopsbench.sdk.NetOpsBench`
+- manager method names under the SDK
+- `ScenarioHandle`, `RunHandle`, `BenchmarkReport`, `RuntimePool`
+- documented scripts in `scripts/`
+
+### Less stable / extension-oriented
+
+- fault spec registry internals
+- example agent implementations
+- CLI-facing helper scripts not explicitly documented in README/docs
+- `examples/_common.py` and other example-local support files
+
+### Internal / no compatibility guarantee
+
+- `netopsbench.platform.*`
+- parser/helper file layout
+- mixin composition used inside platform subsystems
+- internal bootstrap/service classes
+
+## Internal-only modules
+
+Treat everything under these namespaces as implementation detail unless you are actively developing NetOpsBench itself:
+
+- `netopsbench.platform.*`
+- `netopsbench.platform.toolkit._core.*`
+- `netopsbench.platform.session.*`
+- `netopsbench.platform.faults.services.*`
+- `netopsbench.platform.faults.handlers.*`
+
+External code should avoid depending on internal mixin class names, parser/helper module locations, internal session/worker wiring, and private helper methods prefixed with `_`.
+
+Toolkit boundary:
+
+- external integrations should use MCP entrypoints from `netopsbench.sdk.mcp`
+- internal platform code and repository tests may still use `AgentToolkit` directly for implementation and fast verification
+
+## Import guidance
+
+Prefer:
+
+```python
+from netopsbench.sdk import NetOpsBench
+```
+
+Avoid in external code:
+
+```python
+from netopsbench.platform.session.orchestrator import SessionOrchestrator
+from netopsbench.platform.toolkit._core.device.parsers import parse_bgp_summary
+```
+
+MCP server helpers are available from the SDK modules:
+
+```python
+from netopsbench.sdk.faults import FaultManager
+from netopsbench.sdk.mcp import builtin_mcp_server_config
+```
+
+## Script guidance
+
+If you want runnable utilities, use wrappers in `scripts/` rather than invoking library modules directly. Example:
+
+```bash
+python scripts/runtime/run_pingmesh_agent.py ...
+python -m netopsbench.platform.topology.metadata_generator <clab-yaml> [output.json]
+```
+
+## Related docs
+
+- [Python API Guide](/docs/api/quickstart)
+- [CLI Reference](/docs/api/cli)
+- [Custom Diagnostic Agents](/docs/build-your-agent/custom-agents)
+- [Architecture](/docs/architecture/system-overview)

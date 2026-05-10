@@ -1,0 +1,130 @@
+---
+title: Custom Diagnostic Agents
+description: Implement an RCA agent and evaluate it with the NetOpsBench benchmark loop.
+---
+
+This is the main public integration path for NetOpsBench. After [Quickstart](/docs/getting-started) works, replace the example agent with your own RCA strategy and run it against the same generated network-fault scenarios.
+
+Your agent can be LLM-backed, heuristic, symbolic, retrieval-augmented, or hybrid. The benchmark contract stays the same: NetOpsBench calls `diagnose(context)`, the agent receives `DiagnosticContext`, and the agent returns `DiagnosisResult`.
+
+## Agent contract
+
+The preferred integration model is a plain Python object with a `diagnose(context)` method:
+
+```python
+from netopsbench.sdk import DiagnosisResult
+
+class MyAgent:
+    def diagnose(self, context):
+        return DiagnosisResult(
+            agent_name="my-agent",
+            verdict="fault_detected",
+            findings={
+                "fault_type": "link_down",
+                "location": {"device": "leaf1", "interface": "Ethernet0"},
+                "evidence": ["Pingmesh loss is concentrated on paths crossing leaf1."],
+            },
+            confidence=0.82,
+            reasoning="Path symptoms and interface evidence indicate a leaf1 uplink failure.",
+        )
+```
+
+Pass the object into SDK session methods:
+
+- `NetOpsBench(...).sessions.run_scenario(...)`
+- `NetOpsBench(...).sessions.run_suite(...)`
+- `NetOpsBench(...).sessions.run_on_runtime_scenario(...)`
+- `NetOpsBench(...).sessions.run_on_runtime_suite(...)`
+
+## What the agent receives: `DiagnosticContext`
+
+`DiagnosticContext` is the machine-readable state passed to the agent. Its public fields are:
+
+| Field | Meaning |
+|---|---|
+| `scenario_id` | The scenario or testcase identifier being diagnosed. |
+| `topology` | Topology metadata: switches, clients, links, and scale-specific structure. |
+| `symptoms` | Observed symptoms and episode data, including Pingmesh summaries when available. |
+| `ground_truth` | Optional ground truth. Benchmark agents should not rely on this for diagnosis. |
+| `tools` | Optional tool access supplied by the runtime or wrapper. |
+| `metadata` | Runtime metadata such as `worker_env`, which agents can forward to spawned MCP servers without mutating process environment. |
+
+The MinimalDeepAgent example builds a compact prompt from `scenario_id`, topology counts, symptom keys, episode data, Pingmesh query windows, Pingmesh summaries, and the most important Pingmesh anomalies. A stronger agent can use the same context plus tools to validate BGP state, routes, interfaces, logs, and reachability.
+
+## What the agent returns: `DiagnosisResult`
+
+`DiagnosisResult` is the public result object scored by NetOpsBench:
+
+| Field | Meaning |
+|---|---|
+| `agent_name` | Stable name used in reports. |
+| `verdict` | Must be `fault_detected`, `network_healthy`, or `inconclusive`. |
+| `success` | Whether the agent completed successfully. Runtime failures should return `False`. |
+| `findings.fault_type` | Canonical fault name such as `link_down`, `packet_loss`, or `static_route_misconfig`. |
+| `findings.location.device` | Predicted faulty device when applicable. |
+| `findings.location.interface` | Predicted faulty interface when applicable. |
+| `findings.evidence` | Machine-readable or concise evidence used to justify the verdict. |
+| `confidence` | Float between 0 and 1. |
+| `reasoning` | Short explanation tied to observed evidence. |
+| `metadata` | Optional run details such as provider, model, tool calls, or token counts. |
+
+This shape is intentionally benchmark-friendly: it preserves enough structure for detection, localization, fault-type, and efficiency scoring while leaving room for different agent designs.
+
+## MinimalDeepAgent reference implementation
+
+The repository includes `examples/agents/minimal_deepagent/agent.py` as a runnable LLM-backed reference agent.
+
+Its implementation follows this flow:
+
+1. Select a provider preset from `kimi`, `minimax`, `zhipu`, `deepseek`, or `openai`.
+2. Read the matching API key from the shell environment unless explicitly passed.
+3. Build the built-in MCP server configuration so the agent can call NetOpsBench tools.
+4. Summarize `DiagnosticContext` into a compact user prompt.
+5. Create a DeepAgent with MCP tools and a strict `DiagnosisOutput` schema.
+6. Parse the raw runtime result into structured output, tool calls, and token counts.
+7. Normalize that output into the public `DiagnosisResult` object.
+8. Return an `inconclusive` failed result if the agent runtime raises an exception.
+
+The schema in `examples/agents/minimal_deepagent/schema.py` deliberately constrains `verdict` to the three scorer-compatible values. This prevents free-form strings such as `fault_found` or `fault_confirmed` from silently hurting benchmark scores.
+
+## Evaluate the agent
+
+```python
+from netopsbench.sdk import NetOpsBench
+
+bench = NetOpsBench(workspace='.')
+agent = MyAgent()
+run = bench.sessions.run_scenario(
+    scenario='scenarios/generated/xs/generated_link_down_xs_001.yaml',
+    agent=agent,
+)
+```
+
+Use `run_scenario(...)` for one fault case while developing the contract. Use `run_suite(...)` when you want benchmark-level comparisons across several scenarios. See [Python API Guide](/docs/api/quickstart) for session options and runtime ownership.
+
+## How your agent is scored
+
+NetOpsBench compares your `DiagnosisResult` against the scenario ground truth:
+
+- detection: whether the verdict correctly distinguishes faulted and healthy cases
+- device localization: whether `findings.location.device` matches the expected device
+- interface localization: whether `findings.location.interface` matches when interface-level ground truth exists
+- fault type: whether `findings.fault_type` matches the expected fault family
+- efficiency: time, tool calls, token usage, and related run metadata when available
+
+For interface-applicable faults, localization is weighted toward device correctness first, then interface precision. See [Benchmark Methodology](/docs/benchmark/methodology) for the exact scoring rules.
+
+## Practical scoring notes
+
+- Return a structured `DiagnosisResult`, not only a natural-language paragraph.
+- Use the exact verdict values: `fault_detected`, `network_healthy`, or `inconclusive`.
+- Include location fields whenever the evidence supports localization.
+- Use canonical fault names so the scorer can compare your answer to ground truth.
+- Handle healthy cases explicitly with `network_healthy` instead of inventing a fault.
+
+## Related docs
+
+- [Quickstart](/docs/getting-started)
+- [Python API Guide](/docs/api/quickstart)
+- [Benchmark Methodology](/docs/benchmark/methodology)
+- [Benchmark Results](/docs/benchmark/results)

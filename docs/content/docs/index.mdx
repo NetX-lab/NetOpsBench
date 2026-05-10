@@ -1,0 +1,54 @@
+---
+title: Overview
+description: Run NetOpsBench, plug in a diagnostic agent, and interpret localization-first benchmark results.
+---
+
+NetOpsBench is a closed-loop benchmark for data-center network diagnosis agents: it runs a live SONiC/Containerlab fabric, injects controlled faults, gives agents telemetry-backed evidence, and scores whether they localize the real root cause.
+
+![NetOpsBench pipeline architecture](/assets/pipeline_architecture.png)
+
+<Callout title="Recommended path">
+Start with one successful benchmark run, replace the example agent with your own RCA strategy, then read the methodology before comparing results.
+</Callout>
+
+## Choose your path
+
+<Cards>
+  <Card title="Run the benchmark" href="/docs/getting-started" description="Install dependencies, prepare XS scenarios, and produce the first BenchmarkReport." />
+  <Card title="Bring your agent" href="/docs/build-your-agent/custom-agents" description="Implement the diagnose(context) contract and return a structured DiagnosisResult." />
+  <Card title="Understand results" href="/docs/benchmark/methodology" description="Read how detection, fault type, device, interface, and efficiency are scored." />
+</Cards>
+
+## What NetOpsBench measures
+
+| Benchmark stage | Reader-facing output |
+|---|---|
+| Generate scenarios and run a topology | Reproducible fault cases with explicit ground truth. |
+| Collect Pingmesh and telemetry evidence | A structured `DiagnosticContext` for agents. |
+| Invoke a custom diagnosis agent | A `DiagnosisResult` with verdict, fault type, location, evidence, and metadata. |
+| Score the diagnosis | Comparable detection, localization, timing, tool-call, and token metrics. |
+
+## Recommended reading
+
+<Cards>
+  <Card
+    title="Quickstart"
+    href="/docs/getting-started"
+    description="The shortest path from clone to one completed run."
+  />
+  <Card
+    title="Build Your Agent"
+    href="/docs/build-your-agent/custom-agents"
+    description="The public integration contract for custom RCA agents."
+  />
+  <Card
+    title="Benchmark Results"
+    href="/docs/benchmark/results"
+    description="Cross-model results and the main takeaways for scale readiness."
+  />
+  <Card
+    title="Python API"
+    href="/docs/api/quickstart"
+    description="Use NetOpsBench from code after the quickstart environment works."
+  />
+</Cards>

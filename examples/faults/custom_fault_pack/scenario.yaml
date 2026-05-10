@@ -1,0 +1,28 @@
+scenario_id: custom_fault_pack_demo
+name: "Custom Fault Pack Demo"
+description: "Example scenario showing how an externally registered fault can be referenced from YAML"
+topology_scale: xs
+traffic_profile: standard
+episodes:
+  - episode_id: ep001_baseline
+    description: "Baseline observation"
+    fault_type: none
+    target_device: leaf1
+    duration_seconds: 20
+    stabilization_time: 5
+
+  - episode_id: ep002_custom_latency
+    description: "Inject a custom latency profile on one interface"
+    fault_type: demo_custom_latency
+    target_device: leaf1
+    target_interface: eth1
+    duration_seconds: 45
+    stabilization_time: 10
+    metadata:
+      expected_symptoms:
+        - high_latency
+        - jitter
+    parameters:
+      delay_ms: 40
+      jitter_ms: 8
+      distribution: normal

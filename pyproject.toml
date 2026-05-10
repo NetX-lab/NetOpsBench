@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netopsbench"
+version = "0.1.0"
+description = "DCN Fault Troubleshooting Benchmark System"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "NetOpsBench Team" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests>=2.25.0",
+    "pyyaml>=5.4.0",
+    "pydantic>=2.0.0",
+    "influxdb-client>=1.30.0",
+    "pygnmi>=0.8.0",
+    "scapy>=2.5.0",
+    "pandas>=1.5.0",
+]
+
+[project.urls]
+Source = "https://github.com/netx-lab/NetOpsBench"
+Issues = "https://github.com/netx-lab/NetOpsBench/issues"
+
+[project.scripts]
+netopsbench = "netopsbench.cli.main:main"
+netopsbench-pingmesh-agent = "netopsbench.platform.pingmesh.cli:main"
+
+[project.optional-dependencies]
+agent = [
+    "openai>=1.0.0",
+    "deepagents>=0.0.12",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-mcp-adapters>=0.1.0",
+    "langsmith>=0.3.0",
+    "fastmcp>=2.0.0",
+]
+dev = [
+    "pytest>=6.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.4.0",
+    "isort>=5.13.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["netopsbench*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "real: tests requiring deployed real environment and external services",
+    "slow: tests that are slow but do not need a real environment",
+]
+addopts = "-ra"
+
+[tool.black]
+line-length = 120
+target-version = ["py311", "py312", "py313"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["netopsbench"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["lab-topology", "scenario_results", "scenarios/generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# B008: function call in default arg (used by FastAPI/Click style); E501 is handled by black.
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Phase-2 mypy covers public SDK, agent contract, and the typed session boundary.
+files = ["netopsbench/sdk", "netopsbench/agents", "netopsbench/platform/session"]
+
+[[tool.mypy.overrides]]
+# platform/ is an internal implementation layer; suppress errors from import-following
+# until a dedicated mypy phase covers it.
+module = "netopsbench.platform.*"
+follow_imports = "silent"

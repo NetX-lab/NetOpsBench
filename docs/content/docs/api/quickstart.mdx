@@ -1,0 +1,118 @@
+---
+title: Python API Guide
+description: Use NetOpsBench from Python after the quickstart environment is working.
+---
+
+The NetOpsBench Python API is the supported way to run scenarios and suites from code. Use this page after [Quickstart](/docs/getting-started) has confirmed that Docker, Containerlab, scenarios, and your provider credentials work.
+
+For the full agent contract, read [Build Your Agent](/docs/build-your-agent/custom-agents). For compatibility boundaries, read [SDK Reference](/docs/api/reference).
+
+## Primary import
+
+External integrations should start from the SDK root:
+
+```python
+from netopsbench.sdk import NetOpsBench
+```
+
+The canonical constructor is:
+
+```python
+bench = NetOpsBench(workspace=".")
+```
+
+## Run one scenario from Python
+
+Use `run_scenario(...)` for one case after scenarios have been prepared:
+
+```python
+from examples.agents import MinimalDeepAgent
+from netopsbench.sdk import NetOpsBench, RunFailedError
+
+with NetOpsBench(workspace=".") as bench:
+    agent = bench.agents.wrap(MinimalDeepAgent(vendor="openai"))
+    run = bench.sessions.run_scenario(
+        scenario="scenarios/generated/xs/generated_link_down_xs_001.yaml",
+        agent=agent,
+    )
+    try:
+        report = run.wait(raise_on_failure=True)
+    except RunFailedError as exc:
+        report = exc.report
+        raise
+
+print(report.summary)
+print(run.report_path)
+```
+
+`run` is a `RunHandle`. It records the run id, mode, runtime id, artifact directory, scenario ids, status, and persisted report path. `run.wait()` loads the saved `BenchmarkReport`, whose summary and detailed results are the main programmatic output for comparison, dashboards, and published benchmark tables.
+
+Use `raise_on_failure=True` when scripts should fail fast if any scenario fails. The raised `RunFailedError` still carries the produced report on `exc.report`, so callers can inspect partial details before exiting.
+
+The `with NetOpsBench(...)` block closes wrapped agents and manager-owned resources on exit. `bench.agents.wrap(...)` is recommended for examples and scripts because it gives the SDK one place to manage agent lifecycle even when the underlying agent is asynchronous or provider-backed.
+
+## SDK manager map
+
+`NetOpsBench` exposes focused managers under one root object:
+
+| Manager | Use it for |
+|---|---|
+| `bench.scenarios` | Loading generated scenario files and working with `ScenarioHandle` objects. |
+| `bench.agents` | Wrapping or managing agent objects that implement the diagnosis contract. |
+| `bench.sessions` | Running scenarios and suites through automatic or existing runtime workflows. |
+| `bench.runtimes` | Provisioning, attaching, listing, and tearing down runtime pools. |
+| `bench.faults` | Discovering or registering fault definitions for extension workflows. |
+| `bench.evaluators` | Scoring `DiagnosisResult` objects and producing benchmark reports. |
+| `bench.artifacts` | Resolving run artifacts, raw results, metadata, and report files. |
+
+For most benchmark users, the main path is **scenario -> agent -> session -> report**.
+
+## Session APIs
+
+| API | Use when | Runtime lifecycle |
+|---|---|---|
+| `run_scenario(...)` | You want the shortest single-case benchmark run. | SDK provisions a runtime and tears it down unless `keep_runtime=True`. |
+| `run_suite(...)` | You want to compare one agent over multiple scenarios. | SDK provisions a runtime pool; `workers=N` enables parallel worker execution. |
+| `run_on_runtime_scenario(...)` | You already have a runtime and want to debug one case. | Caller owns the runtime lifecycle. |
+| `run_on_runtime_suite(...)` | You already have a runtime pool and want to run a suite on it. | Caller owns the runtime lifecycle. |
+
+Common session options:
+
+| Option | Meaning |
+|---|---|
+| `workers` | Number of isolated runtime workers to create for automatic runtime methods. With `run_suite(...)`, scenarios are assigned across workers and executed in parallel. |
+| `keep_runtime` | Preserve the automatically provisioned runtime after the session finishes for manual inspection. |
+| `artifacts_dir` | Override where run artifacts, raw scenario outputs, metadata, and `report.json` are written. |
+| `scale` | Explicit topology scale when it cannot be inferred from the provided scenario paths. |
+
+When `artifacts_dir` is not provided, session artifacts are written under the workspace-managed artifact root. A run directory contains the final `report.json`, `metadata.json`, and worker-local raw scenario outputs under `raw/`. The `scenario_summaries[*].raw_result_path` fields point to those raw scenario files.
+
+## Agent contract boundary
+
+An agent can be a plain Python object with a `diagnose(context)` method. NetOpsBench passes a `DiagnosticContext` and scores the returned `DiagnosisResult`. The contract, required verdict values, context fields, and scoring notes live in [Build Your Agent](/docs/build-your-agent/custom-agents).
+
+## Runtime ownership
+
+The SDK supports two runtime ownership models:
+
+| Mode | API shape | Ownership |
+|---|---|---|
+| Automatic runtime | `run_scenario(...)`, `run_suite(...)` | SDK provisions the runtime, starts worker labs and observability, executes the run, and tears down the runtime by default. |
+| Existing runtime | `run_on_runtime_scenario(...)`, `run_on_runtime_suite(...)` | Caller provisions or attaches the runtime and remains responsible for teardown. |
+
+Use automatic runtime methods for reproducible benchmark comparison. Use existing-runtime methods when you need to keep Containerlab, SONiC, Pingmesh, Telegraf, or InfluxDB state alive while debugging an agent.
+
+## Compatibility boundary
+
+External integrations should import from `netopsbench.sdk` and documented example/script entrypoints. Treat `netopsbench.platform.*` as internal implementation detail unless you are contributing to NetOpsBench itself.
+
+For the full public module list, stability expectations, internal-only namespaces, and import guidance, read [SDK Reference](/docs/api/reference).
+
+## Related docs
+
+- [Quickstart](/docs/getting-started)
+- [Build Your Agent](/docs/build-your-agent/custom-agents)
+- [Examples](/docs/examples/run-scenario-vs-suite)
+- [SDK Reference](/docs/api/reference)
+- [Benchmark Methodology](/docs/benchmark/methodology)
+- [Observability Reproduction](/docs/operations/deployment)

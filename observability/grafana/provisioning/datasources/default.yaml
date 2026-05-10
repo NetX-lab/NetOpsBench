@@ -1,0 +1,21 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: InfluxDB_v2
+    orgId: 1
+
+datasources:
+  - name: InfluxDB_v2
+    uid: InfluxDB_v2
+    type: influxdb
+    access: proxy
+    url: ${NETOPSBENCH_GRAFANA_INFLUXDB_URL}
+    isDefault: true
+    jsonData:
+      version: Flux
+      organization: ${NETOPSBENCH_INFLUXDB_ORG}
+      defaultBucket: ${NETOPSBENCH_GRAFANA_DEFAULT_BUCKET}
+      tlsSkipVerify: true
+    secureJsonData:
+      token: ${NETOPSBENCH_INFLUXDB_TOKEN}
+

@@ -1,0 +1,98 @@
+---
+title: Run Scenario vs Run Suite
+description: Understand the two main SDK execution modes and when to use each one.
+---
+
+Use this page to choose the right checked-in example script after [Quickstart](/docs/getting-started) works. The examples demonstrate execution modes; API details live in [Python API Guide](/docs/api/quickstart), and the agent contract lives in [Build Your Agent](/docs/build-your-agent/custom-agents).
+
+## Quick comparison
+
+| Dimension | `run_scenario(...)` | `run_suite(...)` |
+|---|---|---|
+| Example script | `examples/01_run_scenario.py` | `examples/02_run_suite.py` |
+| Input | One scenario YAML file | A list of scenario YAML files |
+| Best for | First run, environment validation, debugging one fault | Evaluating one agent across several cases |
+| Runtime lifecycle | SDK provisions and tears down the runtime | SDK provisions and tears down the runtime |
+| Report meaning | One case result and artifacts | Aggregate report across multiple cases |
+| Typical signal | Does the agent contract work on one scenario? | How stable is the agent across several faults? |
+
+## Run one scenario
+
+Use this path when you want one case for environment validation or agent debugging.
+
+```bash
+PYTHONPATH=. python examples/01_run_scenario.py --vendor <vendor>
+```
+
+The script selects one generated scenario and calls `run_scenario(...)`:
+
+```python
+scenario = require_scenarios(
+    repo,
+    "scenarios/generated/xs/generated_link_down_xs_001.yaml",
+)[0]
+agent = bench.agents.wrap(MinimalDeepAgent(vendor="openai"))
+run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
+report = run.wait(raise_on_failure=True)
+```
+
+Use this for:
+
+- checking that Docker, Containerlab, Python, and the selected LLM provider work together
+- validating that your custom agent returns a proper `DiagnosisResult`
+- debugging a specific scenario before scaling up
+- inspecting the shape of one `BenchmarkReport`
+
+## Run a suite
+
+Use this path when you want the same agent to handle multiple scenarios in one run.
+
+```bash
+PYTHONPATH=. python examples/02_run_suite.py --vendor <vendor>
+```
+
+The script passes a list of scenarios and requests multiple workers:
+
+```python
+scenarios = require_scenarios(
+    repo,
+    [
+        "scenarios/generated/xs/generated_link_down_xs_001.yaml",
+        "scenarios/generated/xs/generated_packet_loss_xs_001.yaml",
+        "scenarios/generated/xs/generated_high_latency_xs_001.yaml",
+    ],
+)
+agent = bench.agents.wrap(MinimalDeepAgent(vendor="openai"))
+run = bench.sessions.run_suite(
+    scenarios=scenarios,
+    agent=agent,
+    scale="xs",
+    workers=3,
+)
+```
+
+Use this for:
+
+- comparing an agent across several fault types
+- getting aggregate metrics instead of only one case outcome
+- checking worker-level execution behavior
+- moving toward formal benchmark runs without running every generated scenario yet
+
+## Choosing between them
+
+Start with `run_scenario(...)` whenever the environment, provider, or agent is new. Once that path is stable, use `run_suite(...)` to reveal whether the agent generalizes beyond one hand-picked case.
+
+A useful progression is:
+
+1. `run_scenario(...)` for one case.
+2. `run_suite(...)` for a small curated subset.
+3. `examples/03_run_scale_benchmark.py` for every generated case in one scale.
+4. `scripts/run_all_benchmarks.sh` for multi-scale benchmark batches.
+
+## Report interpretation
+
+A single-scenario report is best for debugging. A suite report is better for comparing behavior because it contains aggregate fields such as average score, detection accuracy, localization rates, average time, and average tool calls.
+
+The examples call `run.wait(raise_on_failure=True)` so failed runs become a typed `RunFailedError` instead of requiring callers to inspect status fields by hand.
+
+For scoring definitions, continue to [Benchmark Methodology](/docs/benchmark/methodology). For larger runs, continue to [Scale and Batch Benchmarks](/docs/examples/scale-and-batch-benchmarks).

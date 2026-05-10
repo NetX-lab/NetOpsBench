@@ -1,0 +1,758 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "influxdb",
+          "uid": "InfluxDB_v2"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "BGP State Changes",
+        "target": {
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"bgp_neighbors\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"session_state\")\n  |> filter(fn: (r) => r._value != \"ESTABLISHED\")\n  |> keep(columns: [\"_time\", \"_value\", \"source\", \"neighbor_address\"])\n  |> map(fn: (r) => ({ r with text: r.source + \": BGP \" + r._value + \" (\" + r.neighbor_address + \")\" }))",
+          "refId": "BGP_STATE"
+        }
+      },
+      {
+        "datasource": {
+          "type": "influxdb",
+          "uid": "InfluxDB_v2"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "name": "Syslog Warnings",
+        "target": {
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"syslog\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"message\")\n  |> filter(fn: (r) => r.severity == \"warning\")\n  |> keep(columns: [\"_time\", \"_value\", \"source\"])\n  |> map(fn: (r) => ({ r with text: r.source + \": \" + r._value }))",
+          "refId": "SYSLOG_WARN"
+        }
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 4 }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
+      "id": 20,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"bgp_neighbors\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"session_state\")\n  |> group(columns: [\"source\", \"neighbor_address\"])\n  |> last()\n  |> filter(fn: (r) => r._value == \"ESTABLISHED\")\n  |> group()\n  |> count()\n  |> map(fn: (r) => ({ r with _time: now() }))",
+          "refId": "A"
+        }
+      ],
+      "title": "🟢 BGP Established",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"bgp_neighbors\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"session_state\")\n  |> group(columns: [\"source\", \"neighbor_address\"])\n  |> last()\n  |> filter(fn: (r) => r._value != \"ESTABLISHED\")\n  |> group()\n  |> count()\n  |> map(fn: (r) => ({ r with _time: now() }))",
+          "refId": "A"
+        }
+      ],
+      "title": "🔴 BGP Not Established",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 0 },
+      "id": 27,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"cross_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
+          "refId": "A"
+        }
+      ],
+      "title": "⏱ Cross-rack P99",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 0 },
+      "id": 28,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> max(column: \"_value\")\n  |> group()\n  |> last()",
+          "refId": "A"
+        }
+      ],
+      "title": "📦 Packet Loss",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"syslog\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"message\")\n  |> filter(fn: (r) => r.severity == \"warning\" or r.severity == \"error\" or r.severity == \"critical\" or r.severity == \"alert\" or r.severity == \"emergency\")\n  |> group()\n  |> count()",
+          "refId": "A"
+        }
+      ],
+      "title": "⚠️ Syslog Warn/Err",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "spanNulls": false
+          },
+          "mappings": [
+            { "options": { "ESTABLISHED":  { "color": "green",  "index": 0, "text": "ESTABLISHED" }  }, "type": "value" },
+            { "options": { "ACTIVE":       { "color": "yellow", "index": 1, "text": "ACTIVE" }       }, "type": "value" },
+            { "options": { "IDLE":         { "color": "red",    "index": 2, "text": "IDLE" }         }, "type": "value" },
+            { "options": { "OPENCONFIRM":  { "color": "orange", "index": 3, "text": "OPENCONFIRM" }  }, "type": "value" },
+            { "options": { "OPENSENT":     { "color": "orange", "index": 4, "text": "OPENSENT" }     }, "type": "value" },
+            { "options": { "CONNECT":      { "color": "yellow", "index": 5, "text": "CONNECT" }      }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 4 },
+      "id": 24,
+      "options": {
+        "alignValue": "center",
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "showValue": "auto",
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"bgp_neighbors\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"session_state\")\n  |> map(fn: (r) => ({ r with _field: r.source + \" → \" + r.neighbor_address }))\n  |> keep(columns: [\"_time\", \"_value\", \"_field\"])",
+          "refId": "A"
+        }
+      ],
+      "title": "BGP Session State Timeline",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [
+            { "options": { "ESTABLISHED": { "color": "green",  "index": 0, "text": "🟢 ESTABLISHED" } }, "type": "value" },
+            { "options": { "ACTIVE":      { "color": "yellow", "index": 1, "text": "🟡 ACTIVE" }      }, "type": "value" },
+            { "options": { "IDLE":        { "color": "red",    "index": 2, "text": "🔴 IDLE" }        }, "type": "value" },
+            { "options": { "OPENCONFIRM": { "color": "orange", "index": 3, "text": "🟠 OPENCONFIRM" } }, "type": "value" },
+            { "options": { "OPENSENT":    { "color": "orange", "index": 4, "text": "🟠 OPENSENT" }    }, "type": "value" },
+            { "options": { "CONNECT":     { "color": "yellow", "index": 5, "text": "🟡 CONNECT" }     }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "session_state" },
+            "properties": [{ "id": "custom.cellOptions", "value": { "mode": "basic", "type": "color-background" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.width", "value": 180 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "source" },
+            "properties": [{ "id": "custom.width", "value": 100 }]
+          }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 10 },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["count"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": false, "displayName": "source" }]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"bgp_neighbors\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"session_state\")\n  |> group(columns: [\"source\", \"neighbor_address\"])\n  |> last()\n  |> keep(columns: [\"_time\", \"source\", \"neighbor_address\", \"_value\"])\n  |> rename(columns: {neighbor_address: \"Peer\", _value: \"State\"})",
+          "refId": "A"
+        }
+      ],
+      "title": "🔗 BGP Neighbors Detail",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "unit": "bps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*out_octets.*" },
+            "properties": [
+              { "id": "custom.transform", "value": "negative-Y" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_octets\" or r._field == \"out_octets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> map(fn: (r) => ({ r with _value: r._value * 8.0 }))\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"bps\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Interface Throughput In/Out",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "pps",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 3,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": { "group": "C", "mode": "none" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_unicast_pkts\" or r._field == \"out_unicast_pkts\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\"])\n  |> yield(name: \"pps\")",
+          "refId": "A"
+        }
+      ],
+      "title": "Interface Packets",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 3,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "pps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*in_discarded.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*out_discarded.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": ["sum", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"source\"] =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r[\"_field\"] == \"out_discarded_packets\" or r[\"_field\"] == \"in_discarded_packets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
+          "refId": "A"
+        }
+      ],
+      "title": "🟡 Discards (ACL/Buffer)",
+      "description": "Logical discards: ACL denies, VLAN mismatch, buffer overflow (congestion). Frames are valid but device decides not to forward.",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 3,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "pps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*in_fcs_error.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*in_error.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": ["sum", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_errors\" or r._field == \"out_errors\" or r._field == \"in_fcs_error_packets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
+          "refId": "A"
+        }
+      ],
+      "title": "🔴 Physical Errors (CRC/FCS)",
+      "description": "Physical layer errors: fiber attenuation, cable contact issues, interference causing frame check failures. in_fcs_error_packets is the key CRC indicator.",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"source\"] =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"syslog\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r[\"_field\"] == \"message\")\n  |> map(fn: (r) => ({ r with \n      event_type: if exists r.event_category then r.event_category else \"INFO\",\n      _value: if exists r.event_category then r.event_category + \": \" + r._value else r._value\n     }))",
+          "refId": "A"
+        }
+      ],
+      "title": "📝 Syslog Events",
+      "type": "logs"
+    },
+    {
+      "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineWidth": 1,
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "error" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "warning" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "notice" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "info" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "id": 25,
+      "options": {
+        "barRadius": 0.1,
+        "barWidth": 0.8,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": ["sum"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"syslog\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"message\")\n  |> group(columns: [\"severity\"])\n  |> count()\n  |> duplicate(column: \"severity\", as: \"_field\")\n  |> map(fn: (r) => ({ _field: r._field, _value: r._value, _time: now() }))",
+          "refId": "A"
+        }
+      ],
+      "title": "📊 Syslog Events by Severity",
+      "type": "barchart"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["network", "dcn", "syslog", "bgp"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "netopsbench", "value": "netopsbench" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "buckets()\n  |> keep(columns: [\"name\"])\n  |> rename(columns: {name: \"_value\"})\n  |> filter(fn: (r) => r._value == \"netopsbench\" or r._value =~ /^network_data_.*/)\n  |> keep(columns: [\"_value\"])\n  |> sort(columns: [\"_value\"])",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Bucket",
+        "multi": false,
+        "name": "bucket",
+        "options": [],
+        "query": "buckets()\n  |> keep(columns: [\"name\"])\n  |> rename(columns: {name: \"_value\"})\n  |> filter(fn: (r) => r._value == \"netopsbench\" or r._value =~ /^network_data_.*/)\n  |> keep(columns: [\"_value\"])\n  |> sort(columns: [\"_value\"])",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": "all",
+        "current": { "selected": true, "text": "All", "value": "all" },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"topology_id\",\n  start: -1h\n)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Topology",
+        "multi": false,
+        "name": "topology_id",
+        "options": [],
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"topology_id\",\n  start: -1h\n)",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
+        "definition": "from(bucket: \"${bucket}\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> keep(columns: [\"source\"])\n  |> distinct(column: \"source\")\n  |> filter(fn: (r) => exists r._value and r._value != \"\")\n  |> keep(columns: [\"_value\"])\n  |> sort()",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Device",
+        "multi": true,
+        "name": "Device",
+        "options": [],
+        "query": "from(bucket: \"${bucket}\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> keep(columns: [\"source\"])\n  |> distinct(column: \"source\")\n  |> filter(fn: (r) => exists r._value and r._value != \"\")\n  |> keep(columns: [\"_value\"])\n  |> sort()",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"]
+  },
+  "timezone": "",
+  "title": "DCN Overview",
+  "uid": "dcn-overview",
+  "version": 3,
+  "weekStart": ""
+}

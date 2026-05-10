@@ -1,0 +1,28 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+@source '../node_modules/fumadocs-ui/dist/**/*.js';
+
+:root {
+  --fd-layout-width: 1440px;
+  --background: var(--color-fd-background);
+  --foreground: var(--color-fd-foreground);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+a {
+  text-decoration: none;
+}
+
+img {
+  max-width: 100%;
+}

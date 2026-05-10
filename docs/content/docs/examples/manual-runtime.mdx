@@ -1,0 +1,66 @@
+---
+title: Manual Runtime
+description: Keep a runtime alive for debugging, observability inspection, and repeated agent iteration.
+---
+
+Most benchmark examples use automatic runtime lifecycle management: the SDK provisions a runtime, runs the scenario or suite, collects the report, and tears the runtime down. `examples/05_manual_runtime.py` is different: it keeps the runtime alive after the run.
+
+## When to use it
+
+Use manual runtime mode when you need to inspect or reuse the lab:
+
+- debug Containerlab topology or container state
+- inspect Grafana, InfluxDB, Telegraf, or Pingmesh while the lab is still running
+- iterate on an agent without reprovisioning the runtime every time
+- run follow-up commands against the same topology
+- reproduce a failure before tearing down infrastructure
+
+For normal benchmark comparison, prefer automatic `run_scenario(...)`, `run_suite(...)`, or scale benchmark examples.
+
+## Command
+
+```bash
+PYTHONPATH=. python examples/05_manual_runtime.py --repo-root .
+```
+
+The script provisions a runtime explicitly:
+
+```python
+runtime = bench.runtimes.provision(scale="xs", workers=1, name=runtime_name)
+run = bench.sessions.run_on_runtime_scenario(
+    scenario=scenario,
+    runtime=runtime,
+    agent=agent,
+    artifacts_dir=artifacts_dir,
+)
+```
+
+Because the runtime is caller-owned, it is not automatically torn down by the session scaffold.
+
+## Runtime ownership
+
+| Mode | Example | Teardown behavior |
+|---|---|---|
+| Automatic runtime | `01_run_scenario.py`, `02_run_suite.py`, `03_run_scale_benchmark.py` | SDK-managed lifecycle for the benchmark run. |
+| Manual runtime | `05_manual_runtime.py` | Runtime stays alive until you explicitly tear it down. |
+
+The script prints the runtime name and reminds you that the lab is still running. When you are done, call `runtime.teardown()` from your own control flow, use `netopsbench runtime teardown <runtime-name>`, or use the operational teardown scripts described in [Deployment Guide](/docs/operations/deployment).
+
+## What to inspect
+
+After the run, useful checks include:
+
+```bash
+sudo containerlab inspect -t lab-topology/generated_topology_xs/dcn.clab.yaml
+docker ps | grep clab-dcn
+docker ps | grep -E "influxdb|telegraf|grafana"
+docker logs telegraf | tail -20
+```
+
+You can also open Grafana and inspect Pingmesh or telemetry panels while the runtime remains active. See [Observability Guide](/docs/operations/observability) for dashboard details.
+
+## Cleanup reminder
+
+Manual runtime mode is intentionally persistent. Clean it up when you finish debugging so later benchmark runs do not inherit stale containers, networks, or runtime artifacts.
+
+Continue to [CLI Reference](/docs/api/cli#manage-runtimes) for runtime cleanup commands or [Deployment Guide](/docs/operations/deployment) for low-level deployment and teardown details.

@@ -1,0 +1,83 @@
+---
+title: Observability Guide
+description: Open Grafana, select the right worker bucket, and inspect common runtime states.
+---
+
+NetOpsBench starts InfluxDB, Telegraf, Grafana, and Pingmesh automatically during benchmark runs. Most users do not need to deploy observability by hand; use this page when you want to inspect a live or recently preserved runtime.
+
+![Observability architecture diagram](/assets/observability_architecture.png)
+
+## Open Grafana
+
+```text
+URL:      http://<host-ip>:3000
+Username: admin
+Password: admin
+```
+
+If `http_proxy` or `https_proxy` is set on the host, `localhost:3000` may be intercepted by the proxy. Use the host's actual IP address from your browser, or set `NO_PROXY=localhost,127.0.0.1`.
+
+## Select the worker bucket
+
+Grafana dashboards use a `Bucket` drop-down. The default `netopsbench` bucket is only a housekeeping bucket; benchmark data lives in worker buckets.
+
+| Run mode | Bucket pattern |
+|---|---|
+| One scenario | `network_data_xs_w01` |
+| XS suite with 3 workers | `network_data_xs_w01` through `network_data_xs_w03` |
+| Scale benchmark | `network_data_{scale}_w01` through the configured worker count |
+| Manual runtime | The worker bucket printed by the runtime script |
+
+If no `network_data_*` bucket appears, no runtime is currently deployed or the worker has not finished observability startup.
+
+## Dashboards to use
+
+| Dashboard | Use it for |
+|---|---|
+| DCN Overview | BGP state, interface traffic, packet loss, syslog, and fabric-level health. |
+| Pingmesh Analysis | Path latency, path loss, worst leaf pairs, and source/destination narrowing. |
+
+![DCN Overview dashboard](/assets/grafana_dcn_overview.png)
+
+![Pingmesh Analysis dashboard](/assets/grafana_pingmesh.png)
+
+## Common states
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| No data in every panel | Wrong bucket or no active runtime | Select `network_data_{scale}_w{n}` or start a runtime. |
+| No same-rack P99 on XS | XS has only two racks with one client per rack | Expected; use cross-rack panels on XS. |
+| Packet loss spikes during a scenario | Active fault episode is running | Expected during faults; it should recover after the observation window. |
+| Packet loss remains after recovery | Runtime cleanup or fault recovery may not have completed | Inspect scenario logs, Telegraf logs, and the preserved runtime. |
+| BGP panels show non-established peers | Control-plane disruption or startup still converging | Check the scenario window and device logs before treating it as baseline failure. |
+| Telegraf data appears late | Scrape interval and startup lag | Wait about 30 seconds, then check `docker logs telegraf-<runtime>`. |
+
+## Retention and cleanup
+
+Runtime buckets use long-lived retention so preserved runs remain inspectable. List buckets:
+
+```bash
+sudo docker exec influxdb influx bucket list \
+  --host http://localhost:8086 \
+  --token "$NETOPSBENCH_INFLUXDB_TOKEN"
+```
+
+Query recent points:
+
+```bash
+sudo docker exec influxdb influx query \
+  'from(bucket:"network_data_xs_w01") |> range(start: -10m) |> limit(n:5)' \
+  --host http://localhost:8086 \
+  --token "$NETOPSBENCH_INFLUXDB_TOKEN"
+```
+
+Delete stale buckets only when you no longer need the run evidence:
+
+```bash
+sudo docker exec influxdb influx bucket delete \
+  --name network_data_xs_w01 \
+  --host http://localhost:8086 \
+  --token "$NETOPSBENCH_INFLUXDB_TOKEN"
+```
+
+For runtime cleanup, use [CLI runtime commands](/docs/api/cli#manage-runtimes). For manual deployment and teardown, continue to [Observability Reproduction](/docs/operations/deployment).

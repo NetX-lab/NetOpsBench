@@ -1,0 +1,80 @@
+---
+title: Scale and Batch Benchmarks
+description: Run full generated scenario sets for one scale or across multiple topology scales.
+---
+
+After `run_scenario(...)` and `run_suite(...)` are working, use the scale and batch workflows to collect benchmark-level evidence. Prepare scenarios once through [Quickstart](/docs/getting-started) or the [CLI](/docs/api/cli) before running these scripts.
+
+## One scale: `03_run_scale_benchmark.py`
+
+`examples/03_run_scale_benchmark.py` discovers all generated scenario YAML files under one topology scale and runs them as a suite.
+
+```bash
+PYTHONPATH=. python examples/03_run_scale_benchmark.py \
+  --scale xs \
+  --workers 3 \
+  --vendor <vendor>
+```
+
+The script discovers scenarios with:
+
+```python
+scenarios = discover_generated_scenarios(repo, scale)
+```
+
+Then it runs them through the same suite API:
+
+```python
+run = bench.sessions.run_suite(
+    scenarios=scenarios,
+    agent=agent,
+    scale=scale,
+    workers=workers,
+)
+```
+
+Use this when you want to evaluate one agent over the full generated corpus for a single topology size.
+
+## Multi-scale batches: `run_all_benchmarks.sh`
+
+`scripts/run_all_benchmarks.sh` repeats the scale benchmark across selected scales and writes per-run logs plus a CSV summary.
+
+```bash
+BENCH_VENDOR=<vendor> BENCH_SCALES="xs small" bash scripts/run_all_benchmarks.sh
+```
+
+For long-running jobs:
+
+```bash
+nohup bash scripts/run_all_benchmarks.sh &> benchmark_run.log &
+```
+
+Useful environment overrides:
+
+| Variable | Meaning |
+|---|---|
+| `BENCH_VENDOR` | Agent provider passed to `examples/03_run_scale_benchmark.py`. |
+| `BENCH_SCALES` | Space-separated scale list such as `xs small`. |
+| `NETOPSBENCH_WORKER_DEPLOY_JOBS` | Per-run worker deployment parallelism override. |
+| `NETOPSBENCH_WORKER_HEALTH_RETRIES` | Health-check retry budget for larger fabrics. |
+
+The script writes logs under `scenario_results/benchmark_logs_<timestamp>/` and a CSV summary under `scenario_results/benchmark_summary_<timestamp>.csv`.
+
+## Choosing scale and workers
+
+Larger topology scales create more containers and take longer to stabilize. Start with `xs`, then increase scale after the agent and provider path are stable.
+
+| Scale | Good use |
+|---|---|
+| `xs` | Fastest benchmark feedback and provider validation. |
+| `small` | More topology variety with moderate runtime cost. |
+| `medium` | Broader fabric behavior and more generated scenarios. |
+| `large` | Stress testing runtime, observability, and agent efficiency. |
+
+Worker count controls concurrency. More workers can reduce wall-clock time, but each worker provisions its own lab resources. If Docker or Containerlab becomes unstable, reduce `--workers` or deployment parallelism.
+
+## How this differs from a small suite
+
+A small suite is curated and easy to debug. A scale benchmark is corpus-oriented: it is the better input for comparing agents because it covers every generated scenario for the chosen topology scale.
+
+Continue to [Benchmark Results](/docs/benchmark/results) for an example completed run and [Benchmark Methodology](/docs/benchmark/methodology) for metric definitions.

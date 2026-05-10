@@ -1,0 +1,92 @@
+---
+title: Repository Layout
+description: Where users, contributors, scenarios, scripts, and platform internals live.
+---
+This document explains which top-level directories are for users, contributors, and internal platform development.
+
+## Top level
+
+- `netopsbench/` - Python package
+- `docs/` - architecture and extension docs
+- `examples/` - public runnable examples
+- `scripts/` - shell orchestration scripts (deploy, teardown, health checks)
+- `tests/` - regression tests
+- `scenarios/` - benchmark scenarios
+- `observability/` - Grafana / Influx / Telegraf assets
+
+## Python package layout
+
+### `netopsbench/sdk/`
+Public library surface. Use this in application code.
+
+### `netopsbench/cli/`
+CLI entry point (`netopsbench` command). Thin wrapper; see `cli/main.py`.
+
+### `netopsbench/evaluator/`
+Evaluation and scoring helpers (`evaluator/scorer.py`).
+
+### `netopsbench/agents/`
+Shared agent contracts. `netopsbench.agents.base` is useful to plugin/agent authors.
+
+### `netopsbench/platform/`
+Internal implementation. Contains runtime lifecycle, scenario runner internals, toolkit internals, topology helpers, traffic generation, and fault injection.
+
+Key sub-packages:
+- `platform/observability/` — Telegraf config generation, InfluxDB bucket management, observability validation
+- `platform/scenario/` — scenario parsing, validation, generation, and execution
+- `platform/toolkit/` — internal toolkit core; `toolkit/mcp/` adapts it for MCP protocol tools
+- `platform/pingmesh/` — pingmesh generation, probing, and detection
+
+## Scripts
+
+Use `scripts/` for shell orchestration that requires Docker / Containerlab interaction.
+
+### `scripts/runtime/`
+- runtime deploy/teardown
+- pingmesh agent wrapper
+- pinglist generation
+- worker health helpers
+
+### `scripts/observability/`
+- observability core startup
+- worker telegraf sidecar
+
+### `scripts/topology/`
+- (empty — topology metadata generation uses `python -m netopsbench.platform.topology.metadata_generator` directly)
+
+### `scripts/toolkit/`
+- toolkit MCP/FastMCP server wrapper
+
+## Examples
+
+Runnable scripts under `examples/`:
+
+| Script | Purpose |
+|--------|---------|
+| `01_run_scenario.py` | Run a single scenario (auto provision + teardown) |
+| `02_run_suite.py` | Run multiple scenarios as a suite |
+| `03_run_scale_benchmark.py` | Run all generated scenarios for one scale |
+| `04_custom_faults.py` | Register a custom fault pack and run a scenario |
+| `05_manual_runtime.py` | Provision a runtime manually, keep it for debugging |
+| `06_llm_fault_type_judge.py` | Demonstrate optional semantic fault-type judging |
+
+`examples/_common.py` contains example-local helpers for scenario path checks, generated scenario discovery, agent wrapping, and run waiting. It is not part of the public SDK.
+
+### `examples/agents/`
+Reference agent implementations (e.g. `MinimalDeepAgent`).
+
+### `examples/faults/`
+Custom fault extension examples (`simple_fault()` API).
+
+
+## Internal organization notes
+
+The platform code is grouped by responsibility. These internal paths may continue to evolve:
+
+- session execution — `netopsbench/platform/session/`
+- fault helper services — `netopsbench/platform/faults/services/`
+- toolkit device parsers/ops — `netopsbench/platform/toolkit/_core/device/`
+- MCP protocol adapters — `netopsbench/platform/toolkit/mcp/`
+- pingmesh helpers — `netopsbench/platform/pingmesh/_*`
+
+The session package owns worker dispatch, evaluator isolation, and SDK run artifact persistence. Direct scenario execution can still persist raw results, but SDK sessions write worker-local raw JSON under the run artifact directory.

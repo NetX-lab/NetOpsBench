@@ -1,0 +1,102 @@
+---
+title: Custom Fault Packs
+description: Add project-local or external faults through the supported SDK extension path.
+---
+This guide explains the **public** fault extension path for NetOpsBench.
+
+Custom fault packs belong in the contributor area because they extend the benchmark fault surface. If your goal is to evaluate an RCA strategy, start with [Custom Diagnostic Agents](/docs/build-your-agent/custom-agents) instead.
+
+## Recommended starting point
+
+If you are adding a community or project-local fault plugin, start from:
+
+- `netopsbench.sdk.faults`
+- `examples/faults/custom_fault_pack/`
+
+For normal external extensions, you do **not** need to modify `netopsbench.platform.faults.injector.FaultInjector`.
+That module is an internal implementation detail used by NetOpsBench's built-in faults.
+
+## Recommended: two functions + one line
+
+The simplest way to add a custom fault is with `simple_fault()` — write two plain functions and bundle them in one call:
+
+```python
+from netopsbench.sdk import NetOpsBench, FaultContext, simple_fault
+
+def inject(ctx: FaultContext) -> dict:
+    return {"success": True, "device": ctx.target_device}
+
+def recover(ctx: FaultContext) -> dict:
+    return {"success": True}
+
+my_pack = simple_fault(
+    "my_latency",
+    inject=inject,
+    recover=recover,
+    requires_interface=True,
+    required_parameters=("delay_ms",),
+)
+
+bench = NetOpsBench(workspace=".")
+bench.faults.register_pack(my_pack)
+```
+
+Or register the fault directly:
+
+```python
+bench.faults.register_fault(
+    "my_latency", inject, recover,
+    requires_interface=True, required_parameters=("delay_ms",),
+)
+```
+
+Once registered, reference the fault in scenario YAML via `fault_type: my_latency`. See `examples/faults/custom_fault_pack/custom_fault.py` and `examples/faults/custom_fault_pack/scenario.yaml` for a concrete example.
+
+## What the functions receive and return
+
+| | Type | Notes |
+|---|---|---|
+| **argument** | `FaultContext` | `fault_type`, `target_device`, `target_interface`, `parameters`, `metadata` |
+| **return** | `dict` or `FaultExecutionResult` | Should contain `"success": bool`; omitted success defaults to success. A `dict` is normalized by the SDK wrapper. |
+
+## Advanced: FaultExecutor + FaultPack
+
+Use the class-based API when you need shared state between inject and recover, or when packaging multiple related faults in one module.
+
+```python
+from netopsbench.sdk import FaultContext, FaultExecutionResult, FaultSpec
+from dataclasses import dataclass
+from typing import Any
+
+class MyExecutor:
+    def inject(self, ctx: FaultContext) -> FaultExecutionResult:
+        return FaultExecutionResult(fault_type=ctx.fault_type, success=True)
+
+    def recover(self, ctx: FaultContext) -> FaultExecutionResult:
+        return FaultExecutionResult(fault_type=ctx.fault_type, success=True)
+
+@dataclass(frozen=True)
+class MyFaultPack:
+    name: str = "my_fault_pack"
+    version: str = "1.0"
+
+    def register(self, registry: Any) -> None:
+        registry.register(
+            spec=FaultSpec(name="my_latency", requires_interface=True),
+            executor=MyExecutor(),
+        )
+
+bench.faults.register_pack(MyFaultPack())
+```
+
+## Recovery expectations
+
+Recovery should be safe to call more than once when possible, able to clean up partial state, and explicit about what was restored.
+
+## Related docs
+
+- [Built-in Fault Types](/docs/contribute/fault-types) — reference table of all faults that ship with NetOpsBench
+- [Custom Fault Example](/docs/examples/custom-fault-example) — runnable end-to-end custom fault
+- `examples/faults/custom_fault_pack/custom_fault.py`
+- `examples/faults/custom_fault_pack/scenario.yaml`
+- [Python API Guide](/docs/api/quickstart)

@@ -1,0 +1,60 @@
+---
+title: Worker Pool Execution
+description: How NetOpsBench runs suites across isolated workers and aggregates benchmark reports.
+---
+
+Suite-level benchmark runs use a worker pool so multiple scenarios can execute against isolated runtime environments at the same time.
+
+![Parallel benchmark architecture for DCN troubleshooting agents](/assets/worker_pool_design.png)
+
+The user-facing API stays small, but the execution path expands into orchestration, worker scheduling, runtime-local diagnosis, and result aggregation.
+
+## End-to-end worker flow
+
+| Step | What happens |
+|---|---|
+| Submit strategy | The user passes an agent object plus one scenario or a suite into `NetOpsBench(...).sessions`. |
+| Start session | The session manager delegates to the internal orchestrator, which resolves scenarios, infers scale when needed, creates a run id, and prepares the artifact directory. |
+| Build runtime pool | The runtime manager creates a `RuntimePool` with `workers=N`, assigning each worker its own lab name, topology directory, management subnet, InfluxDB bucket, logs, and raw result paths. |
+| Deploy workers | Each worker provisions an independent Containerlab/SONiC topology and starts worker-local Telegraf/Pingmesh observability against the shared observability services. |
+| Schedule scenarios | The dispatcher assigns scenarios across workers round-robin and runs workers in parallel when the pool has more than one worker. |
+| Execute episode | Inside a worker, the scenario executor applies traffic generation, injects the selected fault, observes Pingmesh/telemetry symptoms, and records raw episode output. |
+| Build diagnosis context | The orchestrator builds `DiagnosticContext` with topology, symptoms, tool access, and `metadata.worker_env` so agents can forward worker-specific environment to MCP servers or subprocesses. |
+| Run agent | The agent diagnoses the case and returns `DiagnosisResult` with verdict, fault type, location, evidence, confidence, reasoning, and optional metadata. |
+| Score case | A worker-local evaluator compares detection, fault type, device localization, interface localization, and efficiency fields against scenario ground truth. |
+| Aggregate report | The dispatcher merges worker summaries, scenario summaries, session-owned raw artifacts, and aggregate scores into the final `BenchmarkReport` using a separate report aggregation evaluator. |
+
+## Why worker isolation matters
+
+Each worker owns a separate lab and telemetry namespace. Its Containerlab topology, SONiC nodes, management subnet, Telegraf sidecar, InfluxDB bucket, raw result directory, and worker logs are distinct from other workers.
+
+That isolation lets a suite run concurrently without mixing symptoms across cases. A packet-loss case running on `worker-1` should not pollute the Pingmesh summaries or raw artifacts used by a routing-misconfiguration case running on `worker-2`.
+
+## Shared vs worker-local state
+
+| Layer | Components |
+|---|---|
+| Shared | SDK entrypoint, session orchestrator, scenario assignment, evaluator, result aggregation, final `BenchmarkReport`, shared observability core services. |
+| Worker-local | Containerlab topology, SONiC nodes, management subnet, fault episode, Pingmesh/Telegraf data, InfluxDB bucket, raw scenario outputs, worker logs. |
+
+Evaluators are not shared across concurrent workers. Each worker receives its own evaluator instance, which keeps future stateful evaluators, semantic judges, or provider clients isolated. Final report generation uses a separate evaluator instance after worker results have been merged in deterministic worker-index order.
+
+## Raw result ownership
+
+Direct `ScenarioExecutor` use can still persist a raw scenario result for compatibility. SDK sessions, however, treat raw result persistence as session-owned: the dispatcher writes worker-local raw JSON files under the run artifact directory and records their paths in `scenario_summaries`.
+
+## How this maps to SDK calls
+
+| SDK call | Architecture path |
+|---|---|
+| `run_scenario(..., workers=1)` | Minimal closed loop: one runtime worker, one scenario, one report. |
+| `run_suite(..., workers=N)` | Full worker-pool path: scenarios are distributed across isolated workers and merged into one benchmark report. |
+| `run_on_runtime_suite(...)` | Same execution and aggregation path, but the caller owns the already-provisioned `RuntimePool`. |
+
+Use the single-scenario path for smoke tests and agent contract validation. Use the suite path with multiple workers when collecting benchmark-level evidence or comparing agents across a generated corpus.
+
+## Continue reading
+
+- [System Overview](/docs/architecture/system-overview)
+- [Scale and Batch Benchmarks](/docs/examples/scale-and-batch-benchmarks)
+- [Benchmark Methodology](/docs/benchmark/methodology)
