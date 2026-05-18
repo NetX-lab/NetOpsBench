@@ -51,3 +51,4 @@ docs/.source/
 docs/.env.local
 docs/_legacy/
 .playwright-mcp/
+CLAUDE*

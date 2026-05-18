@@ -1,6 +1,6 @@
 """OpenAI provider configuration and LLM factory.
 
-This provider targets an OpenAI-compatible endpoint.
+This provider targets the official OpenAI API endpoint.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 
 PRESET = {
     "model": "gpt-5.4",
-    "base_url": "https://code.ppchat.vip/v1",
+    "base_url": "https://api.openai.com/v1",
     "api_key_env": "OPENAI_API_KEY",
 }
 

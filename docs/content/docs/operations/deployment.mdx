@@ -12,7 +12,8 @@ For the dashboard guide, see [Observability Guide](/docs/operations/observabilit
 NetOpsBench targets **Linux hosts only** with Docker, Containerlab, and non-interactive sudo:
 
 ```bash
-sudo bash -c 'echo "<your-username> ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/netopsbench'
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/docker, /usr/bin/containerlab, /usr/bin/rm" \
+  | sudo tee /etc/sudoers.d/netopsbench
 sudo chmod 440 /etc/sudoers.d/netopsbench
 ```
 

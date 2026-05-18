@@ -14,13 +14,17 @@ fi
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$BASE_DIR"
 
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# shellcheck source=scripts/lib/find_python.sh
+source "$BASE_DIR/scripts/lib/find_python.sh"
+
 METADATA_FILE="$TOPOLOGY_DIR/topology.json"
 if [ ! -f "$METADATA_FILE" ]; then
     echo "Skipping worker teardown; topology metadata not found: $METADATA_FILE"
     exit 0
 fi
 
-readarray -t WORKER_META < <(python3 - <<PY
+readarray -t WORKER_META < <($PYTHON - <<PY
 import json
 with open("$METADATA_FILE") as f:
     topo = json.load(f)

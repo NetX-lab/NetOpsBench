@@ -47,7 +47,7 @@ To switch provider and endpoint explicitly:
 agent = MinimalDeepAgent(
     vendor="openai",
     model="gpt-5.4",
-    base_url="https://code.ppchat.vip/v1",
+    base_url="https://api.openai.com/v1",
 )
 ```
 

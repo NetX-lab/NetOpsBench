@@ -179,7 +179,7 @@ def test_minimal_deepagent_openai_defaults_and_openai_key(monkeypatch):
 
     assert agent.api_key == "openai-shell-key"
     assert agent.model == "gpt-5.4"
-    assert agent.base_url == "https://code.ppchat.vip/v1"
+    assert agent.base_url == "https://api.openai.com/v1"
 
 
 def test_minimal_deepagent_canonical_module_path():

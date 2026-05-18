@@ -21,7 +21,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # ── 配置 ────────────────────────────────────────────────────
-PYTHON="${REPO_ROOT}/.venv313/bin/python"
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# For git worktrees sharing a venv, override via: export NETOPSBENCH_PYTHON=/path/to/venv/bin/python3
+# shellcheck source=scripts/lib/find_python.sh
+source "$REPO_ROOT/scripts/lib/find_python.sh"
 VENDOR="${BENCH_VENDOR:-minimax}"
 
 # scale → worker count
@@ -173,6 +176,9 @@ for rj in sorted(results_dir.rglob("report.json")):
         "total_cases": s.get("total_cases", 0),
         "overall_accuracy": s.get("overall_accuracy", 0),
         "detection_accuracy": s.get("detection_accuracy", 0),
+        "detection_recall": s.get("detection_recall", 0),
+        "detection_f1": s.get("detection_f1", 0),
+        "detection_macro_f1": s.get("detection_macro_f1"),
         "device_localization_rate": s.get("device_localization_rate", s.get("device_accuracy", 0)),
         "fault_type_accuracy": s.get("fault_type_accuracy", 0),
         "interface_localization_rate": s.get("interface_localization_rate", 0),
@@ -206,17 +212,18 @@ with open(csv_path, "w", newline="") as f:
 
 # Print table
 print()
-print("=" * 120)
+print("=" * 129)
 print(f" Benchmark Summary — {len(reports)} runs")
-print("=" * 120)
-header = f"{'vendor':<10} {'model':<16} {'scale':<8} {'cases':>5} {'overall':>8} {'detect':>8} {'device':>8} {'fault':>8} {'intf':>8} {'score':>8} {'time':>7} {'tools':>6} {'in_tok':>8} {'out_tok':>8}"
+print("=" * 129)
+header = f"{'vendor':<10} {'model':<16} {'scale':<8} {'cases':>5} {'overall':>8} {'recall':>8} {'macro_f1':>9} {'device':>8} {'fault':>8} {'intf':>8} {'score':>8} {'time':>7} {'tools':>6} {'in_tok':>8} {'out_tok':>8}"
 print(header)
-print("-" * 120)
+print("-" * 129)
 for r in reports:
     print(f"{r['vendor']:<10} {r['model']:<16} {r['scale']:<8} "
           f"{r['total_cases']:>5} "
           f"{r['overall_accuracy']:>7.1%} "
-          f"{r['detection_accuracy']:>7.1%} "
+          f"{r['detection_recall']:>7.1%} "
+          f"{(r['detection_macro_f1'] or 0):>8.3f} "
             f"{r['device_localization_rate']:>7.1%} "
           f"{r['fault_type_accuracy']:>7.1%} "
           f"{r['interface_localization_rate']:>7.1%} "
@@ -225,7 +232,7 @@ for r in reports:
           f"{r['avg_tool_calls']:>5.1f} "
           f"{r['avg_input_tokens']:>8.0f} "
           f"{r['avg_output_tokens']:>8.0f}")
-print("-" * 120)
+print("-" * 129)
 
 # Per-vendor average
 for v in sorted(set(r["vendor"] for r in reports)):
@@ -235,11 +242,12 @@ for v in sorted(set(r["vendor"] for r in reports)):
         continue
     # Weighted average by total_cases
     def wavg(key):
-        return sum(r[key] * r["total_cases"] for r in vr) / n
+        return sum((r[key] or 0) * r["total_cases"] for r in vr) / n
     print(f"{'['+v+']':<10} {'AVERAGE':<16} {'all':<8} "
           f"{n:>5} "
           f"{wavg('overall_accuracy'):>7.1%} "
-          f"{wavg('detection_accuracy'):>7.1%} "
+          f"{wavg('detection_recall'):>7.1%} "
+          f"{wavg('detection_macro_f1'):>8.3f} "
             f"{wavg('device_localization_rate'):>7.1%} "
           f"{wavg('fault_type_accuracy'):>7.1%} "
           f"{wavg('interface_localization_rate'):>7.1%} "
@@ -248,7 +256,7 @@ for v in sorted(set(r["vendor"] for r in reports)):
           f"{wavg('avg_tool_calls'):>5.1f} "
           f"{wavg('avg_input_tokens'):>8.0f} "
           f"{wavg('avg_output_tokens'):>8.0f}")
-print("=" * 120)
+print("=" * 129)
 print(f"\nCSV saved to: {csv_path}")
 PYEOF
 

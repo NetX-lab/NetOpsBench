@@ -20,6 +20,11 @@ fi
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$BASE_DIR"
 
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# Override via NETOPSBENCH_PYTHON env var if needed.
+# shellcheck source=scripts/lib/find_python.sh
+source "$BASE_DIR/scripts/lib/find_python.sh"
+
 echo "=== NetOpsBench Deployment Start ==="
 echo "Topology scale: $TOPO_SCALE"
 echo "Topology directory: $TOPO_DIR"
@@ -49,7 +54,7 @@ TOPOLOGY_FILE="$ACTUAL_TOPO_DIR/${LAB_NAME}.clab.yaml"
 
 # [1/7] Generate topology for requested scale
 echo "[1/7] Generating topology (scale=$TOPO_SCALE) into: $ACTUAL_TOPO_DIR"
-python3 -c "
+$PYTHON -c "
 from netopsbench.platform.topology.generator import generate_topology
 result = generate_topology(
     '$TOPO_SCALE',
@@ -75,7 +80,7 @@ echo ""
 
 # [2.5/7] Apply SONiC configurations using fast parallel application
 echo "[2.5/7] Applying device configurations (SONiC)..."
-python3 -m netopsbench.platform.runtime.apply_configs "$ACTUAL_TOPO_DIR" "" "$LAB_NAME"
+$PYTHON -m netopsbench.platform.runtime.apply_configs "$ACTUAL_TOPO_DIR" "" "$LAB_NAME"
 echo ""
 
 # [3/7] Generate or verify topology metadata
@@ -84,7 +89,7 @@ METADATA_FILE="$ACTUAL_TOPO_DIR/topology.json"
 
 if [ ! -f "$METADATA_FILE" ]; then
     echo "  Topology metadata not found, generating from YAML..."
-    python3 -c "
+    $PYTHON -c "
 from netopsbench.platform.topology.metadata_generator import generate_metadata_file
 generate_metadata_file('$TOPOLOGY_FILE', '$METADATA_FILE')
 "
@@ -99,7 +104,7 @@ echo ""
 
 # [4/7] Generate Telegraf configuration
 echo "[4/7] Generating Telegraf configuration..."
-python3 -m netopsbench.platform.observability.telegraf "$METADATA_FILE"
+$PYTHON -m netopsbench.platform.observability.telegraf "$METADATA_FILE"
 echo ""
 
 # [5/7] Start observability stack
@@ -111,7 +116,7 @@ echo ""
 
 # Attach shared InfluxDB to the lab management network so lab containers can
 # resolve and reach it via the stable hostname "influxdb".
-MGMT_NETWORK_NAME=$(python3 - <<PY
+MGMT_NETWORK_NAME=$($PYTHON - <<PY
 import json
 with open("$METADATA_FILE") as f:
     topo = json.load(f)
@@ -133,7 +138,7 @@ echo ""
 
 # [7/7] Deploy Pingmesh agents
 echo "[7/7] Deploying Pingmesh agents..."
-python3 -m netopsbench.platform.pingmesh.deploy "$ACTUAL_TOPO_DIR/pinglist.json" "$ACTUAL_TOPO_DIR"
+$PYTHON -m netopsbench.platform.pingmesh.deploy "$ACTUAL_TOPO_DIR/pinglist.json" "$ACTUAL_TOPO_DIR"
 sleep 5
 echo ""
 

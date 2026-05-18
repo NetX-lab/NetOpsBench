@@ -17,6 +17,50 @@ Each benchmark case pairs a generated scenario with ground truth:
 
 The agent returns a `DiagnosisResult` containing a verdict, location, confidence, evidence, reasoning, and optional metadata such as tool calls or token usage.
 
+## Benchmark test suite
+
+### Topology scales
+
+All topologies use a spine-leaf fabric running SONiC-VS switches. Scale increases both the number of network devices and the density of clients, making diagnosis progressively harder as the fault signal is diluted across a larger Pingmesh matrix.
+
+| Scale | Spines | Leafs | Clients | Network devices |
+|---|---:|---:|---:|---:|
+| XS | 2 | 2 | 2 | 4 |
+| Small | 2 | 4 | 8 | 6 |
+| Medium | 4 | 8 | 16 | 12 |
+| Large | 4 | 16 | 64 | 20 |
+
+"Network devices" counts switches only. Clients are Linux containers attached to leaf switches and act as Pingmesh endpoints.
+
+### Fault coverage
+
+The benchmark covers twelve canonical fault types across five categories. Each type corresponds to a distinct failure mode that an operations agent may encounter in a real DCN.
+
+| Category | Fault types | Difficulty |
+|---|---|---|
+| Link | `link_down`, `link_flapping` | easy – hard |
+| Routing | `blackhole_route`, `static_route_misconfig`, `bgp_neighbor_misconfig`, `route_policy_misconfig` | medium – hard |
+| Impairment | `mtu_mismatch`, `packet_loss`, `packet_corruption`, `high_latency` | medium – hard |
+| System | `device_down` | easy |
+| ACL | `acl_misconfig` | hard |
+
+All twelve fault types appear in every topology scale. Each scenario instance is placed on a randomly selected device that matches the fault template's role constraint (spine, leaf, or client-facing interface).
+
+### Scenario breakdown
+
+Each scale combines fault scenarios with a set of healthy negative samples. Healthy cases exercise false-positive control: the network is operating normally and the correct answer is `network_healthy`.
+
+| Scale | Fault cases | Healthy cases | Total |
+|---|---:|---:|---:|
+| XS | 12 | 2 | 14 |
+| Small | 12 | 3 | 15 |
+| Medium | 24 | 4 | 28 |
+| Large | 48 | 4 | 52 |
+
+### Scenario generation
+
+Scenarios are defined in `scenarios/specs/fault_campaign.yaml`, which specifies a `count_per_scale` entry for each fault template. Running `netopsbench benchmark prepare --scales <scale>` materialises that spec into individual YAML scenario files under `scenarios/generated/<scale>/`. The generator picks a qualifying device and interface at random for each instance, so every preparation pass produces a structurally identical but topologically varied set.
+
 ## Core scoring dimensions
 
 | Dimension | Meaning |
@@ -36,7 +80,7 @@ Fault-case score is verdict-gated. If the agent misses the fault verdict, locali
 When an interface is applicable, NetOpsBench uses a localization-first score:
 
 ```text
-score = 0.6 * device_correct + 0.4 * interface_correct
+score = 0.5 * device_correct + 0.5 * interface_correct
 ```
 
 When interface ground truth is unavailable, device localization receives the full score.

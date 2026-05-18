@@ -1,12 +1,12 @@
 # NetOpsBench
 
 <p align="center">
-  <strong>The first closed-loop benchmark for agentic DCN troubleshooting.</strong>
+  <strong>An Interactive Arena for AI Infrastructure Diagnosis</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/netx-lab/NetOpsBench/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/netx-lab/NetOpsBench/actions/workflows/test.yml/badge.svg"></a>
-  <a href="https://github.com/netx-lab/NetOpsBench/actions/workflows/docs-pages.yml"><img alt="Docs" src="https://github.com/netx-lab/NetOpsBench/actions/workflows/docs-pages.yml/badge.svg"></a>
+  <a href="https://github.com/NetX-lab/NetOpsBench/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/NetX-lab/NetOpsBench/actions/workflows/test.yml/badge.svg"></a>
+  <a href="https://github.com/NetX-lab/NetOpsBench/actions/workflows/docs-pages.yml"><img alt="Docs" src="https://github.com/NetX-lab/NetOpsBench/actions/workflows/docs-pages.yml/badge.svg"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
@@ -27,7 +27,7 @@
   - Complete benchmark documentation and methodology
   - Cross-model evaluation results and scoring framework
 
-NetOpsBench evaluates RCA agents inside a real reproducible data-center network loop: build a SONiC-VS / Containerlab fabric, inject a controlled fault, observe Pingmesh and telemetry symptoms, call an agent, and score the diagnosis against ground truth.
+NetOpsBench evaluates agentic RCA inside a real reproducible data-center network loop: build a SONiC-VS / Containerlab fabric, inject a controlled fault, observe Pingmesh and telemetry symptoms, call an agent, and score the diagnosis against ground truth.
 
 It is built for researchers and engineers who want to compare LLM-backed, symbolic, heuristic, or hybrid troubleshooting strategies on the same operational benchmark, not just on static logs or hand-written prompts.
 
@@ -38,7 +38,7 @@ It is built for researchers and engineers who want to compare LLM-backed, symbol
 | Capability | What NetOpsBench gives you |
 |---|---|
 | Run the network, not just logs | Faults execute against live SONiC/Containerlab topologies with traffic and observability. |
-| Bring any RCA agent | Pass a Python object with `diagnose(context)` into the public SDK. |
+| Bring any agentic strategy | Pass a Python object with `diagnose(context)` into the public SDK. |
 | Score localization, not only detection | Measure fault type, device, interface, runtime, tool calls, and token cost. |
 | Scale with isolated worker pools | Run suites across independent labs and merge results into one `BenchmarkReport`. |
 
@@ -47,7 +47,7 @@ It is built for researchers and engineers who want to compare LLM-backed, symbol
 NetOpsBench runtime execution requires Linux because Containerlab depends on Linux networking primitives.
 
 ```bash
-git clone https://github.com/netx-lab/NetOpsBench.git
+git clone https://github.com/NetX-lab/NetOpsBench.git
 cd NetOpsBench
 
 python -m venv .venv
@@ -106,3 +106,16 @@ Contributions are welcome for benchmark scenarios, fault types, SDK ergonomics, 
 ## License
 
 NetOpsBench is released under the MIT License. See [LICENSE](LICENSE).
+
+## Citation
+
+If you use NetOpsBench in your research, please cite:
+
+```bibtex
+@software{netopsbench2026,
+  author  = {Yang, Yitao and Xu, Hong},
+  title   = {{NetOpsBench}: An Interactive Arena for Agentic RCA in AI infrastructure},
+  year    = {2026},
+  url     = {https://github.com/netx-lab/NetOpsBench},
+}
+```

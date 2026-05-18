@@ -21,23 +21,24 @@ They do not replace your own benchmark run. Provider defaults, model versions, p
 
 | Dimension | Values |
 |---|---|
-| Models | Kimi, DeepSeek, OpenAI, MiniMax |
-| Topology scales | XS (14 scenarios), Small (15), Medium (28), Large (52) |
+| Models | Kimi K2.6, MiniMax M2.7, DeepSeek V4 Pro, OpenAI GPT-5.4 |
+| Topology scales | XS → Large (4 scales, 14 – 52 scenarios each) |
+| Fault types | 12 canonical types across link, routing, impairment, system, and ACL categories |
 | Quality metrics | Detection rate, device localization, interface localization, composite score |
 | Efficiency metrics | Diagnosis time, tool calls, input/output tokens |
 
-For metric definitions, see [Benchmark Methodology](/docs/benchmark/methodology).
+For topology dimensions, fault type details, and scenario counts, see [Benchmark Methodology — Test suite](/docs/benchmark/methodology#benchmark-test-suite). For metric definitions, see [Benchmark Methodology — Scoring](/docs/benchmark/methodology#core-scoring-dimensions).
 
 ## Cross-scale snapshot
 
 Read each cell as `XS -> Large`. Large absolute values are the strongest signal for deployment readiness.
 
-| Vendor | Detection (%) | Device Loc (%) | Interface Loc (%) | Composite (%) | Avg Time (s) | Avg Tools | Input Tokens (K) |
+| Model | Detection (%) | Device Loc (%) | Interface Loc (%) | Composite (%) | Avg Time (s) | Avg Tools | Input Tokens (K) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Kimi | 85.7 -> 61.5 | 83.3 -> 33.3 | 28.6 -> 14.3 | 77.1 -> 34.2 | 103.3 -> 224.3 | 22.6 -> 33.0 | 164.1 -> 517.0 |
-| DeepSeek | 100.0 -> 80.8 | 58.3 -> 37.5 | 85.7 -> 14.3 | 70.0 -> 30.0 | 161.5 -> 162.6 | 21.2 -> 16.7 | 153.7 -> 261.0 |
-| OpenAI | 100.0 -> 80.8 | 33.3 -> 45.8 | 42.9 -> 0.0 | 48.6 -> 32.3 | 97.0 -> 48.6 | 14.5 -> 12.4 | 105.1 -> 194.4 |
-| MiniMax | 25.0 -> 93.8 | 16.7 -> 31.2 | 14.3 -> 0.0 | 13.3 -> 23.8 | 68.1 -> 104.3 | 12.0 -> 13.9 | 87.0 -> 217.9 |
+| Kimi K2.6 | 85.7 -> 61.5 | 83.3 -> 33.3 | 28.6 -> 14.3 | 77.1 -> 34.2 | 103.3 -> 224.3 | 22.6 -> 33.0 | 164.1 -> 517.0 |
+| DeepSeek V4 Pro | 100.0 -> 80.8 | 58.3 -> 37.5 | 85.7 -> 14.3 | 70.0 -> 30.0 | 161.5 -> 162.6 | 21.2 -> 16.7 | 153.7 -> 261.0 |
+| OpenAI GPT-5.4 | 100.0 -> 80.8 | 33.3 -> 45.8 | 42.9 -> 0.0 | 48.6 -> 32.3 | 97.0 -> 48.6 | 14.5 -> 12.4 | 105.1 -> 194.4 |
+| MiniMax M2.7 | 25.0 -> 93.8 | 16.7 -> 31.2 | 14.3 -> 0.0 | 13.3 -> 23.8 | 68.1 -> 104.3 | 12.0 -> 13.9 | 87.0 -> 217.9 |
 
 ## Quality funnel: detection, device, interface
 
@@ -47,25 +48,25 @@ Diagnosis quality is a funnel. An agent must detect the fault, then localize it 
 
 ![Detection accuracy](/assets/benchmark/fig_detection.png)
 
-Most models maintain high detection. OpenAI and DeepSeek hold 100% from XS through Medium and stay near 80% on Large. MiniMax climbs from 25% on XS to 94% on Large. Detection is a starting point, not a final RCA outcome.
+Most models maintain high detection. OpenAI GPT-5.4 and DeepSeek V4 Pro hold 100% from XS through Medium and stay near 80% on Large. MiniMax M2.7 climbs from 25% on XS to 94% on Large. Detection is a starting point, not a final RCA outcome.
 
 ### Device localization
 
 ![Device localization](/assets/benchmark/fig_device_loc.png)
 
-Device localization is the first real bottleneck. Kimi reaches 91.7% on Small but drops to 33.3% on Large. DeepSeek peaks at 95.8% on Medium then falls to 37.5%. OpenAI is the strongest on Large at 45.8%, still below a production-grade RCA target.
+Device localization is the first real bottleneck. Kimi K2.6 reaches 91.7% on Small but drops to 33.3% on Large. DeepSeek V4 Pro peaks at 95.8% on Medium then falls to 37.5%. OpenAI GPT-5.4 is the strongest on Large at 45.8%, still below a production-grade RCA target.
 
 ### Interface localization
 
 ![Interface localization](/assets/benchmark/fig_intf_loc.png)
 
-Interface precision is the weakest dimension. On Large, OpenAI and MiniMax fall to 0%; Kimi and DeepSeek reach only 14.3%. Many real fixes are interface-scoped, so this gap is the main barrier to operational automation.
+Interface precision is the weakest dimension. On Large, OpenAI GPT-5.4 and MiniMax M2.7 fall to 0%; Kimi K2.6 and DeepSeek V4 Pro reach only 14.3%. Many real fixes are interface-scoped, so this gap is the main barrier to operational automation.
 
 ### Composite score
 
 ![Composite score](/assets/benchmark/fig_avg_score.png)
 
-The composite summarizes localization quality. All four models drop sharply at Large (Kimi 34.2, DeepSeek 30.0, OpenAI 32.3, MiniMax 23.8), confirming that current agents perform well on small topologies but lose actionable precision at scale.
+The composite summarizes localization quality. All four models drop sharply at Large (Kimi K2.6 34.2, DeepSeek V4 Pro 30.0, OpenAI GPT-5.4 32.3, MiniMax M2.7 23.8), confirming that current agents perform well on small topologies but lose actionable precision at scale.
 
 ## Cost: time, tools, tokens
 
@@ -73,16 +74,16 @@ More time, tool calls, or tokens do not reliably translate into better localizat
 
 ![Average diagnosis time](/assets/benchmark/fig_avg_time.png)
 
-OpenAI is the fastest on Large at 48.6 s/case; Kimi is the slowest at 224.3 s. DeepSeek is roughly flat from XS to Large.
+OpenAI GPT-5.4 is the fastest on Large at 48.6 s/case; Kimi K2.6 is the slowest at 224.3 s. DeepSeek V4 Pro is roughly flat from XS to Large.
 
 ![Tool calls](/assets/benchmark/fig_tool_calls.png)
 
-Kimi grows to 33 calls/case at Large; OpenAI stays at 12.4. Heavier tool use does not buy stronger interface localization.
+Kimi K2.6 grows to 33 calls/case at Large; OpenAI GPT-5.4 stays at 12.4. Heavier tool use does not buy stronger interface localization.
 
 ![Input tokens](/assets/benchmark/fig_input_tokens.png)
 ![Output tokens](/assets/benchmark/fig_output_tokens.png)
 
-Kimi spends the most tokens (517K input / 8K output per case at Large); OpenAI the least (194K / 3K). Cost should always be evaluated against device and interface localization, not against detection alone.
+Kimi K2.6 spends the most tokens (517K input / 8K output per case at Large); OpenAI GPT-5.4 the least (194K / 3K). Cost should always be evaluated against device and interface localization, not against detection alone.
 
 ## Model fit summary
 
@@ -90,10 +91,10 @@ The best choice depends on whether the priority is localization quality, fast tr
 
 | Model | Strongest signal | Main risk | Best fit |
 |---|---|---|---|
-| Kimi | Strong Small-scale composite, early device localization | Large quality drops while time and token cost rise sharply | Deep-diagnosis runs with generous reasoning budget |
-| DeepSeek | Balanced quality on XS, Small, Medium | Large localization still degrades materially | Quality-oriented RCA evaluation |
-| OpenAI | Fast, low tool calls, strong detection | Interface localization collapses at Large | Fast triage, latency-sensitive flows |
-| MiniMax | Lower runtime/token footprint, improving detection | Lower absolute localization at Large | Budget-sensitive baselines and broad triage |
+| Kimi K2.6 | Strong Small-scale composite, early device localization | Large quality drops while time and token cost rise sharply | Deep-diagnosis runs with generous reasoning budget |
+| DeepSeek V4 Pro | Balanced quality on XS, Small, Medium | Large localization still degrades materially | Quality-oriented RCA evaluation |
+| OpenAI GPT-5.4 | Fast, low tool calls, strong detection | Interface localization collapses at Large | Fast triage, latency-sensitive flows |
+| MiniMax M2.7 | Lower runtime/token footprint, improving detection | Lower absolute localization at Large | Budget-sensitive baselines and broad triage |
 
 ## How to read these results
 

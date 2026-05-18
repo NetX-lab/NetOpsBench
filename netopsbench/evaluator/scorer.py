@@ -15,10 +15,10 @@ from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, canonicalize_
 from netopsbench.platform.utils.interface_names import normalize_interface_name
 
 # Composite localization score weighting (used for sorting/ranking only).
-# device contributes 60%, interface contributes 40%; both scores are still
+# device contributes 50%, interface contributes 50%; both scores are still
 # reported separately as the primary tier-1 KPIs.
-DEVICE_LOCALIZATION_WEIGHT: float = 0.6
-INTERFACE_LOCALIZATION_WEIGHT: float = 0.4
+DEVICE_LOCALIZATION_WEIGHT: float = 0.5
+INTERFACE_LOCALIZATION_WEIGHT: float = 0.5
 
 
 @dataclass
@@ -382,6 +382,32 @@ class Evaluator:
         false_positive_rate = round(false_positives / len(negative_cases), 3) if negative_cases else None
         false_negative_rate = round(false_negatives / len(positive_cases), 3) if positive_cases else None
 
+        # Detection F1 — binary classification: fault_detected vs. not.
+        # FP counts any negative case where the agent failed to say network_healthy
+        # (includes inconclusive), consistent with false_positives above.
+        # FN counts any positive case where the agent failed to say fault_detected.
+        _tp_det = sum(1 for r in positive_cases if r.correct_verdict)
+        _fn_det = positive_total - _tp_det
+        _fp_det = false_positives
+        _tn_det = len(negative_cases) - _fp_det
+        detection_precision = round(_tp_det / (_tp_det + _fp_det), 3) if (_tp_det + _fp_det) > 0 else 0.0
+        detection_recall = round(_tp_det / (_tp_det + _fn_det), 3) if (_tp_det + _fn_det) > 0 else 0.0
+        _f1_pos = (
+            2 * detection_precision * detection_recall / (detection_precision + detection_recall)
+            if (detection_precision + detection_recall) > 0
+            else 0.0
+        )
+        detection_f1 = round(_f1_pos, 3)
+        # Macro-F1: average of positive-class F1 and negative-class F1.
+        # Only meaningful when negative cases exist; None otherwise.
+        if negative_cases:
+            _prec_neg = _tn_det / (_tn_det + _fn_det) if (_tn_det + _fn_det) > 0 else 0.0
+            _rec_neg = _tn_det / (_tn_det + _fp_det) if (_tn_det + _fp_det) > 0 else 0.0
+            _f1_neg = 2 * _prec_neg * _rec_neg / (_prec_neg + _rec_neg) if (_prec_neg + _rec_neg) > 0 else 0.0
+            detection_macro_f1: float | None = round((_f1_pos + _f1_neg) / 2, 3)
+        else:
+            detection_macro_f1 = None
+
         report = {
             "benchmark_id": f"netopsbench-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             "timestamp": datetime.now().isoformat(),
@@ -396,6 +422,11 @@ class Evaluator:
                 # End-to-end testcase accuracy across healthy and faulty cases.
                 "overall_accuracy": overall_accuracy,
                 "detection_accuracy": detection_accuracy,
+                # Detection F1 metrics (binary: fault_detected vs. not).
+                "detection_precision": detection_precision,
+                "detection_recall": detection_recall,
+                "detection_f1": detection_f1,
+                "detection_macro_f1": detection_macro_f1,
                 # Tier-1 primary KPI.
                 "localization_success_rate": localization_success_rate,
                 "device_localization_rate": localization_success_rate,

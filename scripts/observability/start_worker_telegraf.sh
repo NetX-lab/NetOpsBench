@@ -15,13 +15,17 @@ fi
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$BASE_DIR"
 
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# shellcheck source=scripts/lib/find_python.sh
+source "$BASE_DIR/scripts/lib/find_python.sh"
+
 METADATA_FILE="$TOPOLOGY_DIR/topology.json"
 if [ ! -f "$METADATA_FILE" ]; then
     echo "ERROR: topology metadata not found: $METADATA_FILE" >&2
     exit 1
 fi
 
-readarray -t WORKER_META < <(python3 - <<PY
+readarray -t WORKER_META < <($PYTHON - <<PY
 import json
 with open("$METADATA_FILE") as f:
     topo = json.load(f)
@@ -44,7 +48,7 @@ if [ -z "$COLLECTOR_IP" ]; then
     exit 1
 fi
 
-python3 -m netopsbench.platform.observability.telegraf \
+$PYTHON -m netopsbench.platform.observability.telegraf \
     "$METADATA_FILE" \
     --output "$CONFIG_PATH" \
     --influxdb-url "${NETOPSBENCH_TELEGRAF_INFLUXDB_URL:-http://influxdb:8086}" \

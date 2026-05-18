@@ -17,6 +17,10 @@ fi
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$BASE_DIR"
 
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# shellcheck source=scripts/lib/find_python.sh
+source "$BASE_DIR/scripts/lib/find_python.sh"
+
 echo "=== NetOpsBench Teardown Start ==="
 echo "Topology directory: $TOPO_DIR"
 echo ""
@@ -60,7 +64,7 @@ if [ -n "$TOPOLOGY_FILE" ] && [ -f "$TOPOLOGY_FILE" ]; then
 
     METADATA_FILE="$TOPO_DIR/topology.json"
     if [ -f "$METADATA_FILE" ]; then
-        MGMT_NETWORK="$(python3 -c 'import json, sys; topo = json.load(open(sys.argv[1])); print((topo.get("management", {}) or {}).get("network", ""))' "$METADATA_FILE")"
+        MGMT_NETWORK="$($PYTHON -c 'import json, sys; topo = json.load(open(sys.argv[1])); print((topo.get("management", {}) or {}).get("network", ""))' "$METADATA_FILE")"
     fi
     TELEGRAF_CONTAINER="telegraf-${LAB_NAME}"
     "${SUDO[@]}" docker rm -f "$TELEGRAF_CONTAINER" >/dev/null 2>&1 || true

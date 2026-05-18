@@ -5,7 +5,7 @@ Thanks for helping improve NetOpsBench. This project is an early-stage DCN troub
 ## Development Setup
 
 ```bash
-git clone https://github.com/netx-lab/NetOpsBench.git
+git clone https://github.com/NetX-lab/NetOpsBench.git
 cd NetOpsBench
 python -m venv .venv
 source .venv/bin/activate

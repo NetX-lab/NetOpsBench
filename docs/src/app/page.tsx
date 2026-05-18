@@ -12,100 +12,114 @@ import { withBasePath } from '@/lib/base-path';
 const metrics = [
   {
     value: null,
-    tag: 'Fault Injection',
-    label: 'Controlled Fault Injection',
-    sub: '5 families · 12 built-in types · link / routing / impairment / ACL / system',
+    tag: 'Reproducible',
+    label: 'Replayable Faults',
+    sub: 'Controlled episodes with scenario ground truth',
   },
   {
     value: null,
-    tag: 'Full-Stack',
-    label: 'Observability Coverage',
-    sub: 'Pingmesh · BGP · syslog · Telegraf · Grafana',
+    tag: 'Interactive',
+    label: 'Live Environment',
+    sub: 'Agents operate against runtime state, not static logs',
+  },
+  {
+    value: null,
+    tag: 'Signals',
+    label: 'Telemetry & Probing',
+    sub: 'Pingmesh · BGP · syslog · counters · Grafana',
   },
   {
     value: null,
     tag: 'Open SDK',
-    label: 'Extensible Platform',
-    sub: 'Stable API for custom agents, faults & evaluators',
+    label: 'Extensible Arena',
+    sub: 'Custom agents, faults, evaluators, and reports',
   },
 ];
 
 const features = [
   {
     icon: Network,
-    tag: 'Localization',
-    title: 'Alert-Driven Fault Localization',
+    tag: 'Realism',
+    title: 'Environment Realism',
     description:
-      'Diagnosis starts from end-to-end alert symptoms, then localizes candidate fault domains to concrete devices and interfaces instead of only producing coarse verdicts.',
+      'Runs SONiC-VS / Containerlab network state so agents diagnose symptoms produced by an operating test environment.',
   },
   {
     icon: Boxes,
-    tag: 'Runtime',
-    title: 'Observability Designed into Runtime',
+    tag: 'Signals',
+    title: 'Signal Coverage',
     description:
-      'Each run wires Telegraf, InfluxDB, Grafana, Pingmesh, syslog, and BGP collection so diagnosis is grounded in real signals rather than synthetic hints.',
+      'Each run exposes active probing and telemetry such as Pingmesh, BGP, syslog, interface counters, InfluxDB, and Grafana evidence.',
   },
   {
     icon: ChartColumnBig,
-    tag: 'Reasoning',
-    title: 'Symptom-to-Judgment Agent Workflow',
+    tag: 'Interaction',
+    title: 'Agent Interactivity',
     description:
-      'The benchmark loop preserves the full troubleshooting path from observed symptoms to final verdict, making agent reasoning behavior inspectable and testable.',
+      'Agents can use tools and runtime context to validate hypotheses before returning structured findings, rather than answering from a frozen prompt.',
   },
   {
     icon: ShieldCheck,
-    tag: 'Scoring',
-    title: 'Operations-Aligned Scoring',
+    tag: 'Open SDK',
+    title: 'Open Extensibility',
     description:
-      'Scoring tracks detection, localization, runtime, tool-use, and token efficiency to better reflect practical troubleshooting value in production operations.',
+      'The SDK supports custom agents, fault packs, evaluators, and reporting flows, so benchmark components can be replaced or extended.',
   },
 ];
 
 const pipelineStages = [
   {
     stage: 'Stage 1',
-    title: 'Pingmesh Detects Path Symptoms',
+    title: 'Stage a Live Arena',
     description:
-      'End-to-end active probes capture RTT/loss degradation and surface path-level symptoms across racks.',
+      'NetOpsBench starts SONiC-VS switches in Containerlab, generates traffic, and injects controlled infrastructure faults.',
   },
   {
     stage: 'Stage 2',
-    title: 'Alert Frames Suspected Scope',
+    title: 'Expose Signals through Telemetry and Probing',
     description:
-      'Alert evidence defines likely fault scope and narrows diagnosis search space before deep tool calls.',
+      'Active probes and observability streams surface latency, loss, routes, counters, logs, and topology evidence.',
   },
   {
     stage: 'Stage 3',
-    title: 'Agent Correlates Multi-Source Signals',
+    title: 'Let Agents Interact with Evidence',
     description:
-      'The agent reasons over Pingmesh, BGP, syslog, and interface telemetry to form a localized hypothesis.',
+      'An RCA agent can inspect context, call tools, and correlate signals before producing a diagnosis result.',
   },
   {
     stage: 'Stage 4',
-    title: 'Benchmark Scores Localization Quality',
+    title: 'Score and Compare Runs',
     description:
-      'Detection and localization outputs are scored against ground truth to quantify practical troubleshooting value.',
+      'The benchmark scores detection, localization, runtime, tool use, and token cost against repeatable ground truth.',
   },
+];
+
+const heroKeywords = [
+  'Reproducible',
+  'Interactive Arena',
+  'Open SDK',
+  'Extensible',
+  'Telemetry Signals',
 ];
 
 const motivationCards = [
   {
-    tag: 'Env-Grounded Eval',
-    title: 'Static Eval Is Insufficient',
+    tag: 'Environment Feedback',
+    title: 'Static datasets miss environment feedback',
     description:
-      'Agents must interact with live network state to verify hypotheses — static eval is insufficient.',
+      'Infrastructure agents need to validate hypotheses against changing runtime state, telemetry, and tool observations.',
   },
   {
-    tag: 'Non-Reproducible Faults',
-    title: 'No Controlled Baseline Exists',
+    tag: 'Fair Replay',
+    title: 'Incidents are hard to replay fairly',
     description:
-      'Real DCN incidents occur once and cannot be re-staged — no controlled baseline exists.',
+      'Production incidents rarely provide a controlled baseline for comparing agents, prompts, tools, and scoring policies.',
   },
   {
-    tag: 'Long Dev Cycles',
-    title: 'Trial-and-Error Costs Mount',
+    tag: 'Open Iteration',
+    title: 'Closed benchmarks limit iteration',
     description:
-      'Without a replayable testbed, comparing strategies is slow — trial-and-error costs mount.',
+      'Researchers need open extension points for agents, faults, evaluators, and future infrastructure domains.',
   },
 ];
 
@@ -134,21 +148,28 @@ const benchmarkCards = [
 
 export default function HomePage() {
   return (
-    <main>
+    <main className={styles.homeRoot}>
       <section className={styles.hero}>
         <div className={styles.heroBg} />
         <div className={styles.heroContent}>
           <div className={styles.badge}>
             <span className={styles.badgeDot} />
-            Open Source Benchmark Infrastructure
+            Network-first · SDK-extensible · AI infrastructure arena
           </div>
           <h1 className={styles.heroTitle}>
-            NetOpsBench for{' '}
-            <span className={styles.heroGradient}>Agentic Network Fault Diagnosis</span>
+            NetOpsBench:{' '}
+            <span className={styles.heroGradient}>An Interactive Arena for Agentic RCA in AI infrastructure</span>
           </h1>
           <p className={styles.heroSubtitle}>
-            A production-grade benchmark infrastructure for data-center troubleshooting. NetOpsBench orchestrates a closed-loop evaluation: injecting topology faults, triggering Pingmesh-driven active alerts, and enforcing evidence-based scoring to quantify agentic localization capabilities.
+            NetOpsBench provides a reproducible arena where agents diagnose live data-center network faults through telemetry, probing, tool interaction, and localization-first scoring.
           </p>
+          <div className={styles.heroKeywords}>
+            {heroKeywords.map((keyword) => (
+              <span key={keyword} className={styles.heroKeyword}>
+                {keyword}
+              </span>
+            ))}
+          </div>
           <div className={styles.heroCta}>
             <Link href="/docs" className={styles.ctaPrimary}>
               Read Documentation
@@ -161,11 +182,11 @@ export default function HomePage() {
             </a>
           </div>
           <div className={styles.heroMeta}>
-            <span>SONiC-VS</span>
+            <span>Network-first DCN arena</span>
             <span>•</span>
-            <span>Containerlab</span>
+            <span>SONiC-VS + Containerlab</span>
             <span>•</span>
-            <span>Pingmesh alert-driven localization</span>
+            <span>Extensible toward broader AI infrastructure</span>
           </div>
         </div>
       </section>
@@ -186,40 +207,13 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className={`${styles.section} ${styles.sectionAlt} ${styles.pipelineSection}`}>
-        <div className={styles.sectionInner}>
-          <div className={styles.sectionLabel}>Alert-Driven Localization Pipeline</div>
-          <h2 className={styles.sectionTitle}>Diagnosis starts from Pingmesh end-to-end symptoms</h2>
-          <p className={styles.sectionDesc}>
-            NetOpsBench enforces a mechanism-first workflow: Pingmesh active probes trigger diagnosis, prioritizing concrete fault domain localization over coarse verdicts to keep outcomes tied to operational evidence.
-          </p>
-          <div className={styles.pipelineGrid}>
-            {pipelineStages.map((stage) => (
-              <article key={stage.title} className={styles.pipelineCard}>
-                <div className={styles.pipelineStage}>{stage.stage}</div>
-                <h3 className={styles.pipelineTitle}>{stage.title}</h3>
-                <p className={styles.pipelineDesc}>{stage.description}</p>
-              </article>
-            ))}
-          </div>
-          <div className={styles.pipelineLinks}>
-            <Link href="/docs/operations/observability" className={styles.pipelinePrimaryLink}>
-              Pingmesh observability evidence
-            </Link>
-            <Link href="/docs/operations/deployment" className={styles.pipelineSecondaryLink}>
-              Pingmesh deployment path
-            </Link>
-          </div>
-        </div>
-      </section>
-
       <section className={styles.section}>
         <div className={styles.sectionInner}>
-          <div className={styles.sectionLabel}>Research-Industry Gap</div>
-          <h2 className={styles.sectionTitle}>Agentic RCA lacks production-grade evaluation</h2>
+          <div className={styles.sectionLabel}>Motivation</div>
+          <h2 className={styles.sectionTitle}>Network diagnosis agents need interactive evaluation</h2>
           <p className={styles.sectionDesc}>
             Despite Agentic RCA progress, 71% of large enterprises hesitate to fully automate
-            network operations [1]. Three structural barriers block principled evaluation:
+            network operations [1]. Network diagnosis needs repeatable arenas where agents can act on live signals, replay difficult faults, and compare scored outputs.
           </p>
           <div className={styles.motivationGrid}>
             {motivationCards.map((card) => (
@@ -233,8 +227,9 @@ export default function HomePage() {
           <div className={styles.propositionBox}>
             <p>
               <strong>NetOpsBench</strong> provides controlled, reproducible DCN fault environments
-              with <strong>localization-first scoring</strong> accounting for physical equivalences
-              — enabling principled, repeatable agent evaluation.
+              with telemetry, probing, tool interaction, and <strong> localization-first scoring</strong>.
+              Its <strong>open SDK</strong> defines extension points for custom agents, faults,
+              evaluators, and reports.
             </p>
           </div>
           <div className={styles.archImgWrap}>
@@ -247,12 +242,39 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section className={`${styles.section} ${styles.sectionAlt} ${styles.pipelineSection}`}>
+        <div className={styles.sectionInner}>
+          <div className={styles.sectionLabel}>Interactive Arena Loop</div>
+          <h2 className={styles.sectionTitle}>An arena needs environment, signals, actions, and scoring</h2>
+          <p className={styles.sectionDesc}>
+            NetOpsBench implements this loop first for data-center networks, while the SDK keeps the arena open for new agents, fault packs, evaluators, and reporting workflows.
+          </p>
+          <div className={styles.pipelineGrid}>
+            {pipelineStages.map((stage) => (
+              <article key={stage.title} className={styles.pipelineCard}>
+                <div className={styles.pipelineStage}>{stage.stage}</div>
+                <h3 className={styles.pipelineTitle}>{stage.title}</h3>
+                <p className={styles.pipelineDesc}>{stage.description}</p>
+              </article>
+            ))}
+          </div>
+          <div className={styles.pipelineLinks}>
+            <Link href="/docs/operations/observability" className={styles.pipelinePrimaryLink}>
+              Explore telemetry evidence
+            </Link>
+            <Link href="/docs/api/quickstart" className={styles.pipelineSecondaryLink}>
+              Use the Python SDK
+            </Link>
+          </div>
+        </div>
+      </section>
+
       <section className={`${styles.section} ${styles.sectionAlt} ${styles.evaluationSection}`}>
         <div className={styles.sectionInner}>
           <div className={styles.sectionLabel}>Evaluation Dimensions</div>
-          <h2 className={styles.sectionTitle}>Core dimensions for trustworthy diagnosis evaluation</h2>
+          <h2 className={styles.sectionTitle}>What each run measures</h2>
           <p className={styles.sectionDesc}>
-            NetOpsBench evaluates diagnosis quality through four complementary dimensions: fault localization rigor, runtime observability adequacy, symptom-to-judgment reasoning traceability, and operations-aligned scoring realism.
+            Each run checks whether an agent can use available signals, interact with evidence, and return structured findings that can be scored against ground truth.
           </p>
           <div className={styles.featuresGrid}>
             {features.map((feature) => {
@@ -275,9 +297,9 @@ export default function HomePage() {
       <section className={styles.section}>
         <div className={styles.sectionInner}>
           <div className={styles.sectionLabel}>Benchmark results</div>
-          <h2 className={styles.sectionTitle}>Quantitative evidence for diagnosis quality and efficiency</h2>
+          <h2 className={styles.sectionTitle}>DCN benchmark results for diagnosis quality and efficiency</h2>
           <p className={styles.sectionDesc}>
-            Published metrics quantify model performance across composite accuracy, detection rate, diagnosis latency, and tool-use efficiency, enabling horizontal comparison under a consistent runtime.
+            Published metrics report model performance on the current DCN benchmark across composite score, detection rate, diagnosis latency, and tool-use efficiency.
           </p>
           <div className={styles.benchmarkGrid}>
             {benchmarkCards.map((card) => (
@@ -358,16 +380,18 @@ export default function HomePage() {
         <div className={styles.sectionInner}>
           <h2 className={styles.ctaBannerTitle}>Build and evaluate diagnosis agents on a reproducible benchmark loop</h2>
           <p className={styles.ctaBannerDesc}>
-            Use NetOpsBench as a shared evaluation substrate for Agentic RCA research and
-            engineering. Compare methods with consistent scenarios, telemetry, and scoring.
+            Start with the DCN arena, build an agent against live telemetry, then extend the benchmark through the open SDK.
           </p>
           <div className={styles.heroCta}>
             <Link href="/docs" className={styles.ctaBannerBtn}>
-              Open docs
+              Start with the DCN arena
             </Link>
-            <a className={styles.ctaBannerBtn} href="https://github.com/NetX-lab/NetOpsBench">
-              View repository
-            </a>
+            <Link href="/docs/build-your-agent/custom-agents" className={styles.ctaBannerBtn}>
+              Build an agent
+            </Link>
+            <Link href="/docs/api/quickstart" className={styles.ctaBannerBtn}>
+              Extend with the SDK
+            </Link>
           </div>
           <p className={styles.citation}>
             [1] Broadcom, <i>2026 State of Network Operations Report</i>. Accessed May 2026.{' '}

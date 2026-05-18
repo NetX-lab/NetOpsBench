@@ -32,8 +32,8 @@ dependencies = [
 ]
 
 [project.urls]
-Source = "https://github.com/netx-lab/NetOpsBench"
-Issues = "https://github.com/netx-lab/NetOpsBench/issues"
+Source = "https://github.com/NetX-lab/NetOpsBench"
+Issues = "https://github.com/NetX-lab/NetOpsBench/issues"
 
 [project.scripts]
 netopsbench = "netopsbench.cli.main:main"

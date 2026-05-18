@@ -20,12 +20,10 @@ fi
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$BASE_DIR"
 
-# Prefer the repo venv (Python 3.11+) over any system/conda python3
-if [ -x "$BASE_DIR/.venv313/bin/python3" ]; then
-    PYTHON="$BASE_DIR/.venv313/bin/python3"
-else
-    PYTHON="python3"
-fi
+# Locate project Python interpreter (prefers repo venv, falls back to system python3).
+# Override via NETOPSBENCH_PYTHON env var if needed (e.g. for git worktrees).
+# shellcheck source=scripts/lib/find_python.sh
+source "$BASE_DIR/scripts/lib/find_python.sh"
 
 mkdir -p "$TOPOLOGY_DIR"
 
