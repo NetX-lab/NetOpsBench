@@ -30,7 +30,7 @@ Developing and evaluating agentic root cause analysis methods for network troubl
 |---|---|---|
 | **Vanishing faults** | Real network incidents resolve too fast to study or replay. Researchers can only chase snapshots after the fact. | Containerlab + SONiC-VS reproduce faults deterministically. Every run is an identical, repeatable episode. |
 | **Static data** | Existing datasets are frozen logs or hand-crafted prompts — no live telemetry, no interactive tool calls, no true cause-and-effect chain. | Agents operate inside a running network. Pingmesh, gNMI, sFlow, and syslog evidence is generated in real time during each episode. |
-| **No fair arena** | Different teams evaluate on different topologies, different faults, and different metrics. Comparisons are meaningless. | A shared scenario format, ground-truth labels, and a localization-first scorer make cross-agent and cross-model comparisons directly comparable. |
+| **No fair comparison** | Different teams evaluate on different topologies, different faults, and different metrics. Comparisons are meaningless. | A shared scenario format, ground-truth labels, and a localization-first scorer make cross-agent and cross-model comparisons directly comparable. |
 
 ## Overview
 
