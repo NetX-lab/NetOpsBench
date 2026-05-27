@@ -59,22 +59,22 @@ const pipelineStages = [
 
 const motivationCards = [
   {
-    tag: 'Fault Reproducibility',
-    title: 'Production faults vanish too fast to study',
-    description:
-      'Real incidents are usually resolved within minutes, leaving no stable ground for systematic comparison of troubleshooting strategies.',
-  },
-  {
-    tag: 'Static Datasets',
-    title: 'Log dumps cannot replace a live network',
-    description:
-      'Frozen topology snapshots and log files do not expose how an agent reasons against live Pingmesh, BGP, syslog, and interface evidence.',
-  },
-  {
     tag: 'Fair Evaluation',
-    title: 'Lack of fair comparison across different agents',
+    title: 'Lack of Fair Comparison Across Different Agents',
     description:
-      'Without a common environment, fault set, and scoring rule, agent-to-agent comparisons are not reproducible.',
+      'Varied network topologies, fault sets, observability tools and evaluation metrics hinder the comparison of agentic troubleshooting strategies across the research community.',
+  },
+  {
+    tag: 'Fault Reproducibility',
+    title: 'Lack of Reproducible Real-World Incidents',
+    description:
+      'Real network incidents cannot be reliably reproduced or labeled with consistent ground truth, slowing iterative improvement and evaluation of troubleshooting agents.',
+  },
+  {
+    tag: 'Interactive Environment',
+    title: 'Static Logs Cannot Support Agentic Troubleshooting',
+    description:
+      'Static topology snapshots and logs cannot provide live probing and telemetry signals required by agents for diagnostic work.',
   },
 ];
 

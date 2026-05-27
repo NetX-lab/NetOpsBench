@@ -30,6 +30,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className={`${sans.className} ${sans.variable} ${mono.variable} flex min-h-screen flex-col`}>
         <RootProvider search={{ options: { type: 'static', api: withBasePath('/api/search') } }}>
           {children}
+          <footer className="mt-auto border-t border-fd-border bg-fd-background px-6 py-4 text-center text-sm text-fd-muted-foreground">
+            © 2026 NetX Lab. Released under the{' '}
+            <a
+              className="font-medium text-fd-foreground underline underline-offset-4 hover:text-fd-primary"
+              href="https://github.com/NetX-lab/NetOpsBench/blob/main/LICENSE"
+            >
+              MIT License
+            </a>
+            .
+          </footer>
         </RootProvider>
       </body>
     </html>

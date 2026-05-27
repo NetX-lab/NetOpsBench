@@ -28,9 +28,12 @@ Developing and evaluating agentic root cause analysis methods for network troubl
 
 | Gap | The problem | How NetOpsBench closes it |
 |---|---|---|
-| **Vanishing faults** | Real network incidents resolve too fast to study or replay. Researchers can only chase snapshots after the fact. | Containerlab + SONiC-VS reproduce faults deterministically. Every run is an identical, repeatable episode. |
-| **Static data** | Existing datasets are frozen logs or hand-crafted prompts — no live telemetry, no interactive tool calls, no true cause-and-effect chain. | Agents operate inside a running network. Pingmesh, gNMI, sFlow, and syslog evidence is generated in real time during each episode. |
-| **No fair comparison** | Different teams evaluate on different topologies, different faults, and different metrics. Comparisons are meaningless. | A shared scenario format, ground-truth labels, and a localization-first scorer make cross-agent and cross-model comparisons directly comparable. |
+| **No fair comparison** | Varied network topologies, fault sets, observability tools, and evaluation metrics hinder the comparison of agentic troubleshooting strategies across the research community. | NetOpsBench unifies fault scenarios, observability access and scoring rules to support agent comparison on a shared benchmark. |
+| **Non-reproducible faults** | Real network incidents cannot be reliably reproduced or labeled with consistent ground truth, slowing iterative improvement and evaluation of troubleshooting agents. | Containerlab + SONiC-VS inject controlled, reproducible faults with stable labels, so every run is an identical, repeatable episode. |
+| **Interactive arena** | Static topology snapshots and logs cannot provide live probing and telemetry signals required by agents for diagnostic work. | NetOpsBench offers an interactive environment for agents to operate within live networks, capturing real-time Pingmesh data, gNMI telemetry and switch CLI evidence during every episode. |
+
+
+
 
 ## Overview
 
