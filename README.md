@@ -9,6 +9,7 @@
   <a href="https://github.com/NetX-lab/NetOpsBench/actions/workflows/docs-pages.yml"><img alt="Docs" src="https://github.com/NetX-lab/NetOpsBench/actions/workflows/docs-pages.yml/badge.svg"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://join.slack.com/t/netopsbench/shared_invite/zt-3zhhfangj-2U4dU_NSfCy1rcOM1dmuvQ"><img alt="Join Slack" src="https://img.shields.io/badge/Slack-Join%20Community-4A154B?logo=slack&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -109,6 +110,10 @@ Read [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx) f
 | Interpret benchmark scores | [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx) |
 | Debug observability or runtime state | [Operations](docs/content/docs/debug-operate/observability.mdx) |
 | Understand the benchmark loop | [System Overview](docs/content/docs/architecture/system-overview.mdx) |
+
+## Community
+
+Have questions, ideas, or benchmark results to discuss? Join the [NetOpsBench Slack](https://join.slack.com/t/netopsbench/shared_invite/zt-3zhhfangj-2U4dU_NSfCy1rcOM1dmuvQ) to connect with the community.
 
 ## Contributing
 
