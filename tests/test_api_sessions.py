@@ -327,9 +327,7 @@ def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypat
             context.trace.record_llm_request([{"role": "user", "content": "diagnose"}], run_id="llm-1")
             context.trace.record_llm_response(
                 SimpleNamespace(
-                    generations=[
-                        [SimpleNamespace(message=SimpleNamespace(type="ai", content="checking"))]
-                    ]
+                    generations=[[SimpleNamespace(message=SimpleNamespace(type="ai", content="checking"))]]
                 ),
                 run_id="llm-1",
             )

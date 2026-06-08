@@ -680,8 +680,15 @@ def _metrics_payload(
 ) -> dict[str, Any]:
     recorder_metrics = trace_recorder.metrics() if trace_recorder is not None else {}
     payload = {
-        "time_taken_seconds": float(diagnosis_payload.get("time_taken_seconds") or max(0.0, (ended_at - started_at).total_seconds())),
-        "tool_calls_count": len((trace_recorder.tool_calls() if trace_recorder is not None else []) or diagnosis_payload.get("tool_calls") or metadata.get("tool_calls") or []),
+        "time_taken_seconds": float(
+            diagnosis_payload.get("time_taken_seconds") or max(0.0, (ended_at - started_at).total_seconds())
+        ),
+        "tool_calls_count": len(
+            (trace_recorder.tool_calls() if trace_recorder is not None else [])
+            or diagnosis_payload.get("tool_calls")
+            or metadata.get("tool_calls")
+            or []
+        ),
     }
     for key in ("input_tokens", "output_tokens", "total_tokens", "llm_call_count"):
         if recorder_metrics.get(key):
@@ -745,7 +752,9 @@ def _steps_from_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
             "name": (item if isinstance(item, dict) else {"tool": str(item)}).get("tool")
             or (item if isinstance(item, dict) else {}).get("name")
             or "tool",
-            "args": (item if isinstance(item, dict) else {}).get("args") or (item if isinstance(item, dict) else {}).get("input") or {},
+            "args": (item if isinstance(item, dict) else {}).get("args")
+            or (item if isinstance(item, dict) else {}).get("input")
+            or {},
         }
         for index, item in enumerate(tool_calls, 1)
     ]
@@ -756,9 +765,7 @@ def _final_diagnosis_step(diagnosis_payload: dict[str, Any], *, ended_at: dateti
     verdict = final.get("verdict") or ("error" if final.get("error") else "unknown")
     fault_type = final.get("fault_type")
     location = final.get("location") if isinstance(final.get("location"), dict) else {}
-    location_text = ", ".join(
-        str(value) for value in (location or {}).values() if value not in (None, "")
-    )
+    location_text = ", ".join(str(value) for value in (location or {}).values() if value not in (None, ""))
     parts = [f"Final diagnosis: {verdict}"]
     if fault_type:
         parts.append(f"fault_type={fault_type}")
@@ -810,7 +817,9 @@ def _matching_result_row(result_rows: list[dict[str, Any]], index_row: dict[str,
         if row.get("trace_id") == trace_id:
             return row
     for row in result_rows:
-        if row.get("scenario_id") == index_row.get("scenario_id") and row.get("episode_id") == index_row.get("episode_id"):
+        if row.get("scenario_id") == index_row.get("scenario_id") and row.get("episode_id") == index_row.get(
+            "episode_id"
+        ):
             return row
     return None
 
@@ -863,7 +872,7 @@ def _run_times(run_path: Path, index_rows: list[dict[str, Any]]) -> dict[str, st
     report_path = run_path / "report.json"
     if report_path.exists():
         try:
-            summary = (json.loads(report_path.read_text(encoding="utf-8")).get("summary") or {})
+            summary = json.loads(report_path.read_text(encoding="utf-8")).get("summary") or {}
             if summary.get("started_at") and summary.get("completed_at"):
                 return {
                     "started_at": _normalise_iso_z(summary["started_at"]),
@@ -871,8 +880,8 @@ def _run_times(run_path: Path, index_rows: list[dict[str, Any]]) -> dict[str, st
                 }
         except Exception:
             pass
-    starts = [row.get("started_at") for row in index_rows if row.get("started_at")]
-    ends = [row.get("ended_at") for row in index_rows if row.get("ended_at")]
+    starts = [str(value) for row in index_rows if (value := row.get("started_at"))]
+    ends = [str(value) for row in index_rows if (value := row.get("ended_at"))]
     now = _isoformat(datetime.now(UTC))
     return {
         "started_at": _normalise_iso_z(min(starts) if starts else now),

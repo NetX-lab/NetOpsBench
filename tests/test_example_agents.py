@@ -251,7 +251,7 @@ def test_minimal_deepagent_parses_final_json_block(monkeypatch):
                 SimpleNamespace(
                     type="ai",
                     content=(
-                        '```json\n'
+                        "```json\n"
                         '{"verdict":"fault_detected","fault_type":"link_down",'
                         '"location":{"device":"leaf1","interface":"Ethernet8"}}\n'
                         "```"

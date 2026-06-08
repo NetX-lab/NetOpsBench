@@ -353,7 +353,7 @@ class SessionOrchestrator:
             except Exception as exc:
                 trace_recorder.record_error(stage="agent", error=exc)
                 ended_at = self._timestamp()
-                diagnosis_payload = {
+                diagnosis_payload: dict[str, Any] = {
                     "error": str(exc),
                     "success": False,
                     "time_taken_seconds": max(0.0, (ended_at - start_time).total_seconds()),

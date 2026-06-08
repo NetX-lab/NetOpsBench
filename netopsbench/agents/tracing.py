@@ -6,7 +6,7 @@ import json
 import threading
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from netopsbench.agents._trace_utils import jsonable as _jsonable
 
@@ -110,7 +110,9 @@ class AgentTraceRecorder:
                 del kwargs
                 recorder.record_llm_response(response, run_id=run_id, parent_run_id=parent_run_id)
 
-            def on_llm_error(self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kwargs: Any) -> None:
+            def on_llm_error(
+                self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kwargs: Any
+            ) -> None:
                 del kwargs
                 recorder.record_error(
                     stage="llm",
@@ -175,7 +177,9 @@ class AgentTraceRecorder:
             "provider": provider,
             "extra": {
                 "llm_request": {
-                    "messages": [_message_payload(message, index=index) for index, message in enumerate(messages or [], 1)]
+                    "messages": [
+                        _message_payload(message, index=index) for index, message in enumerate(messages or [], 1)
+                    ]
                 }
             },
         }
@@ -297,7 +301,9 @@ class AgentTraceRecorder:
             step["ended_at"] = _isoformat(datetime.now(UTC))
             step["duration_seconds"] = _duration_seconds(step.get("started_at"), step.get("ended_at"))
 
-    def record_error(self, *, stage: str, error: BaseException | str, run_id: Any = None, parent_run_id: Any = None) -> None:
+    def record_error(
+        self, *, stage: str, error: BaseException | str, run_id: Any = None, parent_run_id: Any = None
+    ) -> None:
         if not self.enabled:
             return
         call_id = str(run_id) if run_id else None
@@ -399,7 +405,11 @@ class TraceAwareLLMClient:
         )
         client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, **self.client_kwargs)
         try:
-            response = await client.chat.completions.create(model=self.model, messages=messages, **kwargs)
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=cast(Any, messages),
+                **kwargs,
+            )
         except Exception as exc:
             self.recorder.record_error(stage="llm", error=exc, run_id=run_id)
             raise

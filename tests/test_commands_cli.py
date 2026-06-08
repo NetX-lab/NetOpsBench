@@ -357,9 +357,7 @@ def test_cli_trace_view_exports_and_launches_harbor_viewer(tmp_path, monkeypatch
     assert "synced traces:" in out
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "55668"}
-    assert (
-        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json"
-    ).exists()
+    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
 
 
 def test_cli_trace_list_shows_trace_runs(tmp_path, monkeypatch, capsys):
@@ -406,12 +404,8 @@ def test_cli_trace_view_latest_uses_newest_trace_run(tmp_path, monkeypatch, caps
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (
-        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json"
-    ).exists()
-    assert (
-        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json"
-    ).exists()
+    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
 
 
 def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatch, capsys):
@@ -441,12 +435,8 @@ def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatc
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (
-        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json"
-    ).exists()
-    assert (
-        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json"
-    ).exists()
+    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
 
 
 def test_cli_benchmark_prepare_runs_topology_then_scenario_generation(tmp_path, monkeypatch, capsys):

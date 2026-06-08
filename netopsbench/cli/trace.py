@@ -15,7 +15,9 @@ def add_trace_subparser(subparsers: argparse._SubParsersAction) -> None:
     trace_parser = subparsers.add_parser("trace", help="Inspect and export agent runtime traces")
     trace_sub = trace_parser.add_subparsers(dest="trace_action", required=True)
     trace_list = trace_sub.add_parser("list", help="List runs with trace artifacts")
-    trace_list.add_argument("--limit", type=int, default=20, help="Maximum number of runs to show. Default: %(default)s.")
+    trace_list.add_argument(
+        "--limit", type=int, default=20, help="Maximum number of runs to show. Default: %(default)s."
+    )
     trace_export = trace_sub.add_parser("export", help="Export run traces as a Harbor jobs directory")
     trace_export.add_argument("run_id", help="Run id, for example run-20260605T124040Z")
     trace_export.add_argument("--output", required=True, help="Output Harbor jobs directory")

@@ -52,7 +52,9 @@ async def test_trace_aware_llm_client_records_private_messages(monkeypatch):
 def test_disabled_trace_recorder_preserves_api_without_collecting():
     recorder = AgentTraceRecorder.disabled()
     run_id = recorder.record_llm_request([{"role": "user", "content": "diagnose"}], model="gpt-test")
-    recorder.record_llm_response(SimpleNamespace(generations=[[SimpleNamespace(message=SimpleNamespace(content="ok"))]]), run_id=run_id)
+    recorder.record_llm_response(
+        SimpleNamespace(generations=[[SimpleNamespace(message=SimpleNamespace(content="ok"))]]), run_id=run_id
+    )
     recorder.record_tool_start(name="get_topology", args={"verbose": True}, run_id="tool-1")
     recorder.record_tool_end(output={"ok": True}, run_id="tool-1")
     recorder.record_error(stage="agent", error=RuntimeError("boom"))
@@ -66,7 +68,9 @@ def test_disabled_trace_recorder_preserves_api_without_collecting():
 
 def test_trace_recorder_preserves_tool_call_llm_response_payload():
     recorder = AgentTraceRecorder()
-    run_id = recorder.record_llm_request([{"role": "user", "content": "inspect topology"}], model="deepseek-v4-pro", provider="deepseek")
+    run_id = recorder.record_llm_request(
+        [{"role": "user", "content": "inspect topology"}], model="deepseek-v4-pro", provider="deepseek"
+    )
 
     recorder.record_llm_response(
         SimpleNamespace(
@@ -277,7 +281,13 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
         "episodes": [
             {
                 "episode": {"episode_id": "ep1"},
-                "diagnosis": {"trace": {"trace_id": trace_result.trace_id, "case_id": trace_result.case_id, "atif_path": trace_result.atif_path}},
+                "diagnosis": {
+                    "trace": {
+                        "trace_id": trace_result.trace_id,
+                        "case_id": trace_result.case_id,
+                        "atif_path": trace_result.atif_path,
+                    }
+                },
             }
         ]
     }
