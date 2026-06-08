@@ -16,7 +16,8 @@
   <a href="https://netx-lab.github.io/NetOpsBench/">Documentation</a> ·
   <a href="docs/content/docs/quickstart.mdx">Quickstart</a> ·
   <a href="docs/content/docs/build-your-agent/custom-agents.mdx">Build Your Agent</a> ·
-  <a href="docs/content/docs/run-benchmarks/results.mdx">Benchmark Results</a>
+  <a href="docs/content/docs/run-benchmarks/results.mdx">Benchmark Results</a> ·
+  <a href="https://huggingface.co/datasets/yyyyyt/netopsbench-trace">Agent Trace Dataset</a>
 </p>
 
 NetOpsBench is an open benchmark arena for agentic network troubleshooting — run reproducible fault scenarios on live SONiC-VS / Containerlab topologies, plug in any troubleshooting agent, and score it across quality and efficiency dimensions.
@@ -98,6 +99,8 @@ NetOpsBench reports detection, fault type, device/interface localization, runtim
 ![Composite benchmark score](docs/public/assets/benchmark/fig_avg_score.png)
 
 Read [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx) for scoring definitions and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for an example completed suite.
+
+Public agent trajectory artifacts are available in the [NetOpsBench Trace Dataset](https://huggingface.co/datasets/yyyyyt/netopsbench-trace), including Harbor/ATIF traces, run reports, and summary CSVs for reproducible analysis.
 
 ## Learn More
 
