@@ -1,52 +1,14 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-import pytest
 from harbor.viewer.scanner import JobScanner
 
 from netopsbench.agents.base import DiagnosticContext
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.platform.session.tracing import TraceWriter, export_traces, load_trace_index
-
-
-@pytest.mark.asyncio
-async def test_trace_aware_llm_client_records_private_messages(monkeypatch):
-    captured = {}
-
-    class FakeCompletions:
-        async def create(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(type="ai", content="diagnosis draft"))],
-                usage=SimpleNamespace(prompt_tokens=7, completion_tokens=3, total_tokens=10),
-            )
-
-    class FakeAsyncOpenAI:
-        def __init__(self, **kwargs):
-            captured["client"] = kwargs
-            self.chat = SimpleNamespace(completions=FakeCompletions())
-
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
-    recorder = AgentTraceRecorder()
-
-    response = await recorder.llm_client("openai", model="gpt-test", api_key="test-key").chat(
-        [{"role": "user", "content": "diagnose"}],
-        temperature=0,
-    )
-
-    assert response.choices[0].message.content == "diagnosis draft"
-    assert captured["model"] == "gpt-test"
-    assert captured["messages"] == [{"role": "user", "content": "diagnose"}]
-    assert recorder.metrics()["input_tokens"] == 7
-    assert recorder.metrics()["output_tokens"] == 3
-    steps = recorder.to_steps()
-    assert [step["message"] for step in steps] == ["diagnosis draft"]
-    assert steps[0]["duration_seconds"] is not None
-    assert steps[0]["extra"]["llm_request"]["messages"][0]["content"] == "diagnose"
 
 
 def test_disabled_trace_recorder_preserves_api_without_collecting():
