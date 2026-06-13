@@ -41,6 +41,7 @@ observability/telegraf.conf
 .venv*
 .coverage
 plot_*
+!scripts/plot_results.py
 
 # Fumadocs / Next.js site artifacts
 docs/node_modules/

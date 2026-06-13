@@ -53,7 +53,7 @@ Scenarios are generated from `scenarios/specs/fault_campaign.yaml`. Running `net
 
 | Dimension | Meaning |
 |---|---|
-| Detection accuracy | Whether the agent distinguishes faulted cases from healthy negative samples. |
+| Verdict quality | Whether the agent distinguishes faulted cases from healthy negative samples. The results page reports this as verdict F1-score. |
 | Device localization | Whether the predicted device matches ground truth or an accepted equivalent. |
 | Interface localization | Whether the predicted interface matches when interface-level ground truth exists. |
 | Fault type classification | Whether the predicted fault label matches the ground-truth type. |
@@ -92,7 +92,8 @@ The judge affects only fault-type classification. Verdict, device localization, 
 
 | Metric | Interpretation |
 |---|---|
-| `detection_accuracy` | Fault/healthy verdict quality. |
+| `detection_accuracy` | Fault/healthy verdict accuracy. |
+| `detection_f1` | Fault/healthy verdict F1-score used in the results plots. |
 | `device_localization_rate` | Device-level troubleshooting precision. |
 | `interface_localization_rate` | Interface-level precision for applicable cases. |
 | `localization_composite_score` | Combined localization metric used for comparison. |

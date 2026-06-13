@@ -71,7 +71,7 @@ The `scenario_summaries[*].raw_result_path` fields point to raw JSON files for c
 
 Agent traces are saved by default and can be disabled for a run with `trace=False` or by setting `NETOPSBENCH_TRACE=0`. Disabling trace prevents private runtime trace collection and sidecar artifact creation. Ground truth and score details are written to `traces/results.jsonl`, not into the agent trajectory.
 
-NetOpsBench stores visible prompts, model messages, tool calls, and observations with secret redaction and per-field truncation. For private LLM message capture, custom agents should call models through `context.trace.llm_client(...)` or attach `context.trace.langchain_callback()` to LangChain-compatible runtimes. Set `NETOPSBENCH_TRACE_MAX_FIELD_CHARS` to tune truncation.
+NetOpsBench stores visible prompts, model messages, tool calls, and observations with secret redaction and per-field truncation. The bundled `MinimalDeepAgent` attaches `context.trace.langchain_callback()` to its LangChain-compatible runtime so private LLM messages and tool events flow into the same recorder. Non-LangChain agents can use the advanced manual recorder methods, such as `context.trace.record_llm_request(...)` and `context.trace.record_llm_response(...)`, when they need to capture private model calls. Set `NETOPSBENCH_TRACE_MAX_FIELD_CHARS` to tune truncation.
 
 Open a completed run directly in the Harbor viewer:
 

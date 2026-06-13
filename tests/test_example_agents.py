@@ -199,7 +199,7 @@ def test_minimal_deepagent_openai_defaults_and_openai_key(monkeypatch):
     agent = MinimalDeepAgent(vendor="openai")
 
     assert agent.api_key == "openai-shell-key"
-    assert agent.model == "gpt-5.4"
+    assert agent.model == "gpt-5.5"
     assert agent.base_url == "https://api.openai.com/v1"
 
 

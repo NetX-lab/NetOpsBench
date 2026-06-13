@@ -6,7 +6,7 @@ import json
 import threading
 import uuid
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from netopsbench.agents._trace_utils import jsonable as _jsonable
 
@@ -33,26 +33,6 @@ class AgentTraceRecorder:
         """Return a recorder that preserves the API without collecting trace data."""
 
         return cls(enabled=False)
-
-    def llm_client(
-        self,
-        provider: str = "openai",
-        *,
-        model: str,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        **client_kwargs: Any,
-    ) -> TraceAwareLLMClient:
-        """Return an OpenAI-compatible chat client that records visible messages."""
-
-        return TraceAwareLLMClient(
-            recorder=self,
-            provider=provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            client_kwargs=client_kwargs,
-        )
 
     def langchain_callback(self) -> Any | None:
         """Return a LangChain callback handler that writes into this recorder."""
@@ -370,57 +350,6 @@ class AgentTraceRecorder:
             self._metrics["output_tokens"] += usage["output_tokens"]
             self._metrics["total_tokens"] += usage["total_tokens"]
             self._metrics["llm_call_count"] += usage["has_usage"] or 1
-
-
-class TraceAwareLLMClient:
-    """Small OpenAI-compatible chat client wrapper that records requests and responses."""
-
-    def __init__(
-        self,
-        *,
-        recorder: AgentTraceRecorder,
-        provider: str,
-        model: str,
-        api_key: str | None,
-        base_url: str | None,
-        client_kwargs: dict[str, Any],
-    ):
-        self.recorder = recorder
-        self.provider = provider
-        self.model = model
-        self.api_key = api_key
-        self.base_url = base_url
-        self.client_kwargs = dict(client_kwargs)
-
-    async def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
-        try:
-            from openai import AsyncOpenAI
-        except Exception as exc:  # pragma: no cover - depends on optional agent deps
-            raise RuntimeError("openai is required for context.trace.llm_client().chat()") from exc
-
-        run_id = self.recorder.record_llm_request(
-            messages,
-            model=self.model,
-            provider=self.provider,
-        )
-        client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, **self.client_kwargs)
-        try:
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=cast(Any, messages),
-                **kwargs,
-            )
-        except Exception as exc:
-            self.recorder.record_error(stage="llm", error=exc, run_id=run_id)
-            raise
-        self.recorder.record_llm_response(
-            response,
-            run_id=run_id,
-            model=self.model,
-            provider=self.provider,
-        )
-        return response
-
 
 def _message_payload(message: Any, *, index: int) -> dict[str, Any]:
     payload: dict[str, Any] = {

@@ -9,7 +9,7 @@ Vendor-specific LLM configuration lives in the ``providers/`` sub-package:
 - ``providers/minimax.py``   — MiniMax-M3
 - ``providers/glm.py``       — ZhipuAI GLM-5.1
 - ``providers/deepseek.py``  — DeepSeek deepseek-v4-pro (thinking mode disabled)
-- ``providers/openai.py``    — OpenAI-compatible endpoint (gpt-5.4)
+- ``providers/openai.py``    — OpenAI-compatible endpoint (gpt-5.5)
 
 The shared output schema (``DiagnosisOutput``) lives in ``schema.py``.
 Shared runtime and result helpers live in ``providers/runtime.py`` and
@@ -20,7 +20,7 @@ Supported vendors (via ``vendor`` parameter):
 - ``minimax``   — MiniMax-M3 (default)
 - ``zhipu``    — GLM-5.1 (ZhipuAI)
 - ``deepseek`` — deepseek-v4-pro (DeepSeek)
-- ``openai``   — gpt-5.4 via OpenAI-compatible endpoint
+- ``openai``   — gpt-5.5 via OpenAI-compatible endpoint
 
 Dependencies (install with ``pip install deepagents langchain-openai langchain-mcp-adapters``):
 - deepagents
@@ -69,7 +69,7 @@ class MinimalDeepAgent:
         agent = MinimalDeepAgent(vendor="minimax")  # MiniMax-M3 (default)
         agent = MinimalDeepAgent(vendor="zhipu")    # GLM-5.1
         agent = MinimalDeepAgent(vendor="deepseek") # deepseek-v4-pro
-        agent = MinimalDeepAgent(vendor="openai")   # gpt-5.4
+        agent = MinimalDeepAgent(vendor="openai")   # gpt-5.5
 
     Explicit ``model``, ``base_url``, or ``api_key`` kwargs override the
     vendor preset.

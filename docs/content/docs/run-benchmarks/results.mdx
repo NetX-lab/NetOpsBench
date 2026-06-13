@@ -3,34 +3,34 @@ title: Benchmark Results
 description: Reference cross-model NetOpsBench results.
 ---
 
-This page records one cross-model NetOpsBench run. Treat it as a reference snapshot under the documented [methodology](/docs/run-benchmarks/methodology), not as a stable model ranking. Provider defaults, model versions, prompts, and tool policies can change absolute values.
+This page records the public trace dataset snapshot. Treat it as a reference snapshot under the documented [methodology](/docs/run-benchmarks/methodology), not as a stable model ranking. Provider defaults, model versions, prompts, and tool policies can change absolute values.
 
 ## Experiment scope
 
 | Dimension | Values |
 |---|---|
-| Models | Kimi K2.6, MiniMax M2.7, DeepSeek V4 Pro, OpenAI GPT-5.4 |
+| Models | Kimi K2.6, DeepSeek V4 Pro, OpenAI GPT-5.5, MiniMax M3 |
 | Topology scales | XS, Small, Medium, Large |
 | Fault types | 12 canonical types across link, routing, impairment, system, and ACL categories |
-| Quality metrics | Detection, device localization, interface localization, composite score |
+| Quality metrics | Verdict F1-score, device localization, interface localization, composite score |
 | Efficiency metrics | Diagnosis time, tool calls, input/output tokens |
 
 ## Cross-scale snapshot
 
 Each cell is `XS -> Large`.
 
-| Model | Detection (%) | Device Loc (%) | Interface Loc (%) | Composite (%) | Avg Time (s) | Avg Tools | Input Tokens (K) |
+| Model | Verdict F1 (%) | Device Loc (%) | Interface Loc (%) | Composite (%) | Avg Time (s) | Avg Tools | Input Tokens (K) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Kimi K2.6 | 85.7 -> 61.5 | 83.3 -> 33.3 | 28.6 -> 14.3 | 77.1 -> 34.2 | 103.3 -> 224.3 | 22.6 -> 33.0 | 164.1 -> 517.0 |
-| DeepSeek V4 Pro | 100.0 -> 80.8 | 58.3 -> 37.5 | 85.7 -> 14.3 | 70.0 -> 30.0 | 161.5 -> 162.6 | 21.2 -> 16.7 | 153.7 -> 261.0 |
-| OpenAI GPT-5.4 | 100.0 -> 80.8 | 33.3 -> 45.8 | 42.9 -> 0.0 | 48.6 -> 32.3 | 97.0 -> 48.6 | 14.5 -> 12.4 | 105.1 -> 194.4 |
-| MiniMax M2.7 | 100.0 -> 93.8 | 66.7 -> 41.7 | 28.6 -> 14.3 | 64.3 -> 31.7 | 68.1 -> 87.1 | 12.0 -> 13.7 | 87.0 -> 209.5 |
+| Kimi K2.6 | 76.2 -> 58.0 | 66.7 -> 20.8 | 71.4 -> 21.4 | 64.3 -> 25.0 | 272.0 -> 576.8 | 36.5 -> 47.3 | 367.6 -> 1029.4 |
+| DeepSeek V4 Pro | 100.0 -> 91.7 | 83.3 -> 45.8 | 57.1 -> 39.3 | 78.6 -> 39.4 | 83.1 -> 106.2 | 24.9 -> 22.7 | 247.6 -> 564.2 |
+| OpenAI GPT-5.5 | 95.7 -> 66.7 | 83.3 -> 43.8 | 57.1 -> 10.7 | 75.0 -> 32.7 | 71.9 -> 80.5 | 17.9 -> 15.3 | 85.4 -> 147.6 |
+| MiniMax M3 | 80.0 -> 35.5 | 50.0 -> 16.7 | 71.4 -> 7.1 | 60.7 -> 16.3 | 214.3 -> 176.8 | 26.4 -> 15.0 | 133.3 -> 167.7 |
 
-The main pattern is that detection remains easier than precise localization. Interface localization is the weakest metric on larger topologies.
+The main pattern is that verdict classification remains easier than precise localization. Interface localization is the weakest metric on larger topologies.
 
 ## Quality metrics
 
-![Detection accuracy](/assets/benchmark/fig_detection.png)
+![Verdict F1-score](/assets/benchmark/fig_verdict_f1.png)
 
 ![Device localization](/assets/benchmark/fig_device_loc.png)
 
@@ -48,4 +48,4 @@ The main pattern is that detection remains easier than precise localization. Int
 
 ![Output tokens](/assets/benchmark/fig_output_tokens.png)
 
-Compare cost metrics with localization quality, not detection alone. Higher tool or token use does not automatically improve device or interface precision.
+Compare cost metrics with localization quality, not verdict quality alone. Higher tool or token use does not automatically improve device or interface precision.
