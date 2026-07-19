@@ -4,7 +4,7 @@ NetOpsBench - DCN Fault Troubleshooting Benchmark System
 A benchmark system for evaluating AI Agents on datacenter network fault diagnosis.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["NetOpsBench", "__version__"]
 

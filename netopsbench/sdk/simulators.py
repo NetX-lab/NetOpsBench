@@ -33,9 +33,19 @@ from netopsbench.platform.simulator.environment import (
     ToolAction,
 )
 from netopsbench.platform.simulator.runtime import RuntimeEpisodeBackend, RuntimeLeasePool
-from netopsbench.platform.toolkit.mcp.registry import tool_schemas
+from netopsbench.platform.toolkit.mcp.registry import tool_schemas, validate_tool_call
 
 logger = logging.getLogger(__name__)
+
+
+def simulator_tool_schemas() -> list[dict[str, Any]]:
+    """Return the versioned model-facing simulator tool contract."""
+    return tool_schemas()
+
+
+def validate_tool_action(action: ToolAction) -> bool:
+    """Validate an action against the same typed registry as FastMCP."""
+    return validate_tool_call(action.name, action.arguments)
 
 
 class SimulatorManager:
@@ -155,4 +165,6 @@ __all__ = [
     "SubmitDiagnosisAction",
     "TerminationReason",
     "ToolAction",
+    "simulator_tool_schemas",
+    "validate_tool_action",
 ]
