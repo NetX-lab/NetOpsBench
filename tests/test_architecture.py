@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import subprocess
 import sys
 import tomllib
@@ -297,3 +298,59 @@ def test_packaged_asset_trees_contain_only_runtime_inputs():
 
     scenario_specs = PACKAGE_ROOT / "platform" / "scenario" / "specs"
     assert {path.name for path in scenario_specs.iterdir() if path.is_file()} == {"fault_campaign.yaml"}
+
+
+def test_canonical_scenario_and_evaluator_are_single_source_of_truth(tmp_path):
+    from netopsbench.agents.base import DiagnosticContext
+    from netopsbench.models import profiles
+    from netopsbench.models.scenario import ScenarioSpec
+    from netopsbench.sdk import NetOpsBench
+
+    assert set(ScenarioSpec.model_fields) >= {"scenario_id", "topology_scale", "episode"}
+    assert "episodes" not in ScenarioSpec.model_fields
+    assert "ground_truth" not in {field.name for field in dataclasses.fields(DiagnosticContext)}
+    assert profiles.SCALE_PROFILES["xs"] is profiles.default_scale_registry().get("xs")
+    assert (PACKAGE_ROOT / "platform" / "scenario" / "models.py").exists()
+    assert (PACKAGE_ROOT / "sdk" / "evaluators.py").exists()
+    with NetOpsBench(workspace=tmp_path) as bench:
+        assert hasattr(bench, "evaluators")
+
+
+def test_core_distribution_contains_no_rl_training_control_plane():
+    forbidden_imports = ("verl", "ray", "netopsbench_rl", "netopsbench.integrations")
+    offenders = {
+        str(path.relative_to(PROJECT_ROOT)): sorted(
+            name for name in _imports(path) if name.startswith(forbidden_imports)
+        )
+        for path in _python_files()
+    }
+    assert not {path: imports for path, imports in offenders.items() if imports}
+
+    forbidden_tokens = ("RLExperimentConfig", "TaskSampler", "train_split", "group_id", "group_size")
+    source_offenders = {
+        str(path.relative_to(PROJECT_ROOT)): [
+            token for token in forbidden_tokens if token in path.read_text(encoding="utf-8")
+        ]
+        for path in _python_files()
+    }
+    assert not {path: tokens for path, tokens in source_offenders.items() if tokens}
+
+
+def test_simulator_has_no_builtin_scale_name_branches():
+    from netopsbench.models.profiles import default_scale_registry
+
+    scale_names = set(default_scale_registry().names())
+    offenders: list[str] = []
+    for path in _python_files(PACKAGE_ROOT / "platform" / "simulator"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.If, ast.Match)):
+                continue
+            values = {
+                child.value
+                for child in ast.walk(node.test if isinstance(node, ast.If) else node.subject)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            }
+            if values & scale_names:
+                offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}")
+    assert not offenders

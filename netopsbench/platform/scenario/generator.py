@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.models.topology import DeviceRole, TopologyManifest
 from netopsbench.platform.topology.configdb_payload import interface_names_for_config
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
@@ -542,53 +543,35 @@ def build_fault_instance(
     template: dict[str, Any],
     idx: int,
 ) -> dict[str, Any]:
-    # Negative sample: healthy network, no fault injected.
+    # Healthy scenarios use the same diagnosable episode lifecycle without injection.
     if fault_type == "none":
-        baseline_duration = diagnostic_observation_duration(
-            int(defaults.get("baseline_duration_seconds", 20)),
+        observation_duration = diagnostic_observation_duration(
+            int(defaults.get("fault_duration_seconds", 30)),
             topo.manifest,
         )
-        recovery_duration = int(defaults.get("recovery_duration_seconds", 20))
-        baseline_stabilization = int(defaults.get("baseline_stabilization_seconds", 5))
         scenario_id = f"generated_healthy_network_{topo.scale}_{idx:03d}"
         return {
+            "schema_version": "1",
             "scenario_id": scenario_id,
             "name": f"Generated healthy network case #{idx} ({topo.scale})",
-            "description": f"Auto-generated negative sample — no fault injected ({topo.scale} topology).",
+            "description": f"Auto-generated healthy network scenario ({topo.scale} topology).",
             "topology_scale": topo.scale,
             "traffic_profile": "standard",
             "metadata": {
                 "difficulty": difficulty,
-                "negative_sample": True,
                 "generator": {
                     "seed": defaults.get("seed"),
                     "topology_dir": str(topo.topology_dir),
                     "template": template.get("name", "healthy_network"),
                 },
             },
-            "episodes": [
-                {
-                    "episode_id": "ep001_observation_1",
-                    "description": "Observe healthy network — no faults",
-                    "fault_type": "none",
-                    "duration_seconds": baseline_duration,
-                    "stabilization_time": baseline_stabilization,
-                },
-                {
-                    "episode_id": "ep002_observation_2",
-                    "description": "Continue observing healthy network",
-                    "fault_type": "none",
-                    "duration_seconds": baseline_duration,
-                    "stabilization_time": baseline_stabilization,
-                },
-                {
-                    "episode_id": "ep003_observation_3",
-                    "description": "Final healthy network observation",
-                    "fault_type": "none",
-                    "duration_seconds": recovery_duration,
-                    "stabilization_time": baseline_stabilization,
-                },
-            ],
+            "episode": {
+                "episode_id": "diagnosis",
+                "description": "Observe healthy network without fault injection",
+                "fault_type": "none",
+                "duration_seconds": observation_duration,
+                "stabilization_time": 0,
+            },
         }
 
     # Merge nested ``parameters`` dict into the top-level template so that
@@ -619,33 +602,18 @@ def build_fault_instance(
     if fault_type == "mtu_mismatch":
         target.mtu = int(template.get("mtu", 1400))
 
-    expected_location = {"device": target.device}
-    if target.interface:
-        if target.device.startswith("client"):
-            expected_location["interface"] = target.interface
-        else:
-            expected_location["interface"] = normalize_sonic_interface(target.interface)
-
     scenario_id = f"generated_{fault_type}_{topo.scale}_{idx:03d}"
     scenario_name = f"Generated {fault_type} case #{idx} ({topo.scale})"
 
-    baseline_duration = diagnostic_observation_duration(
-        int(defaults.get("baseline_duration_seconds", 20)),
-        topo.manifest,
-    )
     fault_duration = diagnostic_observation_duration(
         int(defaults.get("fault_duration_seconds", 30)),
         topo.manifest,
     )
-    recovery_duration = int(defaults.get("recovery_duration_seconds", 20))
-    baseline_stabilization = int(defaults.get("baseline_stabilization_seconds", 5))
     fault_stabilization = int(
         template.get("fault_stabilization_seconds", defaults.get("fault_stabilization_seconds", 5))
     )
-    recovery_stabilization = int(defaults.get("recovery_stabilization_seconds", 10))
-
     episode_fault = {
-        "episode_id": "ep002_fault",
+        "episode_id": "diagnosis",
         "description": f"Inject {fault_type} on {target.device}",
         "fault_type": fault_type,
         "target_device": target.device,
@@ -662,6 +630,7 @@ def build_fault_instance(
     episode_fault["metadata"].update(extra_episode_metadata)
 
     return {
+        "schema_version": "1",
         "scenario_id": scenario_id,
         "name": scenario_name,
         "description": template.get(
@@ -672,33 +641,13 @@ def build_fault_instance(
         "traffic_profile": "standard",
         "metadata": {
             "difficulty": difficulty,
-            "expected_diagnosis": fault_type,
-            "expected_location": expected_location,
             "generator": {
                 "seed": defaults.get("seed"),
                 "topology_dir": str(topo.topology_dir),
                 "template": template.get("name", fault_type),
             },
         },
-        "episodes": [
-            {
-                "episode_id": "ep001_baseline",
-                "description": "Establish baseline - no faults",
-                "fault_type": "none",
-                "target_device": target.device,
-                "duration_seconds": baseline_duration,
-                "stabilization_time": baseline_stabilization,
-            },
-            episode_fault,
-            {
-                "episode_id": "ep003_recovery_verify",
-                "description": "Verify recovery after fault removal",
-                "fault_type": "none",
-                "target_device": target.device,
-                "duration_seconds": recovery_duration,
-                "stabilization_time": recovery_stabilization,
-            },
-        ],
+        "episode": episode_fault,
     }
 
 
@@ -726,9 +675,15 @@ def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: i
                 template=template,
                 idx=idx,
             )
+            scenario = ScenarioSpec.model_validate(payload)
             out_path = out_dir / f"{payload['scenario_id']}.yaml"
             with out_path.open("w", encoding="utf-8") as f:
-                yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=False)
+                yaml.safe_dump(
+                    scenario.model_dump(mode="json", exclude_none=True),
+                    f,
+                    sort_keys=False,
+                    allow_unicode=False,
+                )
             generated.append(out_path)
 
     return generated

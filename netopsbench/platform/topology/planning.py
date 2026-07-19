@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass
 
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.topology import PingmeshPolicy
 
 from .plan import RenderSettings
@@ -90,8 +90,7 @@ def client_commands(client_ip: str, gateway: str) -> tuple[str, ...]:
     )
 
 
-def pingmesh_policy_for_scale(scale: str) -> PingmeshPolicy:
-    profile = get_scale_profile(scale)
+def pingmesh_policy_for_profile(profile: ScaleProfile) -> PingmeshPolicy:
     return PingmeshPolicy(
         destination_batch_size=profile.pingmesh_destination_batch_size,
         rtt_port_pool_size=profile.pingmesh_rtt_port_pool_size,
@@ -100,10 +99,15 @@ def pingmesh_policy_for_scale(scale: str) -> PingmeshPolicy:
     )
 
 
+def pingmesh_policy_for_scale(scale: str, registry: ScaleRegistry | None = None) -> PingmeshPolicy:
+    return pingmesh_policy_for_profile(get_scale_profile(scale, registry))
+
+
 __all__ = [
     "ManagementAddressing",
     "build_render_settings",
     "client_commands",
     "pingmesh_policy_for_scale",
+    "pingmesh_policy_for_profile",
     "sonic_port_name",
 ]

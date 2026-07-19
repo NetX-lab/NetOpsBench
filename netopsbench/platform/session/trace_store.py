@@ -224,9 +224,8 @@ class TraceWriter:
 
 def _trace_refs_by_episode(scenario_result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     refs: dict[str, dict[str, Any]] = {}
-    for episode_result in scenario_result.get("episodes") or []:
-        if not isinstance(episode_result, dict):
-            continue
+    episode_result = scenario_result.get("episode")
+    if isinstance(episode_result, dict):
         episode_id = ((episode_result.get("episode") or {}).get("episode_id")) or "unknown"
         diagnosis = episode_result.get("diagnosis") or {}
         trace = dict(diagnosis.get("trace") or {})

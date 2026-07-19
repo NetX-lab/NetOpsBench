@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 
-from netopsbench.models.profiles import supported_scales
+from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
+from netopsbench.models.scenario import ScenarioSpec
+from netopsbench.models.topology import DeviceRole
 from netopsbench.platform.faults.specs import (
     FaultSpecRegistry,
     create_fault_registry,
@@ -13,17 +15,7 @@ from netopsbench.platform.topology.configdb_payload import interface_names_for_c
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 from netopsbench.platform.utils.interface_names import interface_aliases
 
-from .models import Scenario
-from .parser import episode_from_dict, episode_to_dict
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-_SUPPORTED_TOPOLOGY_SCALES = supported_scales()
 _SUPPORTED_TRAFFIC_PROFILES = ("standard",)
-
-NETWORK_DEVICE_PREFIXES = ("spine", "leaf", "core", "agg", "edge")
 
 # ---------------------------------------------------------------------------
 # Schema validation
@@ -37,54 +29,47 @@ def supported_scenario_faults(fault_registry: FaultSpecRegistry | None = None) -
 
 
 def validate_scenario(
-    scenario: Scenario,
+    scenario: ScenarioSpec,
     fault_registry: FaultSpecRegistry | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> list[str]:
     """Validate a scenario's schema and fault-specific constraints."""
     registry = fault_registry or create_fault_registry()
+    scales = scale_registry or default_scale_registry()
     errors: list[str] = []
 
     if not scenario.scenario_id:
         errors.append("Missing scenario_id")
     if not scenario.name:
         errors.append("Missing scenario name")
-    if not scenario.episodes:
-        errors.append("No episodes defined")
-    if scenario.topology_scale not in _SUPPORTED_TOPOLOGY_SCALES:
+    if scenario.topology_scale not in scales.names():
         errors.append(f"Invalid topology_scale: {scenario.topology_scale}")
     if scenario.traffic_profile not in _SUPPORTED_TRAFFIC_PROFILES:
         errors.append(f"Invalid traffic_profile: {scenario.traffic_profile}; only 'standard' is supported")
 
-    canonical_fault_types = [registry.canonicalize(ep.fault_type) for ep in scenario.episodes]
-    has_fault_episode = any(fault_type != "none" for fault_type in canonical_fault_types)
-    if has_fault_episode:
+    episode = scenario.episode
+    canonical_fault_type = registry.canonicalize(episode.fault_type)
+    if canonical_fault_type != "none":
         difficulty = (scenario.metadata or {}).get("difficulty")
         if difficulty not in ["easy", "medium", "hard"]:
             errors.append("Scenario metadata requires difficulty in [easy, medium, hard] for benchmark scoring")
 
-        expected_diagnosis = registry.canonicalize((scenario.metadata or {}).get("expected_diagnosis"))
-        if not expected_diagnosis:
-            errors.append("Scenario metadata missing expected_diagnosis for benchmark scoring")
-
     supported_faults = supported_scenario_faults(registry)
-    for i, episode in enumerate(scenario.episodes):
-        canonical_fault_type = registry.canonicalize(episode.fault_type)
-        if not episode.episode_id:
-            errors.append(f"Episode {i}: Missing episode_id")
-        if not canonical_fault_type:
-            errors.append(f"Episode {i}: Missing fault_type")
-        if canonical_fault_type not in supported_faults:
-            errors.append(
-                f"Episode {i}: Unsupported fault_type '{canonical_fault_type}'. "
-                f"Supported values: {supported_faults}"
-            )
-        if canonical_fault_type != "none" and not episode.target_device:
-            errors.append(f"Episode {i}: Missing target_device")
+    if not canonical_fault_type:
+        errors.append("Episode: Missing fault_type")
+    if canonical_fault_type not in supported_faults:
+        errors.append(f"Episode: Unsupported fault_type '{canonical_fault_type}'. Supported values: {supported_faults}")
+    if canonical_fault_type != "none" and not episode.target_device:
+        errors.append("Episode: Missing target_device")
 
-        spec = registry.get(canonical_fault_type)
-        if spec is not None:
-            episode_view = episode_from_dict({**episode_to_dict(episode), "fault_type": canonical_fault_type})
-            errors.extend(spec.validate_episode(episode_view, episode_index=i))
+    spec = registry.get(canonical_fault_type)
+    if spec is not None:
+        errors.extend(
+            spec.validate_episode(
+                episode.model_copy(update={"fault_type": canonical_fault_type}),
+                episode_index=0,
+            )
+        )
 
     return errors
 
@@ -104,10 +89,11 @@ def _validate_episode_target_interface(
     target_interface: str,
     scenario_id: str,
     episode_id: str,
+    is_network_device: bool,
 ) -> list[str]:
     if not target_interface:
         return []
-    if not target_device.startswith(NETWORK_DEVICE_PREFIXES):
+    if not is_network_device:
         return []
 
     config_path = os.path.join(topology_dir, "configs", "sonic", target_device, "config_db.json")
@@ -159,22 +145,24 @@ def validate_scenario_topology(scenario, topology_dir: str) -> dict:
         )
 
     device_names = {device.name for device in manifest.devices}
-    for episode in scenario.episodes:
-        if episode.fault_type != "none" and episode.target_device not in device_names:
-            errors.append(
-                f"[scenario={scenario.scenario_id} episode={episode.episode_id}] target_device "
-                f"'{episode.target_device}' not found in topology devices {sorted(device_names)}"
+    episode = scenario.episode
+    if episode.fault_type != "none" and episode.target_device not in device_names:
+        errors.append(
+            f"[scenario={scenario.scenario_id} episode={episode.episode_id}] target_device "
+            f"'{episode.target_device}' not found in topology devices {sorted(device_names)}"
+        )
+    if episode.target_interface and episode.target_device:
+        target = manifest.device(episode.target_device)
+        errors.extend(
+            _validate_episode_target_interface(
+                topology_dir=topology_dir,
+                target_device=episode.target_device,
+                target_interface=episode.target_interface,
+                scenario_id=scenario.scenario_id,
+                episode_id=episode.episode_id,
+                is_network_device=target is not None and target.role is not DeviceRole.CLIENT,
             )
-        if episode.target_interface and episode.target_device:
-            errors.extend(
-                _validate_episode_target_interface(
-                    topology_dir=topology_dir,
-                    target_device=episode.target_device,
-                    target_interface=episode.target_interface,
-                    scenario_id=scenario.scenario_id,
-                    episode_id=episode.episode_id,
-                )
-            )
+        )
 
     status = "fail" if errors else "pass"
     return {

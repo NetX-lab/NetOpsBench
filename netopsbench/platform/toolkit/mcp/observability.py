@@ -7,14 +7,18 @@ def get_device_logs(
     time_range_minutes: int = 30,
     severity: str = None,
     include_raw: bool = False,
+    start_time: str = "",
+    end_time: str = "",
 ):
-    """Get device logs from InfluxDB."""
+    """Get device logs from an explicit episode window or a rolling lookback."""
     return as_payload(
         get_toolkit().get_device_logs(
             device=device,
             time_range_minutes=time_range_minutes,
             severity=severity,
             include_raw=include_raw,
+            start_time=start_time or None,
+            end_time=end_time or None,
         )
     )
 

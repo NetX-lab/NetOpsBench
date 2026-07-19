@@ -75,7 +75,6 @@ def _install_real_runtime_mocks(monkeypatch):
             topology_metadata=None,
             baseline_wait_seconds=5,
             post_recovery_wait_seconds=2,
-            skip_none_episodes=False,
             influxdb_url=None,
             influxdb_token=None,
             influxdb_org=None,
@@ -83,6 +82,7 @@ def _install_real_runtime_mocks(monkeypatch):
             topology_id=None,
             persist_results=True,
             fault_registry=None,
+            scale_registry=None,
         ):
             self.topology_dir = topology_dir
             self.topology_metadata = topology_metadata
@@ -106,17 +106,15 @@ def _install_real_runtime_mocks(monkeypatch):
             return {
                 "success": True,
                 "result_file": str(Path(self.results_dir or ".") / f"{scenario.scenario_id}.json"),
-                "episodes": [
-                    {
-                        "episode": {
-                            "episode_id": "ep1",
-                            "fault_type": "link_down",
-                            "target_device": "leaf1",
-                            "target_interface": "Ethernet1",
-                        },
-                        "diagnosis": diagnosis,
-                    }
-                ],
+                "episode": {
+                    "episode": {
+                        "episode_id": "ep1",
+                        "fault_type": "link_down",
+                        "target_device": "leaf1",
+                        "target_interface": "Ethernet1",
+                    },
+                    "diagnosis": diagnosis,
+                },
             }
 
     monkeypatch.setattr(dispatch_mod, "ScenarioExecutor", FakeScenarioExecutor)
@@ -124,7 +122,7 @@ def _install_real_runtime_mocks(monkeypatch):
     monkeypatch.setattr(dispatch_mod, "_create_evaluator", _FakeEvaluator)
     monkeypatch.setattr(
         dispatch_mod,
-        "score_scenario_fault_episodes",
+        "score_scenario_episode",
         lambda *args, **kwargs: [_FakeEvalResult(1.0)],
     )
     monkeypatch.setattr(sessions_mod, "Evaluator", _FakeEvaluator)
@@ -173,15 +171,13 @@ def _make_scenario(*, scenario_id: str, scale: str = "xs"):
         id=scenario_id,
         name=f"Scenario {scenario_id}",
         scale=scale,
-        episodes=[
-            {
-                "episode_id": f"{scenario_id}-ep1",
-                "fault_type": "link_down",
-                "target_device": "leaf1",
-                "target_interface": "Ethernet1",
-            }
-        ],
-        metadata={"expected_diagnosis": "link_down", "difficulty": "easy"},
+        episode={
+            "episode_id": f"{scenario_id}-ep1",
+            "fault_type": "link_down",
+            "target_device": "leaf1",
+            "target_interface": "Ethernet1",
+        },
+        metadata={"difficulty": "easy"},
     )
 
 
@@ -330,7 +326,7 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     )
     assert run.status == "completed"
     assert agent.context is not None
-    assert agent.context.ground_truth is None
+    assert not hasattr(agent.context, "ground_truth")
     assert agent.context.scenario_id.startswith("case-")
     assert "link_down" not in agent.context.scenario_id
 
@@ -339,6 +335,19 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert "target_device" not in episode_payload
     assert "target_interface" not in episode_payload
     assert (agent.context.symptoms or {}).get("observations") is not None
+    canonical = agent.context.metadata["canonical_observation"]
+    assert canonical["case_id"] == agent.context.scenario_id
+    assert set(canonical["symptoms"]) == {"episode", "observations", "pingmesh_query_window"}
+    assert canonical["symptoms"]["episode"] == agent.context.symptoms["episode"]
+    assert canonical["symptoms"]["pingmesh_query_window"] == agent.context.symptoms["pingmesh_query_window"]
+    assert set(canonical["symptoms"]["observations"]) <= set(agent.context.symptoms["observations"])
+    assert canonical["topology_summary"] == {
+        "family": "unknown",
+        "spines": 0,
+        "leafs": 0,
+        "clients": 0,
+        "links": 0,
+    }
 
 
 def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypatch):
@@ -377,7 +386,7 @@ def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypat
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert "trace" not in diagnosis["metadata"]
     assert "trajectory" not in diagnosis["metadata"]
@@ -400,7 +409,7 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
                 "details": {"scenario_id": "failure-scenario", "episode_id": "ep1"},
             }
 
-    monkeypatch.setattr(dispatch_mod, "score_scenario_fault_episodes", lambda *args, **kwargs: [LinkedEvalResult()])
+    monkeypatch.setattr(dispatch_mod, "score_scenario_episode", lambda *args, **kwargs: [LinkedEvalResult()])
 
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-failure-runtime")
@@ -424,7 +433,7 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert diagnosis["success"] is False
     assert diagnosis["error"] == "agent exploded"
@@ -500,7 +509,7 @@ def test_runtime_trace_false_disables_trace_artifacts_and_recorder_capture(tmp_p
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert agent.trace_enabled is False
     assert "trace" not in diagnosis
@@ -721,4 +730,4 @@ def test_run_scenario_does_not_leak_fault_ground_truth_into_agent_context(tmp_pa
     assert "fault_type" not in episode
     assert "target_device" not in episode
     assert "target_interface" not in episode
-    assert context.ground_truth is None
+    assert not hasattr(context, "ground_truth")

@@ -6,14 +6,14 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from .topology_runtime import TopologyRuntime
 
 
 class RoutingRuntime:
     """BGP config parsing, neighbor selection, and route-policy helpers."""
 
-    def __init__(self, topo_rt: TopologyRuntime, ctx: FaultContext) -> None:
+    def __init__(self, topo_rt: TopologyRuntime, ctx: FaultRuntimeContext) -> None:
         self._topo_rt = topo_rt
         self._ctx = ctx
 

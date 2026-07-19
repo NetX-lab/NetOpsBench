@@ -103,12 +103,13 @@ NetOpsBench validates exported `job/result.json` and `trial/result.json` with Ha
 
 | Manager | Use |
 |---|---|
-| `bench.scenarios` | Load generated scenario files and handles. |
+| `bench.scales` | Inspect the resolved scale registry and custom profiles. |
+| `bench.scenarios` | Create, load, validate, and save canonical scenarios. |
 | `bench.agents` | Wrap or manage objects implementing `diagnose(context)`. |
 | `bench.sessions` | Run scenarios and suites. |
 | `bench.runtimes` | Provision, attach, list, and tear down runtime pools. |
 | `bench.faults` | Register or inspect fault definitions. |
-| `bench.evaluators` | Score `DiagnosisResult` objects and produce reports. |
+| `bench.simulators` | Build RL task catalogs and create interactive diagnostic environments. |
 | `bench.artifacts` | Resolve run artifacts and report files. |
 
 The stable external boundary is `netopsbench.sdk`, documented example scripts, and documented CLI commands such as `benchmark prepare`, `scenario validate`, `result show`, and `runtime teardown`.

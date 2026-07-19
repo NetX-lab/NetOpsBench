@@ -58,31 +58,6 @@ list_run_dirs() {
     find "$runs_dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort
 }
 
-# ── Helper: clean all clab resources ────────────────────────
-cleanup_clab() {
-    # Preserve worker deploy logs before cleaning runtimes
-    local runtime_logs_dir="$REPO_ROOT/.netopsbench/runtimes"
-    if [ -d "$runtime_logs_dir" ] && [ -n "${LOG_DIR:-}" ]; then
-        for logdir in "$runtime_logs_dir"/*/logs; do
-            [ -d "$logdir" ] && cp -a "$logdir" "${LOG_DIR}/$(basename "$(dirname "$logdir")")_deploy_logs" 2>/dev/null || true
-        done
-    fi
-    for cid in $(sudo docker ps -aq --filter "name=clab-" 2>/dev/null); do
-        sudo docker rm -f "$cid" &>/dev/null || true
-    done
-    # Also remove worker telegraf containers (not prefixed with clab-)
-    for cid in $(sudo docker ps -aq --filter "name=telegraf-" 2>/dev/null); do
-        sudo docker rm -f "$cid" &>/dev/null || true
-    done
-    for net in $(sudo docker network ls --filter "name=clab-mgmt-" -q 2>/dev/null); do
-        for ep in $(sudo docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null); do
-            sudo docker network disconnect -f "$net" "$ep" &>/dev/null || true
-        done
-        sudo docker network rm "$net" &>/dev/null || true
-    done
-    sudo rm -rf "$REPO_ROOT/.netopsbench/runtimes/"* 2>/dev/null || true
-}
-
 # ── 执行计划 ────────────────────────────────────────────────
 total_scenarios=0
 echo "======================================================"
@@ -99,16 +74,14 @@ echo " Total:   ${total_scenarios} scenarios"
 echo " Logs:    ${LOG_DIR}"
 echo "======================================================"
 
-# Clean stale runtime data. Run artifacts are preserved by default so traces
-# remain available across benchmark invocations.
+# Run artifacts are preserved by default so traces remain available across
+# benchmark invocations. Runtime resources remain SDK-owned.
 if [[ "${BENCH_CLEAN_RUNS:-0}" == "1" ]]; then
     echo "Cleaning previous run artifacts because BENCH_CLEAN_RUNS=1"
     sudo rm -rf "$REPO_ROOT/.netopsbench/runs/"* 2>/dev/null || true
 else
     echo "Preserving previous run artifacts in ${REPO_ROOT}/.netopsbench/runs"
 fi
-cleanup_clab
-
 # ── 逐 scale 执行 ──────────────────────────────────────────
 failed=0
 for scale in "${SCALES[@]}"; do
@@ -128,6 +101,10 @@ for scale in "${SCALES[@]}"; do
         run_status="completed"
     else
         echo "[$(date '+%H:%M:%S')]  ✗  ${label} — 失败 (see ${log_file})"
+        echo "[$(date '+%H:%M:%S')]     SDK teardown may have left an owned runtime; inspect with:"
+        echo "[$(date '+%H:%M:%S')]     netopsbench --workspace \"$REPO_ROOT\" runtime list"
+        echo "[$(date '+%H:%M:%S')]     If needed, teardown only the listed benchmark runtime:"
+        echo "[$(date '+%H:%M:%S')]     netopsbench --workspace \"$REPO_ROOT\" runtime teardown <runtime-name>"
         failed=$((failed + 1))
         run_status="failed"
     fi
@@ -166,8 +143,6 @@ PYEOF
         echo "[$(date '+%H:%M:%S')]     no new run artifact detected for ${label}"
     fi
 
-    # Clean up between scales
-    cleanup_clab
 done
 
 echo ""

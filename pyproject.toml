@@ -37,6 +37,7 @@ netopsbench-pingmesh-agent = "netopsbench.platform.pingmesh.cli:main"
 netopsbench-bgp-collector = "netopsbench.platform.observability.bgp_collector:main"
 netopsbench-mcp-server = "netopsbench.platform.toolkit.fastmcp_server:main"
 netopsbench-runtime = "netopsbench.platform.runtime.cli:main"
+netopsbench-simulator = "netopsbench.sdk.simulator_service:main"
 
 [project.optional-dependencies]
 agent = [
@@ -51,6 +52,11 @@ agent = [
 ]
 plots = [
     "matplotlib>=3.8.0",
+]
+simulator = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
 ]
 dev = [
     "pytest>=6.0.0",
@@ -67,6 +73,7 @@ include = ["netopsbench*"]
 
 [tool.setuptools.package-data]
 netopsbench = [
+    "models/*.yaml",
     "platform/topology/*.json",
     "platform/topology/*.sh",
     "platform/observability/assets/**/*",
@@ -85,7 +92,7 @@ addopts = "-ra"
 
 [tool.black]
 line-length = 120
-target-version = ["py312", "py313"]
+target-version = ["py312"]
 
 [tool.isort]
 profile = "black"
@@ -107,11 +114,17 @@ python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-# Phase-2 mypy covers public SDK, agent contract, and the typed session boundary.
-files = ["netopsbench/sdk", "netopsbench/agents", "netopsbench/platform/session"]
+# Typed public, session, canonical-model, and simulator boundaries.
+files = [
+    "netopsbench/sdk",
+    "netopsbench/agents",
+    "netopsbench/models",
+    "netopsbench/platform/session",
+    "netopsbench/platform/simulator",
+]
 
 [[tool.mypy.overrides]]
-# platform/ is an internal implementation layer; suppress errors from import-following
-# until a dedicated mypy phase covers it.
+# Non-root platform imports stay silent; the session and simulator roots above
+# are checked directly.
 module = "netopsbench.platform.*"
 follow_imports = "silent"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.topology import DEFAULT_LINK_MTU
 from netopsbench.platform.topology.topology_utils import coerce_topology_manifest, load_topology_manifest
 
@@ -32,8 +32,8 @@ def _format_bandwidth_from_pps(pps: float, packet_size_bytes: int) -> str:
     return f"{max(int(bits_per_sec / 1_000), 100)}K"
 
 
-def _max_pps_per_client(scale: str, switch_pps_limit: int | None) -> int:
-    base = get_scale_profile(scale).traffic_max_pps_per_client
+def _max_pps_per_client(scale: str, switch_pps_limit: int | None, registry: ScaleRegistry | None = None) -> int:
+    base = get_scale_profile(scale, registry).traffic_max_pps_per_client
     if switch_pps_limit is None:
         return base
     return max(1, int(round(base * switch_pps_limit / BASE_SWITCH_PPS_LIMIT)))
@@ -65,13 +65,14 @@ def generate_traffic_config_from_topology(
     profile_type: str = "standard",
     *,
     settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> dict:
     if profile_type != "standard":
         raise ValueError(f"Only the standard traffic profile is supported, got: {profile_type}")
-    get_scale_profile(scale)
+    get_scale_profile(scale, scale_registry)
     projected = coerce_topology_manifest(topology).to_agent_topology()
     settings = settings or TrafficSettings.from_env()
-    max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit)
+    max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     bandwidths = _standard_bandwidths(max_pps_per_client)
     link_mtu_bytes = infer_topology_link_mtu(projected, DEFAULT_LINK_MTU_BYTES)
 
@@ -111,18 +112,26 @@ def generate_traffic_config(
     profile_type: str = "standard",
     *,
     settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> dict:
     return generate_traffic_config_from_topology(
         load_topology_manifest(topology_file).model_dump(mode="json"),
         scale,
         profile_type,
         settings=settings,
+        scale_registry=scale_registry,
     )
 
 
-def validate_traffic_config(config: dict, scale: str, *, settings: TrafficSettings | None = None) -> bool:
+def validate_traffic_config(
+    config: dict,
+    scale: str,
+    *,
+    settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
+) -> bool:
     settings = settings or TrafficSettings.from_env()
-    max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit)
+    max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     stats = config.get("stats", {})
     estimated_clients = stats.get("estimated_pps_per_client") or stats.get("estimated_udp_pps_per_client", {})
     max_client_pps = stats.get("estimated_max_pps_per_client") or stats.get("estimated_max_udp_pps_per_client", 0.0)

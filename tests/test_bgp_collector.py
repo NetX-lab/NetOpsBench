@@ -3,6 +3,7 @@ from pathlib import Path
 from netopsbench.models import topology as topology_models
 from netopsbench.models.topology import Collector, Device, DeviceRole, Management, TopologyManifest
 from netopsbench.platform.observability.bgp_collector import (
+    BgpTransitionTracker,
     _collect_bgp_lines_paced,
     _write_lines,
     build_bgp_collection_line,
@@ -97,6 +98,53 @@ def test_build_bgp_collection_line_records_success_and_failure():
     assert "neighbor_count=2i" in success
     assert 'error_type="timeout"' in failure
     assert "collection_ok=false" in failure
+
+
+def test_bgp_transition_tracker_baselines_then_emits_down_and_recovery():
+    tracker = BgpTransitionTracker()
+    established = [{"neighbor": "10.0.0.1", "state": "Established", "asn": 65100, "prefixes_received": 4}]
+    idle = [{"neighbor": "10.0.0.1", "state": "Idle", "asn": 65100}]
+
+    baseline = tracker.process("leaf1", established, 1, "runtime-xs", collection_ok=True)
+    down = tracker.process("leaf1", idle, 2, "runtime-xs", collection_ok=True)
+    recovered = tracker.process("leaf1", established, 3, "runtime-xs", collection_ok=True)
+
+    assert len(baseline) == 1
+    assert baseline[0].startswith("bgp_event_index,source=leaf1,topology_id=runtime-xs ")
+    assert "schema_version=1i" in baseline[0]
+    assert any(",event_type=session_down," in line for line in down)
+    assert any('previous_state="ESTABLISHED"' in line and 'latest_state="IDLE"' in line for line in down)
+    assert any(",event_type=session_recovered," in line for line in recovered)
+
+
+def test_bgp_transition_tracker_distinguishes_missing_peer_from_collection_failure():
+    tracker = BgpTransitionTracker()
+    established = [{"neighbor": "10.0.0.1", "state": "Established", "prefixes_received": 4}]
+    tracker.process("leaf1", established, 1, "runtime-xs", collection_ok=True)
+
+    failed = tracker.process("leaf1", [], 2, "runtime-xs", collection_ok=False)
+    recovered_without_transition = tracker.process("leaf1", established, 3, "runtime-xs", collection_ok=True)
+    missing = tracker.process("leaf1", [], 4, "runtime-xs", collection_ok=True)
+
+    assert len(failed) == 1
+    assert "collection_ok=false" in failed[0]
+    assert len(recovered_without_transition) == 1
+    assert any(",event_type=session_down," in line and 'latest_state="MISSING"' in line for line in missing)
+
+
+def test_bgp_transition_tracker_restart_rebuilds_baseline_without_false_event():
+    restarted = BgpTransitionTracker()
+
+    lines = restarted.process(
+        "leaf1",
+        [{"neighbor": "10.0.0.1", "state": "Idle", "asn": 65100}],
+        9,
+        "runtime-xs",
+        collection_ok=True,
+    )
+
+    assert len(lines) == 1
+    assert lines[0].startswith("bgp_event_index,")
 
 
 def test_collect_bgp_lines_reads_topology_and_executes_docker(monkeypatch, tmp_path):

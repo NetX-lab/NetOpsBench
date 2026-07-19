@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -61,7 +61,7 @@ def test_runtime_xs_link_down_smoke_observable():
     repo = Path(__file__).resolve().parents[1]
     scenario = _scenario_path(repo)
     bench = NetOpsBench(workspace=str(repo))
-    runtime_name = f"pytest-xs-smoke-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    runtime_name = f"pytest-xs-smoke-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
     runtime = None
     try:
         runtime = bench.runtimes.provision(scale="xs", workers=1, name=runtime_name)
@@ -76,7 +76,7 @@ def test_runtime_xs_link_down_smoke_observable():
         payload = json.loads(report_path.read_text(encoding="utf-8"))
         raw_path = Path(payload["scenario_summaries"][0]["raw_result_path"])
         raw = json.loads(raw_path.read_text(encoding="utf-8"))
-        fault_ep = next((e for e in raw.get("episodes", []) if e.get("episode_id") == "ep002_fault"), {})
+        fault_ep = raw.get("episode") or {}
 
         traffic_flows = ((raw.get("traffic_config") or {}).get("stats") or {}).get("total_flows", 0)
         injection = fault_ep.get("injection", {}) or {}

@@ -19,12 +19,12 @@ def _record_lifecycle_operations(monkeypatch, calls, *, fail_stage=None):
     monkeypatch.setattr(
         lifecycle,
         "allocate_management_subnets",
-        lambda _scale, count: [f"172.31.{100 + index}.0/24" for index in range(count)],
+        lambda _scale, count, _registry: [f"172.31.{100 + index}.0/24" for index in range(count)],
     )
     monkeypatch.setattr(
         lifecycle,
         "deploy_workers",
-        lambda workers, _scale, _root: record("deploy", workers[0].runtime_id),
+        lambda workers, _scale, _root, _registry: record("deploy", workers[0].runtime_id),
     )
     monkeypatch.setattr(
         lifecycle,
@@ -39,12 +39,12 @@ def _record_lifecycle_operations(monkeypatch, calls, *, fail_stage=None):
     monkeypatch.setattr(
         lifecycle,
         "validate_worker_health",
-        lambda worker, _root: record("warm", worker.runtime_id),
+        lambda worker, _root, _registry: record("warm", worker.runtime_id),
     )
     monkeypatch.setattr(
         lifecycle,
         "teardown_workers",
-        lambda workers: record("teardown", workers[0].runtime_id),
+        lambda workers, _registry: record("teardown", workers[0].runtime_id),
     )
 
 
@@ -111,6 +111,21 @@ def test_runtime_manager_attach_list_get_roundtrip(tmp_path):
     assert [item.name for item in attached_manager.list()] == ["runtime-xs"]
 
 
+def test_runtime_attach_rejects_tampered_resolved_scale_profile(tmp_path):
+    from netopsbench.platform.runtime.manager import RuntimeMetadataError
+    from netopsbench.sdk.runtimes import RuntimeManager
+
+    manager = RuntimeManager(workspace=tmp_path)
+    runtime = manager.create(scale="xs", workers=1, name="runtime-xs")
+    metadata_path = runtime.root_dir / "runtime.json"
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["resolved_scale_profile"]["traffic"]["max_pps_per_client"] = 999
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeMetadataError, match="does not match"):
+        manager.attach(runtime.root_dir)
+
+
 def test_same_scale_runtime_identities_are_isolated_and_persisted(tmp_path):
     from netopsbench.sdk.runtimes import RuntimeManager
 
@@ -129,6 +144,9 @@ def test_same_scale_runtime_identities_are_isolated_and_persisted(tmp_path):
 
     payload = json.loads((first.root_dir / "runtime.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == "3"
+    assert payload["scale_registry_sha256"] == manager.scale_registry.digest
+    assert payload["scale_profile_sha256"] == manager.scale_registry.get("xlarge").digest
+    assert payload["resolved_scale_profile"]["name"] == "xlarge"
     assert payload["workers"][0] == first_identity.model_dump(mode="json")
 
 

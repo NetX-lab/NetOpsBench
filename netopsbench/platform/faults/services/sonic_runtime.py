@@ -7,14 +7,14 @@ import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from .command_runner import CommandRunner
 
 
 class SonicRuntime:
     """SONiC device command execution and BGP readiness checks."""
 
-    def __init__(self, cmd: CommandRunner, ctx: FaultContext) -> None:
+    def __init__(self, cmd: CommandRunner, ctx: FaultRuntimeContext) -> None:
         self._cmd = cmd
         self._ctx = ctx
 

@@ -20,6 +20,7 @@ from netopsbench.platform.utils.proc import docker_prefix
 DEFAULT_BGP_COLLECTOR_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_BGP_COLLECTOR_PARALLELISM = 16
 DEFAULT_BGP_POLL_INTERVAL_SECONDS = 10.0
+_BGP_EVENT_SCHEMA_VERSION = 1
 
 
 def _escape_tag(value: str) -> str:
@@ -88,6 +89,128 @@ def build_bgp_collection_line(
     return f"bgp_collection,{','.join(tags)} {','.join(fields)} {timestamp_ns}"
 
 
+def build_bgp_event_index_line(
+    device: str,
+    timestamp_ns: int,
+    topology_id: str,
+    collection_ok: bool,
+    neighbor_count: int,
+) -> str:
+    """Emit a heartbeat proving that transition indexing covered one poll."""
+    tags = [f"source={_escape_tag(device)}"]
+    if topology_id:
+        tags.append(f"topology_id={_escape_tag(topology_id)}")
+    fields = [
+        f"schema_version={_BGP_EVENT_SCHEMA_VERSION}i",
+        f"collection_ok={'true' if collection_ok else 'false'}",
+        f"neighbor_count={max(0, int(neighbor_count))}i",
+    ]
+    return f"bgp_event_index,{','.join(tags)} {','.join(fields)} {timestamp_ns}"
+
+
+def build_bgp_transition_line(
+    device: str,
+    neighbor: str,
+    previous: dict,
+    current: dict,
+    timestamp_ns: int,
+    topology_id: str,
+) -> str:
+    previous_state = normalize_bgp_state(previous.get("state"))
+    latest_state = normalize_bgp_state(current.get("state"))
+    if previous_state == "ESTABLISHED" and latest_state != "ESTABLISHED":
+        event_type = "session_down"
+    elif previous_state != "ESTABLISHED" and latest_state == "ESTABLISHED":
+        event_type = "session_recovered"
+    else:
+        event_type = "session_state_changed"
+    tags = [
+        f"source={_escape_tag(device)}",
+        f"neighbor_address={_escape_tag(neighbor)}",
+        f"event_type={event_type}",
+    ]
+    if topology_id:
+        tags.append(f"topology_id={_escape_tag(topology_id)}")
+    fields = [
+        f'previous_state="{_escape_string_field(previous_state)}"',
+        f'latest_state="{_escape_string_field(latest_state)}"',
+    ]
+    for name, value in (
+        ("asn", current.get("asn") if current.get("asn") is not None else previous.get("asn")),
+        ("prefixes_before", previous.get("prefixes_received")),
+        ("prefixes_after", current.get("prefixes_received")),
+    ):
+        field = _int_field(name, value)
+        if field:
+            fields.append(field)
+    return f"bgp_session_events,{','.join(tags)} {','.join(fields)} {timestamp_ns}"
+
+
+class BgpTransitionTracker:
+    """Maintain one collector process' latest BGP states and emit transitions."""
+
+    def __init__(self) -> None:
+        self._previous: dict[tuple[str, str], dict] = {}
+        self._lock = threading.Lock()
+
+    def process(
+        self,
+        device: str,
+        rows: Iterable[dict],
+        timestamp_ns: int,
+        topology_id: str,
+        *,
+        collection_ok: bool,
+    ) -> list[str]:
+        current_rows = {str(row["neighbor"]): dict(row) for row in rows if row.get("neighbor")}
+        lines = [
+            build_bgp_event_index_line(
+                device,
+                timestamp_ns,
+                topology_id,
+                collection_ok,
+                len(current_rows),
+            )
+        ]
+        if not collection_ok:
+            return lines
+
+        with self._lock:
+            for neighbor, current in current_rows.items():
+                key = (device, neighbor)
+                previous = self._previous.get(key)
+                if previous and normalize_bgp_state(previous.get("state")) != normalize_bgp_state(current.get("state")):
+                    lines.append(
+                        build_bgp_transition_line(
+                            device,
+                            neighbor,
+                            previous,
+                            current,
+                            timestamp_ns,
+                            topology_id,
+                        )
+                    )
+                self._previous[key] = current
+
+            missing_keys = [key for key in self._previous if key[0] == device and key[1] not in current_rows]
+            for key in missing_keys:
+                previous = self._previous[key]
+                if normalize_bgp_state(previous.get("state")) != "MISSING":
+                    missing = {**previous, "state": "MISSING", "prefixes_received": None}
+                    lines.append(
+                        build_bgp_transition_line(
+                            device,
+                            key[1],
+                            previous,
+                            missing,
+                            timestamp_ns,
+                            topology_id,
+                        )
+                    )
+                    self._previous[key] = missing
+        return lines
+
+
 def _read_topology(metadata_file: Path) -> tuple[str, list[str]]:
     manifest = load_topology_manifest(metadata_file)
     lab_name = manifest.name.strip()
@@ -101,6 +224,7 @@ def _collect_device_bgp(
     docker_prefix: list[str],
     timestamp_ns: int,
     topology_id: str,
+    transition_tracker: BgpTransitionTracker | None = None,
 ) -> list[str]:
     container = f"clab-{lab_name}-{device}"  # matches clab_container_name() convention
     started = time.monotonic()
@@ -126,6 +250,16 @@ def _collect_device_bgp(
         error_type = "collector_error"
     duration_ms = round((time.monotonic() - started) * 1000)
     lines = build_bgp_lines(device, rows, timestamp_ns, topology_id=topology_id)
+    if transition_tracker is not None:
+        lines.extend(
+            transition_tracker.process(
+                device,
+                rows,
+                timestamp_ns,
+                topology_id,
+                collection_ok=not error_type,
+            )
+        )
     lines.append(
         build_bgp_collection_line(
             device,
@@ -140,11 +274,33 @@ def _collect_device_bgp(
     return lines
 
 
+def _collect_device_bgp_with_tracker(
+    lab_name: str,
+    device: str,
+    docker_prefix: list[str],
+    timestamp_ns: int,
+    topology_id: str,
+    transition_tracker: BgpTransitionTracker | None,
+) -> list[str]:
+    """Keep the legacy five-argument collector hook compatible with tests/extensions."""
+    if transition_tracker is None:
+        return _collect_device_bgp(lab_name, device, docker_prefix, timestamp_ns, topology_id)
+    return _collect_device_bgp(
+        lab_name,
+        device,
+        docker_prefix,
+        timestamp_ns,
+        topology_id,
+        transition_tracker,
+    )
+
+
 def collect_bgp_lines(
     metadata_file: Path,
     timestamp_ns: int | None = None,
     parallelism: int = 1,
     topology_id: str | None = None,
+    transition_tracker: BgpTransitionTracker | None = None,
 ) -> list[str]:
     lab_name, devices = _read_topology(metadata_file)
     resolved_topology_id = topology_id or lab_name
@@ -154,19 +310,27 @@ def collect_bgp_lines(
 
     if workers == 1:
         device_lines = [
-            _collect_device_bgp(lab_name, device, command_prefix, resolved_timestamp, resolved_topology_id)
+            _collect_device_bgp_with_tracker(
+                lab_name,
+                device,
+                command_prefix,
+                resolved_timestamp,
+                resolved_topology_id,
+                transition_tracker,
+            )
             for device in devices
         ]
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             device_lines = list(
                 executor.map(
-                    lambda device: _collect_device_bgp(
+                    lambda device: _collect_device_bgp_with_tracker(
                         lab_name,
                         device,
                         command_prefix,
                         resolved_timestamp,
                         resolved_topology_id,
+                        transition_tracker,
                     ),
                     devices,
                 )
@@ -184,6 +348,7 @@ def _collect_bgp_lines_paced(
     parallelism: int,
     stop_event: threading.Event,
     topology_id: str | None = None,
+    transition_tracker: BgpTransitionTracker | None = None,
 ) -> list[str]:
     """Collect one fleet snapshot while spreading docker exec starts over the interval."""
     lab_name, devices = _read_topology(metadata_file)
@@ -205,12 +370,13 @@ def _collect_bgp_lines_paced(
                 break
             futures.append(
                 executor.submit(
-                    _collect_device_bgp,
+                    _collect_device_bgp_with_tracker,
                     lab_name,
                     device,
                     command_prefix,
                     time.time_ns(),
                     resolved_topology_id,
+                    transition_tracker,
                 )
             )
 
@@ -259,6 +425,7 @@ def run_loop(
     topology_id: str | None = None,
 ) -> int:
     stop_event = threading.Event()
+    transition_tracker = BgpTransitionTracker()
 
     def _stop(_signum, _frame):
         stop_event.set()
@@ -280,6 +447,7 @@ def run_loop(
                     parallelism,
                     stop_event,
                     topology_id=topology_id,
+                    transition_tracker=transition_tracker,
                 ),
                 max_bytes=max_bytes,
             )

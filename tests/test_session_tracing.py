@@ -241,18 +241,16 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
         ended_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {
-                    "trace": {
-                        "trace_id": trace_result.trace_id,
-                        "case_id": trace_result.case_id,
-                        "atif_path": trace_result.atif_path,
-                    }
-                },
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {
+                "trace": {
+                    "trace_id": trace_result.trace_id,
+                    "case_id": trace_result.case_id,
+                    "atif_path": trace_result.atif_path,
+                }
+            },
+        }
     }
     writer.write_evaluation_results(
         evaluation_results=[
@@ -469,18 +467,16 @@ def test_trace_writer_persists_evaluation_results_and_failures(tmp_path):
         ended_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {
-                    "trace": {
-                        "trace_id": trace_result.trace_id,
-                        "case_id": trace_result.case_id,
-                        "atif_path": trace_result.atif_path,
-                    }
-                },
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {
+                "trace": {
+                    "trace_id": trace_result.trace_id,
+                    "case_id": trace_result.case_id,
+                    "atif_path": trace_result.atif_path,
+                }
+            },
+        }
     }
     writer.write_evaluation_results(
         evaluation_results=[
@@ -532,12 +528,10 @@ def test_trace_writer_links_results_from_index_when_raw_diagnosis_lacks_trace(tm
         error="boom",
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {"error": "boom", "success": False},
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {"error": "boom", "success": False},
+        }
     }
 
     writer.write_evaluation_results(

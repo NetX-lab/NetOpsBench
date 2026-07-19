@@ -1,7 +1,51 @@
 from netopsbench.platform.session.context import (
+    build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
 )
+
+
+def test_canonical_observation_is_compact_non_semantic_and_stable():
+    symptoms = {
+        "episode": {"episode_id": "diagnosis"},
+        "observations": {"pingmesh_metrics": {"summary": {"total_anomalies": 2}}},
+        "pingmesh_query_window": {"start_time": "start", "end_time": "end"},
+        "observation_type": "scenario_episode",
+        "ground_truth": {"fault_type": "link_down"},
+    }
+    observation = build_canonical_observation(
+        case_id="case-deadbeef1234",
+        topology={
+            "topology_type": "clos",
+            "devices": {
+                "spines": [{}, {}],
+                "leafs": [{}, {}, {}, {}],
+                "clients": [{}] * 8,
+            },
+            "links": [{}] * 14,
+        },
+        symptoms=symptoms,
+    )
+
+    assert observation == {
+        "case_id": "case-deadbeef1234",
+        "topology_summary": {
+            "family": "clos",
+            "spines": 2,
+            "leafs": 4,
+            "clients": 8,
+            "links": 14,
+        },
+        "symptoms": {
+            "episode": symptoms["episode"],
+            "observations": symptoms["observations"],
+            "pingmesh_query_window": symptoms["pingmesh_query_window"],
+        },
+    }
+    serialized = str(observation)
+    assert "task_id" not in serialized
+    assert "split" not in serialized
+    assert "ground_truth" not in serialized
 
 
 def test_build_public_symptoms_strips_fault_injection_labels():
@@ -42,7 +86,7 @@ def test_build_public_case_id_is_non_semantic_and_stable():
     assert "link_down" not in case_a
 
 
-def test_build_public_symptoms_bounds_anomalies_without_mutating_raw_result():
+def test_build_public_symptoms_preserves_complete_anomalies_and_aggregates():
     anomalies = [
         {
             "type": "packet_loss",
@@ -69,8 +113,37 @@ def test_build_public_symptoms_bounds_anomalies_without_mutating_raw_result():
     payload = build_public_symptoms(episode_result=episode_result, pingmesh_query_window={})
     metrics = payload["observations"]["pingmesh_metrics"]
 
-    assert len(metrics["anomalies"]) == 100
-    assert metrics["returned_anomalies"] == 100
-    assert metrics["truncated"] is True
+    assert len(metrics["anomalies"]) == 150
+    assert "returned_anomalies" not in metrics
+    assert "truncated" not in metrics
     assert metrics["summary"]["total_anomalies"] == 150
+    assert "aggregated_anomalies" in metrics
     assert len(episode_result["observations"]["pingmesh_metrics"]["anomalies"]) == 150
+    assert "aggregated_anomalies" in episode_result["observations"]["pingmesh_metrics"]
+
+
+def test_canonical_observation_compacts_without_changing_public_symptoms():
+    episode_result = {
+        "episode": {"episode_id": "ep", "duration_seconds": 30},
+        "observations": {
+            "pingmesh_metrics": {
+                "anomalies": [
+                    {"type": "packet_loss", "severity": "high", "value": index}
+                    for index in range(20)
+                ],
+                "aggregated_anomalies": {"by_src_leaf": {}},
+            }
+        },
+    }
+    symptoms = build_public_symptoms(episode_result=episode_result, pingmesh_query_window={})
+    canonical = build_canonical_observation(
+        case_id="case-deadbeef1234",
+        topology={"devices": {}, "links": []},
+        symptoms=symptoms,
+    )
+
+    compacted = canonical["symptoms"]["observations"]["pingmesh_metrics"]
+    assert len(compacted["anomalies"]) == 12
+    assert compacted["truncated"] is True
+    assert "aggregated_anomalies" not in compacted
+    assert len(symptoms["observations"]["pingmesh_metrics"]["anomalies"]) == 20

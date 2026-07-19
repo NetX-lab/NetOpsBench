@@ -11,6 +11,19 @@ def _toolkit(tmp_path) -> AgentToolkit:
     return AgentToolkit(topology_metadata=metadata)
 
 
+def _complete_index_rows(devices):
+    rows = []
+    for device in devices:
+        rows.extend(
+            [
+                {"result": "index_first", "source": device, "_time": "2026-07-11T00:00:01Z", "_value": 1},
+                {"result": "index_last", "source": device, "_time": "2026-07-11T00:00:29Z", "_value": 1},
+                {"result": "index_count", "source": device, "_value": 3},
+            ]
+        )
+    return rows
+
+
 def test_query_bgp_events_classifies_session_transitions(monkeypatch, tmp_path):
     toolkit = _toolkit(tmp_path)
     rows = [
@@ -156,12 +169,266 @@ def test_query_bgp_events_query_is_centralized_and_topology_scoped(monkeypatch, 
     result = toolkit.query_bgp_events(time_range_minutes=10, device="leaf1", peer="10.0.0.1")
 
     assert result.success is True
+    assert len(queries) == 3
+    assert 'r._measurement == "bgp_event_index"' in queries[0]
+    assert f'r.topology_id == "{toolkit.topology_id}"' in queries[1]
+    assert 'r._measurement == "bgp_neighbors"' in queries[1]
+    assert 'r._measurement == "bgp_collection"' in queries[2]
+    assert 'r.source == "leaf1"' in queries[1]
+    assert 'r.neighbor_address == "10.0.0.1"' in queries[1]
+
+
+def test_query_bgp_events_uses_transition_fast_path_when_index_covers_window(monkeypatch, tmp_path):
+    toolkit = _toolkit(tmp_path)
+    queries = []
+    fast_rows = [
+        {
+            "result": "first_state",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_time": "2026-07-11T00:00:10Z",
+            "_value": "IDLE",
+        },
+        {
+            "result": "last_state",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_time": "2026-07-11T00:00:20Z",
+            "_value": "ESTABLISHED",
+        },
+        {"result": "state_count", "source": "leaf1", "neighbor_address": "10.0.0.1", "_value": 5},
+        {
+            "result": "latest_field",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_field": "asn",
+            "_time": "2026-07-11T00:00:20Z",
+            "_value": 65100,
+        },
+        {
+            "result": "latest_field",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_field": "prefixes_received",
+            "_time": "2026-07-11T00:00:20Z",
+            "_value": 3,
+        },
+        {
+            "result": "prior_field",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_field": "session_state",
+            "_time": "2026-07-10T23:59:50Z",
+            "_value": "ESTABLISHED",
+        },
+        {
+            "result": "prior_field",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_field": "prefixes_received",
+            "_time": "2026-07-10T23:59:50Z",
+            "_value": 4,
+        },
+        {
+            "result": "session_events",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "event_type": "session_down",
+            "_time": "2026-07-11T00:00:10Z",
+            "previous_state": "ESTABLISHED",
+            "latest_state": "IDLE",
+        },
+        {
+            "result": "session_events",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "event_type": "session_recovered",
+            "_time": "2026-07-11T00:00:20Z",
+            "previous_state": "IDLE",
+            "latest_state": "ESTABLISHED",
+        },
+        {"result": "collection_first", "source": "leaf1", "_time": "2026-07-11T00:00:01Z", "_value": True},
+        {
+            "result": "collection_last",
+            "source": "leaf1",
+            "_field": "collection_ok",
+            "_time": "2026-07-11T00:00:29Z",
+            "_value": True,
+        },
+        {"result": "collection_count", "source": "leaf1", "_value": 3},
+    ]
+
+    def fake_query(query, **kwargs):
+        queries.append(query)
+        if 'r._measurement == "bgp_event_index"' in query:
+            return _complete_index_rows(["leaf1"])
+        return fast_rows
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.query_bgp_events(
+        start_time="2026-07-11T00:00:00Z",
+        end_time="2026-07-11T00:00:30Z",
+        device="leaf1",
+        peer="10.0.0.1",
+    )
+
+    assert result.success is True
+    assert len(queries) == 3
+    event = result.data["events"][0]
+    assert event["event_type"] == "session_flap"
+    assert event["sample_count"] == 5
+    assert event["prefixes_before"] == 4
+    assert event["prefixes_after"] == 3
+    assert event["states_observed"] == ["IDLE", "ESTABLISHED"]
+    assert all('r.source == "leaf1"' in query for query in queries[1:])
+    assert all('r.neighbor_address == "10.0.0.1"' in query for query in queries[1:])
+    prior_section = queries[2].split("prior =", 1)[1]
+    assert '|> group(columns: ["source", "neighbor_address", "_field"])' in prior_section
+    assert "|> pivot" not in prior_section
+
+
+def test_query_bgp_events_fast_path_pushes_role_filter_and_limits(monkeypatch, tmp_path):
+    toolkit = _toolkit(tmp_path)
+    queries = []
+    rows = []
+    for index, leaf in enumerate(("leaf1", "leaf2"), 1):
+        rows.extend(
+            [
+                {
+                    "result": "first_state",
+                    "source": leaf,
+                    "neighbor_address": f"10.0.0.{index}",
+                    "_time": "2026-07-11T00:00:10Z",
+                    "_value": "IDLE",
+                },
+                {
+                    "result": "last_state",
+                    "source": leaf,
+                    "neighbor_address": f"10.0.0.{index}",
+                    "_time": "2026-07-11T00:00:20Z",
+                    "_value": "IDLE",
+                },
+                {"result": "state_count", "source": leaf, "neighbor_address": f"10.0.0.{index}", "_value": 2},
+                {"result": "collection_first", "source": leaf, "_time": "2026-07-11T00:00:01Z", "_value": True},
+                {
+                    "result": "collection_last",
+                    "source": leaf,
+                    "_field": "collection_ok",
+                    "_time": "2026-07-11T00:00:29Z",
+                    "_value": True,
+                },
+                {"result": "collection_count", "source": leaf, "_value": 3},
+            ]
+        )
+
+    def fake_query(query, **kwargs):
+        queries.append(query)
+        return _complete_index_rows(["leaf1", "leaf2"]) if "bgp_event_index" in query else rows
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.query_bgp_events(
+        start_time="2026-07-11T00:00:00Z",
+        end_time="2026-07-11T00:00:30Z",
+        role="leaf",
+        limit=1,
+    )
+
+    assert result.success is True
+    assert result.data["returned_events"] == 1
+    assert result.data["truncated"] is True
+    assert all('contains(value: r.source, set: ["leaf1", "leaf2"])' in query for query in queries)
+
+
+def test_query_bgp_events_healthy_fast_path_skips_global_session_details(monkeypatch, tmp_path):
+    toolkit = _toolkit(tmp_path)
+    queries = []
+    collection_rows = [
+        {"result": "collection_first", "source": "leaf1", "_time": "2026-07-11T00:00:01Z", "_value": True},
+        {
+            "result": "collection_last",
+            "source": "leaf1",
+            "_field": "collection_ok",
+            "_time": "2026-07-11T00:00:29Z",
+            "_value": True,
+        },
+        {"result": "collection_count", "source": "leaf1", "_value": 3},
+    ]
+
+    def fake_query(query, **kwargs):
+        queries.append(query)
+        return _complete_index_rows(["leaf1"]) if "bgp_event_index" in query else collection_rows
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.query_bgp_events(
+        start_time="2026-07-11T00:00:00Z",
+        end_time="2026-07-11T00:00:30Z",
+        device="leaf1",
+    )
+
+    assert result.success is True
+    assert result.data["events"] == []
     assert len(queries) == 2
-    assert f'r.topology_id == "{toolkit.topology_id}"' in queries[0]
-    assert 'r._measurement == "bgp_neighbors"' in queries[0]
-    assert 'r._measurement == "bgp_collection"' in queries[1]
-    assert 'r.source == "leaf1"' in queries[0]
-    assert 'r.neighbor_address == "10.0.0.1"' in queries[0]
+    assert "neighbors =" not in queries[1]
+
+
+def test_bgp_fast_event_uses_later_missing_transition_as_latest_state(tmp_path):
+    toolkit = _toolkit(tmp_path)
+    scope = toolkit._resolve_pingmesh_time_scope(
+        10,
+        "2026-07-11T00:00:00Z",
+        "2026-07-11T00:00:30Z",
+    )
+    rows = [
+        {
+            "result": "first_state",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_time": "2026-07-11T00:00:10Z",
+            "_value": "ESTABLISHED",
+        },
+        {
+            "result": "last_state",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_time": "2026-07-11T00:00:10Z",
+            "_value": "ESTABLISHED",
+        },
+        {"result": "state_count", "source": "leaf1", "neighbor_address": "10.0.0.1", "_value": 1},
+        {
+            "result": "session_events",
+            "source": "leaf1",
+            "neighbor_address": "10.0.0.1",
+            "_time": "2026-07-11T00:00:20Z",
+            "previous_state": "ESTABLISHED",
+            "latest_state": "MISSING",
+        },
+        {"result": "collection_first", "source": "leaf1", "_time": "2026-07-11T00:00:01Z", "_value": True},
+        {
+            "result": "collection_last",
+            "source": "leaf1",
+            "_field": "collection_ok",
+            "_time": "2026-07-11T00:00:29Z",
+            "_value": True,
+        },
+        {"result": "collection_count", "source": "leaf1", "_value": 3},
+    ]
+
+    events = toolkit._build_bgp_events_fast(
+        rows,
+        scope,
+        toolkit._bgp_device_roles(),
+        "leaf1",
+        "10.0.0.1",
+        None,
+        "non_established",
+    )
+
+    assert events[0]["event_type"] == "session_down"
+    assert events[0]["latest_state"] == "MISSING"
+    assert events[0]["last_seen"] == "2026-07-11T00:00:20Z"
 
 
 def test_query_bgp_events_propagates_influx_failure(monkeypatch, tmp_path):

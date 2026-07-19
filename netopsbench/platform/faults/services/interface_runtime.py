@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from netopsbench.platform.utils.interface_names import to_linux_interface, to_sonic_interface
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from .command_runner import CommandRunner
     from .sonic_runtime import SonicRuntime
 
@@ -20,7 +20,7 @@ SONIC_DEFAULT_INTERFACE_MTU = 9100
 class InterfaceRuntime:
     """Interface naming resolution and MTU management."""
 
-    def __init__(self, cmd: CommandRunner, sonic: SonicRuntime, ctx: FaultContext) -> None:
+    def __init__(self, cmd: CommandRunner, sonic: SonicRuntime, ctx: FaultRuntimeContext) -> None:
         self._cmd = cmd
         self._sonic = sonic
         self._ctx = ctx

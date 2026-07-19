@@ -6,11 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.session.orchestrator import SessionOrchestrator
-from netopsbench.platform.session.types import ScenarioExecutionRef
 from netopsbench.sdk.reports import BenchmarkReport, RunHandle
 from netopsbench.sdk.runtimes import RuntimePool
-from netopsbench.sdk.scenarios import ScenarioHandle
 
 
 def _benchmark_report_from_payload(payload: dict[str, Any]) -> BenchmarkReport:
@@ -42,20 +41,8 @@ def _run_handle_from_payload(payload: dict[str, Any]) -> RunHandle:
     )
 
 
-def _coerce_public_scenario_input(scenario: ScenarioHandle | ScenarioExecutionRef | str | Path):
-    if isinstance(scenario, ScenarioHandle):
-        return ScenarioExecutionRef.from_scenario(scenario.to_scenario(), path=scenario.path)
-    return scenario
-
-
-def _coerce_public_scenario_inputs(scenarios: Sequence[ScenarioHandle | ScenarioExecutionRef] | str | Path):
-    if isinstance(scenarios, (str, Path)):
-        return scenarios
-    return [_coerce_public_scenario_input(item) for item in scenarios]
-
-
 class SessionManager:
-    """Thin SDK manager delegating runtime execution to platform internals."""
+    """SDK manager delegating benchmark execution to the shared episode kernel."""
 
     def __init__(
         self,
@@ -79,7 +66,7 @@ class SessionManager:
     def run_scenario(
         self,
         *,
-        scenario: ScenarioHandle | str | Path,
+        scenario: ScenarioSpec | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -89,7 +76,7 @@ class SessionManager:
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_scenario(
-            scenario=_coerce_public_scenario_input(scenario),
+            scenario=scenario,
             agent=agent,
             scale=scale,
             workers=workers,
@@ -102,7 +89,7 @@ class SessionManager:
     def run_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioHandle] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -112,7 +99,7 @@ class SessionManager:
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_suite(
-            scenarios=_coerce_public_scenario_inputs(scenarios),
+            scenarios=scenarios,
             agent=agent,
             scale=scale,
             workers=workers,
@@ -125,14 +112,14 @@ class SessionManager:
     def run_on_runtime_scenario(
         self,
         *,
-        scenario: ScenarioHandle | str | Path,
+        scenario: ScenarioSpec | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_on_runtime_scenario(
-            scenario=_coerce_public_scenario_input(scenario),
+            scenario=scenario,
             runtime=runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,
@@ -142,14 +129,14 @@ class SessionManager:
     def run_on_runtime_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioHandle] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_on_runtime_suite(
-            scenarios=_coerce_public_scenario_inputs(scenarios),
+            scenarios=scenarios,
             runtime=runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,

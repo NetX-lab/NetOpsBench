@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.routing_runtime import RoutingRuntime
     from ..services.sonic_runtime import SonicRuntime
     from ..services.tracking import FaultTracker
@@ -20,7 +20,7 @@ class BgpHandler:
         sonic: SonicRuntime,
         routing: RoutingRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._sonic = sonic
         self._routing = routing

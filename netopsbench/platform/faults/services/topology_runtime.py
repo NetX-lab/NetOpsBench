@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from netopsbench.platform.topology.configdb_payload import interface_names_for_config
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from .interface_runtime import InterfaceRuntime
     from .sonic_runtime import SonicRuntime
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class TopologyRuntime:
     """Topology-aware config loading and device selection."""
 
-    def __init__(self, sonic: SonicRuntime, iface: InterfaceRuntime, ctx: FaultContext) -> None:
+    def __init__(self, sonic: SonicRuntime, iface: InterfaceRuntime, ctx: FaultRuntimeContext) -> None:
         self._sonic = sonic
         self._iface = iface
         self._ctx = ctx

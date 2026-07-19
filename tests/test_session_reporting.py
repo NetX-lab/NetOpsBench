@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from netopsbench.models.profiles import default_scale_registry
 from netopsbench.platform.session.reporting import create_run_report, load_topology_metadata, next_run_id
 from netopsbench.platform.topology.generator import generate_topology
 
@@ -43,7 +44,11 @@ def test_session_runtime_loader_requires_canonical_topology(tmp_path: Path):
 
 
 def test_create_run_report_preserves_topology_scale_and_agent_name(tmp_path: Path):
-    runtime = SimpleNamespace(id="run-0001-runtime", scale="small")
+    runtime = SimpleNamespace(
+        id="run-0001-runtime",
+        scale="small",
+        scale_registry=default_scale_registry(),
+    )
     agent = SimpleNamespace(name="agent-x")
     scenario = SimpleNamespace(id="generated_link_down_small_001", scale="small")
 
@@ -78,5 +83,8 @@ def test_create_run_report_preserves_topology_scale_and_agent_name(tmp_path: Pat
     assert report["summary"]["agent_name"] == "agent-x"
     assert report["summary"]["topology_scale"] == "small"
     assert report["raw"]["topology_scale"] == "small"
+    assert report["scale_registry_sha256"] == runtime.scale_registry.digest
+    assert report["scale_profile_sha256"] == runtime.scale_registry.get("small").digest
+    assert report["resolved_scale_profile"]["name"] == "small"
     assert report["artifact_paths"]["traces_dir"] == str(tmp_path / "traces")
     assert report["artifact_paths"]["trace_index"] == str(tmp_path / "traces" / "index.jsonl")

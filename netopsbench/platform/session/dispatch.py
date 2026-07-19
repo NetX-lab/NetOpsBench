@@ -13,15 +13,17 @@ from typing import Any
 
 from netopsbench.evaluator.fault_type_judge import create_judge_from_env
 from netopsbench.evaluator.scorer import Evaluator
+from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.runtime import RuntimeIdentity
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.manager import RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.session.context import build_worker_execution_context
 from netopsbench.platform.session.diagnosis import build_runtime_diagnosis_callback
 from netopsbench.platform.session.reporting import load_topology_metadata
-from netopsbench.platform.session.scoring import score_scenario_fault_episodes
+from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.session.trace_store import TraceWriter
-from netopsbench.platform.session.types import ScenarioExecutionRef, WorkerExecutionContext
+from netopsbench.platform.session.types import WorkerExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +38,12 @@ class PoolDispatchResult:
 
 
 def assign_scenarios_to_workers(
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
     workers: Sequence[RuntimeIdentity],
-) -> dict[str, list[ScenarioExecutionRef]]:
+) -> dict[str, list[ScenarioSpec]]:
     if not workers:
         raise ValueError("runtime pool must contain at least one worker")
-    assignments: dict[str, list[ScenarioExecutionRef]] = {worker.worker_id: [] for worker in workers}
+    assignments: dict[str, list[ScenarioSpec]] = {worker.worker_id: [] for worker in workers}
     for index, scenario in enumerate(scenarios):
         assignments[workers[index % len(workers)].worker_id].append(scenario)
     return assignments
@@ -49,8 +51,8 @@ def assign_scenarios_to_workers(
 
 def _dispatch_workers(
     workers: Sequence[RuntimeIdentity],
-    scenarios: list[ScenarioExecutionRef],
-    run_worker: Callable[[RuntimeIdentity, list[ScenarioExecutionRef]], WorkerRunResult],
+    scenarios: list[ScenarioSpec],
+    run_worker: Callable[[RuntimeIdentity, list[ScenarioSpec]], WorkerRunResult],
 ) -> PoolDispatchResult:
     if not workers:
         raise ValueError("runtime must contain at least one worker")
@@ -89,18 +91,18 @@ def _build_scenario_executor(
     fault_registry: Any,
     baseline_wait_seconds: int,
     post_recovery_wait_seconds: int,
-    skip_none_episodes: bool,
+    scale_registry: ScaleRegistry,
 ) -> ScenarioExecutor:
     runner = ScenarioExecutor(
         topology_dir=str(worker_context.topology_dir),
         topology_metadata=load_topology_metadata(worker_context.topology_dir),
         baseline_wait_seconds=baseline_wait_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
-        skip_none_episodes=skip_none_episodes,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
         persist_results=False,
         fault_registry=fault_registry,
+        scale_registry=scale_registry,
     )
     runner.results_dir = worker_raw_dir
     return runner
@@ -120,9 +122,9 @@ def _run_worker(
     fault_registry: Any,
     baseline_wait_seconds: int,
     post_recovery_wait_seconds: int,
-    skip_none_episodes: bool,
+    scale_registry: ScaleRegistry,
     worker: RuntimeIdentity,
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
 ) -> WorkerRunResult:
     worker_context = build_worker_execution_context(worker, worker.topology_dir)
     worker_raw_dir = raw_dir / worker.worker_id
@@ -133,15 +135,17 @@ def _run_worker(
         fault_registry=fault_registry,
         baseline_wait_seconds=baseline_wait_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
-        skip_none_episodes=skip_none_episodes,
+        scale_registry=scale_registry,
     )
     evaluator = _create_evaluator()
+    runner.evaluator = evaluator
 
     evaluations: list[Any] = []
     scenario_summaries: list[dict[str, Any]] = []
     worker_success = True
 
-    for scenario in scenarios:
+    executed_count = 0
+    for scenario_index, scenario in enumerate(scenarios):
         callback = build_runtime_diagnosis_callback(
             agent,
             str(worker_context.topology_dir),
@@ -152,12 +156,12 @@ def _run_worker(
             runtime.id,
             scenario.scale,
         )
-        parsed_scenario = scenario.to_scenario()
-        scenario_result = runner.run_scenario(parsed_scenario, diagnosis_callback=callback)
+        scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
+        executed_count += 1
         raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
         try:
-            scored = score_scenario_fault_episodes(
-                parsed_scenario,
+            scored = score_scenario_episode(
+                scenario,
                 scenario_result,
                 evaluator,
                 topology_dir=str(worker_context.topology_dir),
@@ -183,7 +187,8 @@ def _run_worker(
             except Exception:
                 logger.debug("failed to persist trace evaluation results", exc_info=True)
         evaluations.extend(scored)
-        success = bool(scenario_result.get("success"))
+        cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
+        success = bool(scenario_result.get("success")) and cleanup_success
         scenario_summaries.append(
             {
                 "scenario_id": scenario.id,
@@ -191,16 +196,30 @@ def _run_worker(
                 "scale": scenario.scale,
                 "worker": worker.worker_id,
                 "raw_result_path": raw_result_path,
+                **({"failure_stage": "cleanup"} if not cleanup_success else {}),
             }
         )
         worker_success &= success
+        if not cleanup_success:
+            for skipped in scenarios[scenario_index + 1 :]:
+                scenario_summaries.append(
+                    {
+                        "scenario_id": skipped.id,
+                        "status": "skipped_infrastructure_failure",
+                        "scale": skipped.scale,
+                        "worker": worker.worker_id,
+                        "failure_stage": "prior_case_cleanup",
+                    }
+                )
+            break
 
     worker_summary = {
         "worker_id": worker.worker_id,
         "worker_name": worker.worker_id,
         "lab_name": worker.lab_name,
         "scenario_count": len(scenarios),
-        "executed_count": len(scenarios),
+        "executed_count": executed_count,
+        "skipped_count": len(scenarios) - executed_count,
         "success": worker_success,
     }
     return evaluations, scenario_summaries, worker_summary
@@ -222,16 +241,18 @@ def _persist_raw_scenario_result(
 def execute_on_runtime_pool(
     *,
     runtime: RuntimePool,
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
     agent: Any,
     raw_dir: Path,
     trace_writer: TraceWriter | None = None,
     fault_registry: Any = None,
     baseline_wait_seconds: int = 60,
     post_recovery_wait_seconds: int = 2,
-    skip_none_episodes: bool = True,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
+    mismatched = [scenario.id for scenario in scenarios if scenario.scale != runtime.scale]
+    if mismatched:
+        raise ValueError(f"Scenario scale does not match runtime scale {runtime.scale!r}: {', '.join(mismatched)}")
     return _dispatch_workers(
         runtime.workers,
         scenarios,
@@ -243,7 +264,7 @@ def execute_on_runtime_pool(
             fault_registry=fault_registry,
             baseline_wait_seconds=baseline_wait_seconds,
             post_recovery_wait_seconds=post_recovery_wait_seconds,
-            skip_none_episodes=skip_none_episodes,
+            scale_registry=runtime.scale_registry,
             worker=worker,
             scenarios=assigned,
         ),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.platform.runtime.deployment import (
     deploy_worker_lab,
     teardown_worker_lab,
@@ -20,6 +21,7 @@ from netopsbench.platform.runtime.lifecycle import (
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy or teardown one NetOpsBench worker")
+    parser.add_argument("--scale-profile", action="append", default=[])
     subparsers = parser.add_subparsers(dest="command", required=True)
     deploy = subparsers.add_parser("deploy")
     deploy.add_argument("scale")
@@ -31,8 +33,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     teardown = subparsers.add_parser("teardown")
     teardown.add_argument("topology_dir")
     args = parser.parse_args(argv)
+    registry = ScaleRegistry.with_builtins(args.scale_profile)
     if args.command == "teardown":
-        teardown_worker_lab(worker_from_topology(args.topology_dir))
+        teardown_worker_lab(worker_from_topology(args.topology_dir), registry)
         return 0
 
     worker = worker_from_cli(
@@ -42,11 +45,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         mgmt_subnet=args.mgmt_subnet,
         bucket=args.bucket,
         mgmt_network=args.mgmt_network,
+        registry=registry,
     )
-    deploy_worker_lab(worker, args.scale)
+    deploy_worker_lab(worker, args.scale, registry)
     ensure_worker_observability(worker)
     ensure_worker_pingmesh(worker)
-    validate_worker_health(worker)
+    validate_worker_health(worker, scale_registry=registry)
     return 0
 
 

@@ -31,6 +31,8 @@ def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
     assert "netopsbench/platform/observability/assets/grafana/provisioning/dashboards/default.yaml" in names
     assert "netopsbench/platform/observability/assets/grafana/provisioning/datasources/default.yaml" in names
     assert "netopsbench/platform/scenario/specs/fault_campaign.yaml" in names
+    assert "netopsbench/models/scale_profiles.yaml" in names
+    assert not any("rl_experiment" in name or "verl" in name for name in names)
     assert not any(name.startswith("netopsbench/resources/") for name in names)
     assert "netopsbench/platform/observability/assets/telegraf.conf" not in names
     assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)
@@ -44,6 +46,13 @@ def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        [str(venv_dir / "bin" / "netopsbench-simulator"), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert not (venv_dir / "bin" / "netopsbench-rl").exists()
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -53,6 +62,7 @@ from importlib.resources import files
 import netopsbench
 from netopsbench.platform.observability.lifecycle import observability_asset_root
 from netopsbench.platform.topology.generator import generate_topology
+from netopsbench.models.profiles import default_scale_registry
 
 source_root = Path({str(repo)!r}).resolve()
 package_file = Path(netopsbench.__file__).resolve()
@@ -64,6 +74,7 @@ assert (output / "configs" / "sonic" / "start.sh").is_file()
 assert (output / "configs" / "sonic" / "spine1" / "config_db.json").is_file()
 assert (observability_asset_root() / "telegraf.conf.template").is_file()
 assert files("netopsbench.platform.scenario").joinpath("specs", "fault_campaign.yaml").is_file()
+assert default_scale_registry().get("fat-tree-k12").total_clients == 144
 print(package_file)
 """
     env = os.environ.copy()

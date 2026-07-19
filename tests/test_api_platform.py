@@ -18,7 +18,8 @@ def test_netopsbench_exposes_all_managers():
         "runtimes",
         "sessions",
         "artifacts",
-        "evaluators",
+        "scales",
+        "simulators",
     ):
         manager = getattr(bench, manager_name)
         assert manager.platform is bench
@@ -68,7 +69,6 @@ def test_public_api_exports_shared_types():
         DiagnosticAgent,
         DiagnosticContext,
         EpisodeSpec,
-        EvaluatorManager,
         FaultContext,
         FaultExecutionResult,
         FaultExecutor,
@@ -76,27 +76,23 @@ def test_public_api_exports_shared_types():
         FaultPack,
         FaultRegistry,
         FaultSpec,
-        PlatformDefaults,
         RunHandle,
         RuntimeManager,
         RuntimePool,
-        ScenarioEvaluator,
-        ScenarioHandle,
         ScenarioManager,
         ScenarioSpec,
         SessionManager,
+        SimulatorManager,
         SyncDiagnosticAgent,
         builtin_mcp_server_command,
         builtin_mcp_server_config,
         start_builtin_mcp_server,
     )
 
-    assert PlatformDefaults.__name__ == "PlatformDefaults"
     assert ScenarioSpec.__name__ == "ScenarioSpec"
     assert EpisodeSpec.__name__ == "EpisodeSpec"
-    assert ScenarioHandle.__name__ == "ScenarioHandle"
     assert ScenarioManager.__name__ == "ScenarioManager"
-    assert ScenarioEvaluator.__name__ == "ScenarioEvaluator"
+    assert SimulatorManager.__name__ == "SimulatorManager"
     assert DiagnosticAgent.__name__ == "DiagnosticAgent"
     assert DiagnosticContext.__name__ == "DiagnosticContext"
     assert DiagnosisResult.__name__ == "DiagnosisResult"
@@ -119,7 +115,6 @@ def test_public_api_exports_shared_types():
     assert SessionManager.__name__ == "SessionManager"
     assert RunHandle.__name__ == "RunHandle"
     assert ArtifactManager.__name__ == "ArtifactManager"
-    assert EvaluatorManager.__name__ == "EvaluatorManager"
 
 
 def test_session_orchestrator_is_available_under_platform_session_package():

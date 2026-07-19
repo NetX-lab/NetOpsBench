@@ -1,7 +1,7 @@
 import random
 import subprocess
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -133,7 +133,7 @@ def test_build_fault_instance_static_route_targets_remote_client(tmp_path):
         1,
     )
 
-    episode = scenario["episodes"][1]
+    episode = scenario["episode"]
     assert episode["target_device"] == "leaf1"
     assert episode["metadata"]["target_ip"] == "192.168.102.2/32"
     assert episode["metadata"]["wrong_nexthop"] == "auto"
@@ -342,6 +342,37 @@ def test_influx_query_failure_is_structured_not_empty_data(monkeypatch):
     assert "offline" in result.error
 
 
+def test_query_influx_parses_multiple_yield_headers_and_keeps_zero(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+    csv_text = """#datatype,string,long,string,long
+,result,table,source,_value
+,index_count,0,leaf1,5
+
+#datatype,string,long,dateTime:RFC3339,double,string
+,result,table,_time,_value,source
+,index_last,1,2026-07-11T00:00:20Z,0,leaf1
+"""
+    monkeypatch.setattr(
+        "netopsbench.platform.toolkit._core.device.telemetry_parsers.query_flux",
+        lambda *args, **kwargs: FluxQueryResult(status="ok", text=csv_text),
+    )
+
+    result = query_influx(toolkit, 'from(bucket: "test")')
+
+    assert result.status == "ok"
+    assert result.rows == [
+        {"": "", "result": "index_count", "table": 0.0, "source": "leaf1", "_value": 5.0},
+        {
+            "": "",
+            "result": "index_last",
+            "table": 1.0,
+            "_time": "2026-07-11T00:00:20Z",
+            "_value": 0.0,
+            "source": "leaf1",
+        },
+    ]
+
+
 def test_parse_bgp_summary_skips_total_footer():
     sample = """
 Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
@@ -502,7 +533,7 @@ def test_get_device_logs_falls_back_to_container_logs(monkeypatch):
         lambda container, cmd_args, timeout: subprocess.CompletedProcess(
             args=["docker", "exec", container] + list(cmd_args),
             returncode=0,
-            stdout=(f"{datetime.now(UTC):%b %d %H:%M:%S.%f} " "leaf1 NOTICE #root: fallback-message\n"),
+            stdout=(f"{datetime.now(UTC):%b %d %H:%M:%S.%f} leaf1 NOTICE #root: fallback-message\n"),
             stderr="",
         ),
     )
@@ -513,6 +544,26 @@ def test_get_device_logs_falls_back_to_container_logs(monkeypatch):
     assert result.data["source"] == "container_logs_fallback"
     assert result.data["logs"][0]["message"] == "fallback-message"
     assert result.data["logs"][0]["severity"] == "notice"
+
+
+def test_container_log_fallback_respects_episode_end_time(monkeypatch):
+    from netopsbench.platform.toolkit._core.device.log_parsers import parse_local_syslog_lines
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    before = now - timedelta(seconds=10)
+    inside = now
+    at_end = now + timedelta(seconds=10)
+    lines = "\n".join(
+        [
+            f"{before:%b %d %H:%M:%S} leaf1 NOTICE #root: before",
+            f"{inside:%b %d %H:%M:%S} leaf1 NOTICE #root: inside",
+            f"{at_end:%b %d %H:%M:%S} leaf1 NOTICE #root: at-end",
+        ]
+    )
+
+    parsed = parse_local_syslog_lines(lines, cutoff=inside, end_time=at_end)
+
+    assert [item["message"] for item in parsed] == ["inside"]
 
 
 def test_ping_test_allows_infra_source(monkeypatch):
@@ -547,6 +598,44 @@ def test_traceroute_allows_infra_source(monkeypatch):
 
     result = toolkit.traceroute("spine1", "192.168.102.2")
     assert result.success is True
+
+
+def test_traceroute_uses_bounded_probe_budget(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+    calls = []
+
+    def fake_docker_exec(container, cmd, timeout):
+        calls.append((container, cmd, timeout))
+        return subprocess.CompletedProcess(cmd, 0, "1  *\n2  192.168.102.2  1.1 ms\n", "")
+
+    monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
+
+    result = toolkit.traceroute("spine1", "192.168.102.2")
+
+    assert result.success is True
+    assert result.data["traceroute"].startswith("1  *")
+    assert calls == [
+        (
+            toolkit.container_names["spine1"],
+            ["traceroute", "-n", "-q", "1", "-w", "1", "-m", "8", "192.168.102.2"],
+            12,
+        )
+    ]
+
+
+def test_traceroute_preserves_timeout_error_contract(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+
+    def fake_docker_exec(container, cmd, timeout):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
+
+    result = toolkit.traceroute("spine1", "192.168.102.2")
+
+    assert result.success is False
+    assert result.data is None
+    assert result.error == "Traceroute timed out"
 
 
 def test_ping_test_allows_client_source(monkeypatch):

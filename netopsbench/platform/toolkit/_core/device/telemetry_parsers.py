@@ -147,16 +147,30 @@ class InfluxQueryError(RuntimeError):
     """Raised when a structured InfluxDB query result reports failure."""
 
 
+def _iter_annotated_csv_rows(csv_text: str):
+    """Parse Flux CSV while honoring the repeated headers emitted by multiple yields."""
+    header: list[str] | None = None
+    for values in csv.reader(StringIO(csv_text)):
+        if not values or (values[0] and values[0].startswith("#")):
+            continue
+        if "result" in values and "table" in values:
+            header = values
+            continue
+        if header is None:
+            continue
+        padded = [*values, *([""] * max(0, len(header) - len(values)))]
+        yield dict(zip(header, padded[: len(header)], strict=False))
+
+
 def query_influx(toolkit, query: str, require_value: bool = True) -> InfluxQueryResult:
     result = query_flux(toolkit.influxdb_url, toolkit.influxdb_token, toolkit.influxdb_org, query)
     if result.status != "ok":
         return InfluxQueryResult(status="error", error=result.error)
     rows: list[dict[str, Any]] = []
-    reader = csv.DictReader(StringIO(result.text))
-    for row in reader:
+    for row in _iter_annotated_csv_rows(result.text):
         if row.get("result", "") == "result":
             continue
-        if require_value and not row.get("_value"):
+        if require_value and row.get("_value") in (None, ""):
             continue
         parsed = dict(row)
         for key, value in list(parsed.items()):

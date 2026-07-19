@@ -22,7 +22,7 @@ _EPISODE_ALLOWED_KEYS = {
     "duration_seconds",
     "stabilization_time",
 }
-_MAX_AGENT_ANOMALIES = 100
+_MAX_CANONICAL_ANOMALIES = 12
 
 
 def build_topology_snapshot(toolkit: AgentToolkit) -> dict:
@@ -84,17 +84,25 @@ def build_worker_execution_context(worker: RuntimeIdentity, topology_dir: Path) 
 
 
 def _bounded_observations(observations: dict[str, Any]) -> dict[str, Any]:
-    bounded = copy.deepcopy(observations)
-    metrics = bounded.get("pingmesh_metrics")
-    if not isinstance(metrics, dict):
-        return bounded
-    anomalies = metrics.get("anomalies")
-    if not isinstance(anomalies, list) or len(anomalies) <= _MAX_AGENT_ANOMALIES:
-        if isinstance(anomalies, list):
-            metrics["returned_anomalies"] = len(anomalies)
-            metrics["truncated"] = False
-        return bounded
+    """Return the complete public observation payload.
 
+    Model-specific prompt compaction belongs to the canonical observation
+    consumer.  It must not silently alter ``DiagnosticContext.symptoms`` for
+    third-party benchmark agents.
+    """
+    return copy.deepcopy(observations)
+
+
+def _compact_model_observations(observations: dict[str, Any]) -> dict[str, Any]:
+    """Compact only the optional model-facing canonical view."""
+    compacted = copy.deepcopy(observations)
+    metrics = compacted.get("pingmesh_metrics")
+    if not isinstance(metrics, dict):
+        return compacted
+    metrics.pop("aggregated_anomalies", None)
+    anomalies = metrics.get("anomalies")
+    if not isinstance(anomalies, list):
+        return compacted
     severity_rank = {"high": 2, "medium": 1, "low": 0}
     persistence_rank = {"persistent": 3, "steady_only": 2, "early_only": 1, "full_window": 0}
 
@@ -108,31 +116,14 @@ def _bounded_observations(observations: dict[str, Any]) -> dict[str, Any]:
             str(item.get("dst_ip", "")),
         )
 
-    ordered = sorted((item for item in anomalies if isinstance(item, dict)), key=rank)
-    selected: list[dict[str, Any]] = []
-    selected_ids: set[int] = set()
-    represented: set[tuple[str, str, str]] = set()
-    for item in ordered:
-        identity = (str(item.get("type")), str(item.get("src_leaf")), str(item.get("dst_leaf")))
-        if identity in represented:
-            continue
-        represented.add(identity)
-        selected.append(item)
-        selected_ids.add(id(item))
-        if len(selected) == _MAX_AGENT_ANOMALIES:
-            break
-    if len(selected) < _MAX_AGENT_ANOMALIES:
-        for item in ordered:
-            if id(item) in selected_ids:
-                continue
-            selected.append(item)
-            if len(selected) == _MAX_AGENT_ANOMALIES:
-                break
-
+    selected = sorted(
+        (item for item in anomalies if isinstance(item, dict)),
+        key=rank,
+    )[:_MAX_CANONICAL_ANOMALIES]
     metrics["anomalies"] = selected
     metrics["returned_anomalies"] = len(selected)
     metrics["truncated"] = len(selected) < len(anomalies)
-    return bounded
+    return compacted
 
 
 def build_public_case_id(*, scenario_id: str, episode_result: dict[str, Any]) -> str:
@@ -159,7 +150,49 @@ def build_public_symptoms(*, episode_result: dict[str, Any], pingmesh_query_wind
     }
 
 
+def build_canonical_observation(
+    *,
+    case_id: str,
+    topology: dict[str, Any],
+    symptoms: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the shared model-visible observation for benchmark and RL agents."""
+    devices = topology.get("devices", {}) if isinstance(topology, dict) else {}
+    if not isinstance(devices, dict):
+        devices = {}
+
+    def count(group: str) -> int:
+        entries = devices.get(group, [])
+        return len(entries) if isinstance(entries, list) else 0
+
+    family = topology.get("topology_type") or topology.get("family") or "unknown"
+    spines = count("spines")
+    leafs = count("leafs")
+    if family == "fat-tree":
+        spines = count("cores") or spines
+        leafs = count("edges") or leafs
+    links = topology.get("links", []) if isinstance(topology, dict) else []
+    source_symptoms = symptoms if isinstance(symptoms, dict) else {}
+    canonical_symptoms = {
+        "episode": copy.deepcopy(source_symptoms.get("episode", {})),
+        "observations": _compact_model_observations(source_symptoms.get("observations", {})),
+        "pingmesh_query_window": copy.deepcopy(source_symptoms.get("pingmesh_query_window", {})),
+    }
+    return {
+        "case_id": case_id,
+        "topology_summary": {
+            "family": str(family),
+            "spines": spines,
+            "leafs": leafs,
+            "clients": count("clients"),
+            "links": len(links) if isinstance(links, list) else 0,
+        },
+        "symptoms": canonical_symptoms,
+    }
+
+
 __all__ = [
+    "build_canonical_observation",
     "build_public_case_id",
     "build_public_symptoms",
     "build_topology_snapshot",

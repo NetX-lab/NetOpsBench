@@ -1,135 +1,79 @@
-"""Public scenario authoring API."""
+"""Public canonical scenario authoring API."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from copy import deepcopy
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from netopsbench.models.profiles import supported_scales
-from netopsbench.platform.scenario.executor import Episode, Scenario
-from netopsbench.platform.scenario.parser import (
-    episode_from_dict,
-    episode_to_dict,
-    parse_scenario_file,
-    save_scenario_file,
-    scenario_from_dict,
-    scenario_to_dict,
-)
+from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, supported_scales
+from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
+from netopsbench.platform.scenario.parser import parse_scenario_file, save_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario
 
 
-@dataclass
-class ScenarioHandle:
-    """Public scenario wrapper storing public-facing data only."""
-
-    _data: dict[str, Any]
-    path: Path | None = None
-
-    @property
-    def id(self) -> str:
-        return self._data["scenario_id"]
-
-    @property
-    def name(self) -> str:
-        return self._data["name"]
-
-    @property
-    def description(self) -> str:
-        return self._data.get("description", "")
-
-    @property
-    def scale(self) -> str:
-        return self._data.get("topology_scale", "xs")
-
-    @property
-    def traffic_profile(self) -> str:
-        return self._data.get("traffic_profile", "standard")
-
-    @property
-    def metadata(self) -> dict[str, Any]:
-        return deepcopy(self._data.get("metadata", {}))
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return deepcopy(self._data.get("parameters", {}))
-
-    @property
-    def episodes(self) -> list[dict[str, Any]]:
-        return deepcopy(self._data.get("episodes", []))
-
-    def to_scenario(self) -> Scenario:
-        return scenario_from_dict(self.to_dict())
-
-    def to_dict(self) -> dict[str, Any]:
-        return deepcopy(self._data)
-
-    @classmethod
-    def from_scenario(cls, scenario: Scenario, path: str | Path | None = None) -> ScenarioHandle:
-        return cls(_data=scenario_to_dict(scenario), path=Path(path) if path is not None else None)
-
-
 class ScenarioManager:
-    """Thin adapter over the existing scenario parser helpers."""
+    """Create, load, validate, and save canonical scenarios."""
 
-    def __init__(self, workspace: str | Path = "."):
+    def __init__(self, workspace: str | Path = ".", scale_registry: ScaleRegistry | None = None):
         self.workspace = Path(workspace)
+        self.scale_registry = scale_registry or default_scale_registry()
 
     def create(
         self,
         *,
         id: str,
         name: str,
+        episode: EpisodeSpec | dict[str, Any] | None = None,
+        episodes: Sequence[EpisodeSpec | dict[str, Any]] | None = None,
         description: str = "",
         scale: str = "xs",
         traffic_profile: str = "standard",
-        episodes: Sequence[dict[str, Any] | Episode] | None = None,
         metadata: dict[str, Any] | None = None,
         parameters: dict[str, Any] | None = None,
-    ) -> ScenarioHandle:
+    ) -> ScenarioSpec:
+        self.scale_registry.get(scale)
         if traffic_profile != "standard":
             raise ValueError(f"Only the standard traffic profile is supported, got: {traffic_profile}")
-        payload = {
-            "scenario_id": id,
-            "name": name,
-            "description": description,
-            "topology_scale": scale,
-            "traffic_profile": traffic_profile,
-            "episodes": [self._coerce_episode_data(item) for item in (episodes or [])],
-            "metadata": dict(metadata or {}),
-            "parameters": dict(parameters or {}),
-        }
-        return ScenarioHandle(_data=payload)
+        candidates = ([episode] if episode is not None else []) + list(episodes or [])
+        if len(candidates) != 1:
+            raise ValueError("Canonical scenarios require exactly one diagnosable episode")
+        item = candidates[0]
+        episode_spec = item if isinstance(item, EpisodeSpec) else EpisodeSpec.model_validate(item)
+        return ScenarioSpec(
+            scenario_id=id,
+            name=name,
+            description=description,
+            topology_scale=scale,
+            traffic_profile="standard",
+            episode=episode_spec,
+            metadata=dict(metadata or {}),
+            parameters=dict(parameters or {}),
+        )
 
-    def load(self, path: str | Path) -> ScenarioHandle:
-        resolved = Path(path)
-        return ScenarioHandle.from_scenario(parse_scenario_file(resolved), path=resolved)
+    def load(self, path: str | Path) -> ScenarioSpec:
+        scenario = parse_scenario_file(path)
+        errors = self.validate(scenario)
+        if errors:
+            raise ValueError("Invalid scenario: " + "; ".join(errors))
+        return scenario
 
-    def save(self, handle: ScenarioHandle | Scenario, path: str | Path) -> Path:
-        scenario = self._coerce_scenario(handle)
+    def save(self, scenario: ScenarioSpec, path: str | Path) -> Path:
         return save_scenario_file(scenario, path)
 
-    def validate(self, handle: ScenarioHandle | Scenario) -> list[str]:
-        scenario = self._coerce_scenario(handle)
+    def validate(self, scenario: ScenarioSpec) -> list[str]:
         fault_manager = getattr(getattr(self, "platform", None), "faults", None)
         registry = getattr(fault_manager, "spec_registry", None)
-        return validate_scenario(scenario, fault_registry=registry)
-
-    def _coerce_scenario(self, handle: ScenarioHandle | Scenario) -> Scenario:
-        if isinstance(handle, ScenarioHandle):
-            return handle.to_scenario()
-        if isinstance(handle, Scenario):
-            return handle
-        raise TypeError(f"Unsupported scenario value: {type(handle)!r}")
-
-    def _coerce_episode_data(self, value: dict[str, Any] | Episode) -> dict[str, Any]:
-        if isinstance(value, Episode):
-            return episode_to_dict(value)
-        if isinstance(value, dict):
-            return episode_to_dict(episode_from_dict(value))
-        raise TypeError(f"Unsupported episode value: {type(value)!r}")
+        return validate_scenario(
+            scenario,
+            fault_registry=registry,
+            scale_registry=self.scale_registry,
+        )
 
 
-__all__ = ["ScenarioHandle", "ScenarioManager", "supported_scales"]
+# The old handle represented the same public scenario value.  Keeping the
+# alias preserves imports without reintroducing a second scenario model.
+ScenarioHandle = ScenarioSpec
+
+
+__all__ = ["EpisodeSpec", "ScenarioHandle", "ScenarioManager", "ScenarioSpec", "supported_scales"]

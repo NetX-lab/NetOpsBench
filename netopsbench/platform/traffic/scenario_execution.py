@@ -21,8 +21,13 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
     if not topology_file.exists():
         raise FileNotFoundError(f"Topology metadata not found: {topology_file}")
 
-    traffic_config = generate_traffic_config(str(topology_file), scale, profile)
-    validate_traffic_config(traffic_config, scale)
+    traffic_config = generate_traffic_config(
+        str(topology_file),
+        scale,
+        profile,
+        scale_registry=runner.scale_registry,
+    )
+    validate_traffic_config(traffic_config, scale, scale_registry=runner.scale_registry)
 
     logger.info(f"  Total flows: {traffic_config['stats']['total_flows']}")
     logger.info(f"  UDP flows: {traffic_config['stats']['udp_flows']}")

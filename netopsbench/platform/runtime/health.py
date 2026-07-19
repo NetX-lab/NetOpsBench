@@ -19,7 +19,7 @@ from math import ceil
 
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.topology import DeviceRole, TopologyManifest
 from netopsbench.platform.topology.topology_utils import (
@@ -161,6 +161,7 @@ def check_worker_health(
     influxdb_org: str | None = None,
     health_retries: int | None = None,
     health_delay: int | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> list[str]:
     """Run all health checks and return a list of error messages (empty = healthy).
 
@@ -193,7 +194,7 @@ def check_worker_health(
     influxdb_token = influxdb_token or config.influxdb_token
     influxdb_org = influxdb_org or config.influxdb_org
 
-    profile = get_scale_profile(topo.scale)
+    profile = get_scale_profile(topo.scale, scale_registry)
     delay = HEALTH_POLL_INTERVAL_SECONDS if health_delay is None else health_delay
     retries = health_retries or max(1, ceil(profile.health_timeout_seconds / max(1, delay)))
 

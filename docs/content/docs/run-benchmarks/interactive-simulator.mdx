@@ -1,0 +1,49 @@
+---
+title: Interactive Simulator
+description: Diagnose one NetOpsBench scenario through the shared incident engine.
+---
+
+The interactive simulator and the benchmark runner use the same incident
+lifecycle, tool registry, evaluator, and cleanup semantics. The simulator only
+changes how control is exposed: agents call `reset()` and `step()` instead of
+returning a diagnosis from one `diagnose()` call.
+
+```python
+from netopsbench.sdk import NetOpsBench, SubmitDiagnosisAction
+
+with NetOpsBench(workspace=".") as bench:
+    scenario = bench.scenarios.load("scenarios/generated/xs/example.yaml")
+    environment = bench.simulators.create(scenario=scenario)
+    reset = environment.reset()
+
+    result = environment.step(
+        SubmitDiagnosisAction(
+            diagnosis={"verdict": "network_healthy"},
+        )
+    )
+```
+
+`reset.observation` contains the compact canonical model view. Benchmark agents
+continue to receive the complete `DiagnosticContext.topology` and
+`DiagnosticContext.symptoms`; the compact view is also available through
+`context.metadata["canonical_observation"]`.
+
+For multiple independent agents diagnosing one prepared incident, use the
+advanced API:
+
+```python
+from netopsbench.sdk import SimulatorConfig
+
+incident = bench.simulators.prepare(scenario=scenario)
+first = incident.open_session(SimulatorConfig())
+second = incident.open_session(SimulatorConfig())
+try:
+    # Each session has independent counters and diagnosis state.
+    ...
+finally:
+    incident.close()  # fault recovery occurs once
+```
+
+The optional localhost HTTP service accepts opaque case IDs and the same typed
+tool and diagnosis actions. Install `netopsbench[simulator]` and run
+`netopsbench-simulator --help` for its scenario-loading options.

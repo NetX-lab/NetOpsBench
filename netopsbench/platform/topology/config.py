@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from netopsbench.models.profiles import ScaleProfile, get_scale_profile
+from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
+from netopsbench.models.topology import PingmeshPolicy
 
 DEFAULT_SONIC_VS_IMAGE = "yyyyyt123/netopsbench-sonic-vs-202505-telemetry:202505-telemetry"
 DEFAULT_CLIENT_IMAGE = "yyyyyt123/netopsbench-client:python3"
@@ -42,6 +43,7 @@ class TopologyConfig:
     spine_asn: int = 65001
     leaf_asn_start: int = 65011
     scale_name: str | None = None
+    pingmesh_policy: PingmeshPolicy | None = None
 
 
 @dataclass
@@ -61,6 +63,7 @@ class FatTreeConfig:
     edge_asn_start: int = 65201
     clients_per_edge: int | None = None
     scale_name: str | None = None
+    pingmesh_policy: PingmeshPolicy | None = None
 
     def __post_init__(self) -> None:
         if self.k < 2 or self.k % 2 != 0:
@@ -110,6 +113,7 @@ def _clos_config_from_profile(profile: ScaleProfile) -> TopologyConfig:
         clients_per_leaf=profile.clients_per_attached_switch,
         mgmt_ipv4_subnet=_topology_mgmt_subnet(profile),
         scale_name=profile.name,
+        pingmesh_policy=_pingmesh_policy(profile),
     )
 
 
@@ -119,11 +123,21 @@ def _fat_tree_config_from_profile(profile: ScaleProfile) -> FatTreeConfig:
         clients_per_edge=profile.clients_per_attached_switch,
         mgmt_ipv4_subnet=_topology_mgmt_subnet(profile),
         scale_name=profile.name,
+        pingmesh_policy=_pingmesh_policy(profile),
     )
 
 
-def config_for_scale(scale: str) -> TopologyConfig | FatTreeConfig:
-    profile = get_scale_profile(scale)
+def _pingmesh_policy(profile: ScaleProfile) -> PingmeshPolicy:
+    return PingmeshPolicy(
+        destination_batch_size=profile.pingmesh_destination_batch_size,
+        rtt_port_pool_size=profile.pingmesh_rtt_port_pool_size,
+        rtt_ports_per_cycle=profile.pingmesh_rtt_ports_per_cycle,
+        cycle_interval_seconds=profile.pingmesh_cycle_interval_seconds,
+    )
+
+
+def config_for_scale(scale: str, registry: ScaleRegistry | None = None) -> TopologyConfig | FatTreeConfig:
+    profile = get_scale_profile(scale, registry)
     if profile.family == "clos":
         return _clos_config_from_profile(profile)
     return _fat_tree_config_from_profile(profile)

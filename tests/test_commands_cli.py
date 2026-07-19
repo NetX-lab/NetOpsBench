@@ -100,7 +100,7 @@ def test_cli_scenario_validate_and_list(tmp_path, monkeypatch, capsys):
     scenario_dir.mkdir()
     scenario_file = scenario_dir / "s1.yaml"
     scenario_file.write_text(
-        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nepisodes:\n  - episode_id: ep1\n    fault_type: link_down\n    target:\n      device: leaf1\n      interface: Ethernet1\n",
+        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nmetadata:\n  difficulty: easy\nepisode:\n  episode_id: diagnosis\n  fault_type: link_down\n  target_device: leaf1\n  target_interface: Ethernet1\n",
         encoding="utf-8",
     )
 
@@ -215,7 +215,9 @@ def test_cli_topology_generate_uses_default_output_dir(tmp_path, monkeypatch, ca
     assert main() == 0
     out = capsys.readouterr().out
     assert "generated topology" in out
-    assert calls == {"workspace": tmp_path, "scale": "small", "output_dir": None}
+    assert calls["workspace"].workspace == tmp_path
+    assert calls["scale"] == "small"
+    assert calls["output_dir"] is None
 
 
 def test_scenario_generator_module_importable():

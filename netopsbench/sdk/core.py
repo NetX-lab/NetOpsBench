@@ -1,6 +1,7 @@
 """Public NetOpsBench SDK root."""
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from .artifacts import ArtifactManager
 from .evaluators import EvaluatorManager
 from .faults import FaultManager
 from .runtimes import RuntimeManager
+from .scales import ScaleManager
 from .scenarios import ScenarioManager
 from .sessions import SessionManager
 
@@ -34,15 +36,25 @@ class NetOpsBench:
     def __init__(
         self,
         workspace: str = ".",
+        *,
+        scale_profiles: Iterable[str | Path] = (),
     ):
         configure_logging()
         self.workspace = Path(workspace)
         self._closed = False
+        self._simulators = None
 
-        self.scenarios = self._bind_manager(ScenarioManager(workspace=self.workspace), "scenarios")
+        self.scales = self._bind_manager(ScaleManager(scale_profiles), "scales")
+        self.scenarios = self._bind_manager(
+            ScenarioManager(workspace=self.workspace, scale_registry=self.scales.registry),
+            "scenarios",
+        )
         self.agents = self._bind_manager(AgentManager(platform=self), "agents")
         self.faults = self._bind_manager(FaultManager(workspace=str(self.workspace)), "faults")
-        self.runtimes = self._bind_manager(RuntimeManager(workspace=str(self.workspace)), "runtimes")
+        self.runtimes = self._bind_manager(
+            RuntimeManager(workspace=str(self.workspace), scale_registry=self.scales.registry),
+            "runtimes",
+        )
         self.artifacts = self._bind_manager(ArtifactManager(workspace=str(self.workspace)), "artifacts")
         self.evaluators = self._bind_manager(EvaluatorManager(), "evaluators")
         self.sessions = self._bind_manager(
@@ -54,6 +66,23 @@ class NetOpsBench:
             ),
             "sessions",
         )
+
+    @property
+    def simulators(self):
+        """Lazily construct the optional simulator manager."""
+        if self._simulators is None:
+            from .simulators import SimulatorManager
+
+            self._simulators = self._bind_manager(
+                SimulatorManager(
+                    workspace=self.workspace,
+                    scale_registry=self.scales.registry,
+                    runtime_manager=self.runtimes,
+                    fault_registry=self.faults.spec_registry,
+                ),
+                "simulators",
+            )
+        return self._simulators
 
     def _bind_manager(self, manager: Any, name: str) -> Any:
         manager.platform = self
@@ -74,6 +103,11 @@ class NetOpsBench:
         if self._closed:
             return
         self._closed = True
+        if self._simulators is not None:
+            try:
+                self._simulators.close()
+            except Exception:
+                logger.warning("SimulatorManager.close() failed", exc_info=True)
         agents_close = getattr(self.agents, "close", None)
         if callable(agents_close):
             try:

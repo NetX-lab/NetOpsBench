@@ -223,15 +223,13 @@ def test_custom_fault_registry_is_isolated_per_netopsbench_instance(tmp_path):
         id="isolated",
         name="isolated",
         scale="xs",
-        metadata={"difficulty": "easy", "expected_diagnosis": "isolated_fault"},
-        episodes=[
-            {
-                "episode_id": "ep1",
-                "description": "custom",
-                "fault_type": "isolated_fault",
-                "target_device": "leaf1",
-            }
-        ],
+        metadata={"difficulty": "easy"},
+        episode={
+            "episode_id": "diagnosis",
+            "description": "custom",
+            "fault_type": "isolated_fault",
+            "target_device": "leaf1",
+        },
     )
     assert first.scenarios.validate(scenario) == []
     assert any("Unsupported fault_type" in error for error in second.scenarios.validate(scenario))

@@ -3,18 +3,17 @@
 import ipaddress
 import json
 import random
-from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from netopsbench.models import topology as topology_models
+from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import Collector, Device, DeviceRole, Management, TopologyManifest
 from netopsbench.platform.faults.specs import FaultSpec, create_fault_registry
 from netopsbench.platform.pingmesh.generator import PinglistGenerator
 from netopsbench.platform.scenario import generator as scenario_generator
 from netopsbench.platform.scenario.executor import ScenarioExecutor
-from netopsbench.platform.scenario.models import Episode, Scenario
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
 from netopsbench.platform.topology.generator import generate_topology
@@ -93,15 +92,13 @@ def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
                 "description": "No fault episode",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "episodes": [
-                    {
-                        "episode_id": "ep001",
-                        "description": "baseline",
-                        "fault_type": "none",
-                        "duration_seconds": 10,
-                        "stabilization_time": 1,
-                    }
-                ],
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "description": "baseline",
+                    "fault_type": "none",
+                    "duration_seconds": 10,
+                    "stabilization_time": 1,
+                },
             }
         ),
         encoding="utf-8",
@@ -109,7 +106,7 @@ def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
 
     scenario = parse_scenario_file(str(scenario_path))
 
-    assert scenario.episodes[0].target_device is None
+    assert scenario.episode.target_device is None
     assert validate_scenario(scenario) == []
 
 
@@ -123,16 +120,13 @@ def test_validate_scenario_accepts_xlarge_scale(tmp_path):
                 "description": "No fault episode",
                 "topology_scale": "xlarge",
                 "traffic_profile": "standard",
-                "metadata": {"negative_sample": True},
-                "episodes": [
-                    {
-                        "episode_id": "ep001",
-                        "description": "baseline",
-                        "fault_type": "none",
-                        "duration_seconds": 10,
-                        "stabilization_time": 1,
-                    }
-                ],
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "description": "baseline",
+                    "fault_type": "none",
+                    "duration_seconds": 10,
+                    "stabilization_time": 1,
+                },
             }
         ),
         encoding="utf-8",
@@ -145,16 +139,16 @@ def test_validate_scenario_accepts_xlarge_scale(tmp_path):
 
 @pytest.mark.parametrize("profile", ["light", "stress"])
 def test_validate_scenario_rejects_nonstandard_traffic_profile(profile):
-    scenario = Scenario(
-        scenario_id="nonstandard_traffic",
-        name="Nonstandard traffic",
-        description="Only the canonical standard profile is valid",
-        topology_scale="xs",
-        traffic_profile=profile,
-        episodes=[Episode(episode_id="ep001", description="baseline", fault_type="none")],
-    )
-
-    assert validate_scenario(scenario) == [f"Invalid traffic_profile: {profile}; only 'standard' is supported"]
+    with pytest.raises(ValueError, match="traffic_profile"):
+        ScenarioSpec.model_validate(
+            {
+                "scenario_id": "nonstandard_traffic",
+                "name": "Nonstandard traffic",
+                "topology_scale": "xs",
+                "traffic_profile": profile,
+                "episode": {"episode_id": "diagnosis", "fault_type": "none"},
+            }
+        )
 
 
 def test_parse_scenario_preserves_episode_parameters(tmp_path):
@@ -167,21 +161,19 @@ def test_parse_scenario_preserves_episode_parameters(tmp_path):
                 "description": "parameter parsing",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"difficulty": "medium", "expected_diagnosis": "static_route_misconfiguration"},
-                "episodes": [
-                    {
-                        "episode_id": "ep001",
-                        "description": "fault",
-                        "fault_type": "static_route_misconfiguration",
-                        "target_device": "leaf1",
-                        "duration_seconds": 10,
-                        "stabilization_time": 1,
-                        "parameters": {
-                            "target_ip": "192.168.102.2/32",
-                            "wrong_nexthop": "auto",
-                        },
-                    }
-                ],
+                "metadata": {"difficulty": "medium"},
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "description": "fault",
+                    "fault_type": "static_route_misconfiguration",
+                    "target_device": "leaf1",
+                    "duration_seconds": 10,
+                    "stabilization_time": 1,
+                    "parameters": {
+                        "target_ip": "192.168.102.2/32",
+                        "wrong_nexthop": "auto",
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -189,8 +181,8 @@ def test_parse_scenario_preserves_episode_parameters(tmp_path):
 
     scenario = parse_scenario_file(str(scenario_path))
 
-    assert scenario.episodes[0].fault_type == "static_route_misconfig"
-    assert scenario.episodes[0].parameters == {
+    assert scenario.episode.fault_type == "static_route_misconfig"
+    assert scenario.episode.parameters == {
         "target_ip": "192.168.102.2/32",
         "wrong_nexthop": "auto",
     }
@@ -207,17 +199,15 @@ def test_validate_scenario_rejects_blackhole_route_without_target_prefix(tmp_pat
                 "description": "missing required prefix",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"difficulty": "medium", "expected_diagnosis": "blackhole_route"},
-                "episodes": [
-                    {
-                        "episode_id": "ep001",
-                        "description": "fault",
-                        "fault_type": "blackhole_route",
-                        "target_device": "leaf1",
-                        "duration_seconds": 10,
-                        "stabilization_time": 1,
-                    }
-                ],
+                "metadata": {"difficulty": "medium"},
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "description": "fault",
+                    "fault_type": "blackhole_route",
+                    "target_device": "leaf1",
+                    "duration_seconds": 10,
+                    "stabilization_time": 1,
+                },
             }
         ),
         encoding="utf-8",
@@ -232,60 +222,32 @@ def test_validate_scenario_rejects_blackhole_route_without_target_prefix(tmp_pat
 def test_validate_scenario_accepts_runtime_registered_fault():
     registry = create_fault_registry()
     registry.register(FaultSpec(name="synthetic_schema_fault"))
-    scenario = type(
-        "Scenario",
-        (),
-        {
-            "scenario_id": "synthetic",
-            "name": "Synthetic",
-            "episodes": [
-                type(
-                    "Episode",
-                    (),
-                    {
-                        "episode_id": "ep1",
-                        "fault_type": "synthetic_schema_fault",
-                        "target_device": "leaf1",
-                        "target_interface": None,
-                        "target_prefix": None,
-                    },
-                )()
-            ],
-            "topology_scale": "xs",
-            "traffic_profile": "standard",
-            "metadata": {"difficulty": "easy", "expected_diagnosis": "synthetic_schema_fault"},
-        },
-    )()
+    scenario = ScenarioSpec(
+        scenario_id="synthetic",
+        name="Synthetic",
+        topology_scale="xs",
+        metadata={"difficulty": "easy"},
+        episode=EpisodeSpec(
+            episode_id="diagnosis",
+            fault_type="synthetic_schema_fault",
+            target_device="leaf1",
+        ),
+    )
     assert validate_scenario(scenario, fault_registry=registry) == []
 
 
 def test_validate_scenario_enforces_blackhole_route_target_prefix():
-    scenario = type(
-        "Scenario",
-        (),
-        {
-            "scenario_id": "blackhole_case",
-            "name": "Blackhole case",
-            "episodes": [
-                type(
-                    "Episode",
-                    (),
-                    {
-                        "episode_id": "ep1",
-                        "fault_type": "blackhole_route",
-                        "target_device": "leaf1",
-                        "target_interface": None,
-                        "target_prefix": None,
-                        "parameters": {},
-                        "metadata": {},
-                    },
-                )()
-            ],
-            "topology_scale": "xs",
-            "traffic_profile": "standard",
-            "metadata": {"difficulty": "easy", "expected_diagnosis": "blackhole_route"},
-        },
-    )()
+    scenario = ScenarioSpec(
+        scenario_id="blackhole_case",
+        name="Blackhole case",
+        topology_scale="xs",
+        metadata={"difficulty": "easy"},
+        episode=EpisodeSpec(
+            episode_id="diagnosis",
+            fault_type="blackhole_route",
+            target_device="leaf1",
+        ),
+    )
 
     errors = validate_scenario(scenario)
 
@@ -300,32 +262,17 @@ def test_validate_scenario_runs_custom_fault_spec_validator():
 
     registry = create_fault_registry()
     registry.register(FaultSpec(name="synthetic_validated_fault", episode_validator=validate_episode))
-    scenario = type(
-        "Scenario",
-        (),
-        {
-            "scenario_id": "synthetic_validator",
-            "name": "Synthetic Validator",
-            "episodes": [
-                type(
-                    "Episode",
-                    (),
-                    {
-                        "episode_id": "ep1",
-                        "fault_type": "synthetic_validated_fault",
-                        "target_device": "leaf2",
-                        "target_interface": None,
-                        "target_prefix": None,
-                        "parameters": {},
-                        "metadata": {},
-                    },
-                )()
-            ],
-            "topology_scale": "xs",
-            "traffic_profile": "standard",
-            "metadata": {"difficulty": "easy", "expected_diagnosis": "synthetic_validated_fault"},
-        },
-    )()
+    scenario = ScenarioSpec(
+        scenario_id="synthetic_validator",
+        name="Synthetic Validator",
+        topology_scale="xs",
+        metadata={"difficulty": "easy"},
+        episode=EpisodeSpec(
+            episode_id="diagnosis",
+            fault_type="synthetic_validated_fault",
+            target_device="leaf2",
+        ),
+    )
 
     errors = validate_scenario(scenario, fault_registry=registry)
 
@@ -335,17 +282,17 @@ def test_validate_scenario_runs_custom_fault_spec_validator():
 def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
     topology_dir = tmp_path / "generated_topology_fat-tree-k8"
     generate_topology("fat-tree-k8", str(topology_dir), name="ft")
-    scenario = SimpleNamespace(
+    scenario = ScenarioSpec(
         scenario_id="fat_tree_agg_fault",
+        name="Fat-tree aggregation fault",
         topology_scale="fat-tree-k8",
-        episodes=[
-            SimpleNamespace(
-                episode_id="ep1",
-                fault_type="link_down",
-                target_device="agg1",
-                target_interface="Ethernet0",
-            )
-        ],
+        metadata={"difficulty": "easy"},
+        episode=EpisodeSpec(
+            episode_id="diagnosis",
+            fault_type="link_down",
+            target_device="agg1",
+            target_interface="Ethernet0",
+        ),
     )
 
     result = validate_scenario_topology(scenario, str(topology_dir))
@@ -368,10 +315,11 @@ def test_validate_scenario_topology_rejects_legacy_grouped_topology(tmp_path):
         ),
         encoding="utf-8",
     )
-    scenario = SimpleNamespace(
+    scenario = ScenarioSpec(
         scenario_id="legacy_schema",
+        name="Legacy schema",
         topology_scale="xs",
-        episodes=[],
+        episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
     )
 
     with pytest.raises(ValueError, match="schema_version.*3.*Regenerate"):
@@ -403,7 +351,7 @@ def test_scenario_generator_supports_fat_tree_roles_with_structured_artifacts(tm
 
     scenario = parse_scenario_file(str(generated[0]))
     assert scenario.topology_scale == "fat-tree-k8"
-    assert scenario.episodes[1].target_device.startswith("agg")
+    assert scenario.episode.target_device.startswith("agg")
     assert validate_scenario(scenario) == []
 
 
@@ -459,7 +407,7 @@ def test_xlarge_blackhole_route_targets_pingmesh_observable_destination(tmp_path
         1,
     )
 
-    fault = scenario["episodes"][1]
+    fault = scenario["episode"]
     target_client = _client_for_prefix(topo, fault["target_prefix"])
 
     assert target_client["name"] in _pingmesh_destination_names(topo, fault["target_device"])
@@ -478,7 +426,7 @@ def test_xlarge_static_route_targets_pingmesh_observable_destination(tmp_path):
         1,
     )
 
-    fault = scenario["episodes"][1]
+    fault = scenario["episode"]
     target_client = _client_for_host_route(topo, fault["metadata"]["target_ip"])
 
     assert target_client["name"] in _pingmesh_destination_names(topo, fault["target_device"])
@@ -499,7 +447,7 @@ def test_scenario_runner_prefers_parameters_over_metadata(monkeypatch):
 
     monkeypatch.setattr(runner.injector, "inject_static_route_misconfig", fake_inject)
 
-    episode = Episode(
+    episode = EpisodeSpec(
         episode_id="ep001",
         description="fault",
         fault_type="static_route_misconfig",
@@ -531,13 +479,12 @@ def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_pat
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
     monkeypatch.setattr(runner, "_recover_fault", lambda: {"success": True})
 
-    scenario = Scenario(
+    scenario = ScenarioSpec(
         scenario_id="no-persist",
         name="No Persist",
         description="test",
         topology_scale="xs",
-        traffic_profile="standard",
-        episodes=[],
+        episode=EpisodeSpec(episode_id="diagnosis", fault_type="none", duration_seconds=1),
     )
 
     result = runner.run_scenario(scenario)

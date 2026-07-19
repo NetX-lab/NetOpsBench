@@ -19,6 +19,6 @@ __all__ = [
     "StructuredFaultTypeJudge",
     "build_fault_type_judge_prompt",
     "canonicalize_fault_type",
-    "create_fault_type_judge_evaluator",
     "create_judge_from_env",
+    "create_fault_type_judge_evaluator",
 ]

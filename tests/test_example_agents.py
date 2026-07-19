@@ -158,7 +158,8 @@ def test_minimal_deepagent_diagnose_returns_public_diagnosis_result(tmp_path, mo
     assert result.metadata["llm_call_count"] == 2
     assert "trace" not in result.metadata
     assert fake_graph.configs[0]["callbacks"] == ["trace-callback"]
-    assert fake_graph.prompts and "SCENARIO_SUMMARY" in fake_graph.prompts[0]
+    assert fake_graph.prompts and "CANONICAL_OBSERVATION" in fake_graph.prompts[0]
+    assert "Pass both timestamps to get_device_logs" in fake_graph.prompts[0]
 
 
 def test_minimal_deepagent_prompt_does_not_include_ground_truth(tmp_path, monkeypatch):
@@ -173,15 +174,13 @@ def test_minimal_deepagent_prompt_does_not_include_ground_truth(tmp_path, monkey
         scenario_id="scenario-gt",
         topology={"devices": {}, "links": []},
         symptoms={"observations": {"pingmesh_metrics": {"anomalies": []}}},
-        ground_truth={"fault_type": "secret_truth", "location": {"device": "secret-device"}},
     )
 
     asyncio.run(agent.diagnose(context))
 
     prompt = fake_graph.prompts[0]
     assert "ground_truth" not in prompt
-    assert "secret_truth" not in prompt
-    assert "secret-device" not in prompt
+    assert not hasattr(context, "ground_truth")
 
 
 def test_minimal_deepagent_reads_minimax_api_key_from_environment(monkeypatch):

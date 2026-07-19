@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.command_runner import CommandRunner
     from ..services.interface_runtime import InterfaceRuntime
     from ..services.sonic_runtime import SonicRuntime
@@ -23,7 +23,7 @@ class LinkHandler:
         sonic: SonicRuntime,
         iface: InterfaceRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._cmd = cmd
         self._sonic = sonic

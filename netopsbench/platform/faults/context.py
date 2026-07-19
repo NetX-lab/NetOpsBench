@@ -11,7 +11,7 @@ from netopsbench.platform.topology.topology_utils import clab_container_name
 
 
 @dataclass(frozen=True, slots=True)
-class FaultContext:
+class FaultRuntimeContext:
     """The manifest and artifact directory for one fault-injection runtime."""
 
     manifest: TopologyManifest
@@ -43,4 +43,4 @@ class FaultContext:
         return grouped
 
 
-__all__ = ["FaultContext"]
+__all__ = ["FaultRuntimeContext"]

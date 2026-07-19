@@ -17,10 +17,22 @@ class DiagnosticContext:
     scenario_id: str
     topology: Mapping[str, Any]
     symptoms: Mapping[str, Any]
-    ground_truth: Mapping[str, Any] | None = None
     tools: Any = None
     trace: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-__all__ = ["AgentVerdict", "VALID_AGENT_VERDICTS", "DiagnosticContext"]
+@dataclass(frozen=True)
+class DiagnosisResult:
+    """Result returned by a diagnostic agent."""
+
+    agent_name: str
+    verdict: str
+    success: bool = True
+    findings: dict[str, Any] = field(default_factory=dict)
+    confidence: float = 0.0
+    reasoning: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+__all__ = ["AgentVerdict", "VALID_AGENT_VERDICTS", "DiagnosticContext", "DiagnosisResult"]

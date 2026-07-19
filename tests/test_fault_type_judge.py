@@ -6,9 +6,6 @@ from netopsbench.evaluator.fault_type_judge import (
     judge_fault_type_match,
 )
 from netopsbench.evaluator.scorer import AgentOutput, Evaluator
-from netopsbench.sdk.evaluators import EvaluatorManager, create_fault_type_judge_evaluator_adapter
-from netopsbench.sdk.scenarios import ScenarioManager
-from netopsbench.sdk.types import DiagnosisResult
 
 
 class RecordingJudge:
@@ -19,37 +16,6 @@ class RecordingJudge:
     def judge(self, request):
         self.requests.append(request)
         return self.result
-
-
-def _scenario(*, scenario_id="scenario-judge", fault_type="bgp_neighbor_misconfig"):
-    return ScenarioManager().create(
-        id=scenario_id,
-        name="Judge Scenario",
-        scale="xs",
-        episodes=[
-            {
-                "episode_id": f"{scenario_id}-ep1",
-                "fault_type": fault_type,
-                "target_device": "leaf1",
-                "target_interface": "Ethernet1",
-            }
-        ],
-        metadata={"expected_diagnosis": fault_type, "difficulty": "easy"},
-    )
-
-
-def _diagnosis(*, fault_type="BGP peer AS mismatch"):
-    return DiagnosisResult(
-        agent_name="judge-agent",
-        verdict="fault_detected",
-        confidence=0.9,
-        reasoning="The BGP peer has a remote AS mismatch and the session is not established.",
-        findings={
-            "fault_type": fault_type,
-            "location": {"device": "leaf1", "interface": "Ethernet1"},
-            "evidence": ["show bgp summary reports an idle peer"],
-        },
-    )
 
 
 def test_canonicalize_fault_type_preserves_legacy_aliases():
@@ -168,31 +134,6 @@ def test_judge_true_is_rejected_when_canonical_agent_type_differs_from_ground_tr
 
     assert is_match is False
     assert details["agent_canonical_mismatch"] is True
-
-
-def test_sdk_fault_type_judge_adapter_can_be_registered():
-    judge = RecordingJudge(
-        FaultTypeJudgeResult(
-            canonical_agent_fault_type="bgp_neighbor_misconfig",
-            canonical_ground_truth_fault_type="bgp_neighbor_misconfig",
-            is_match=True,
-            confidence=0.9,
-            reasoning="semantic match",
-        )
-    )
-    manager = EvaluatorManager()
-    manager.register("llm-fault-type-v1", create_fault_type_judge_evaluator_adapter(judge))
-
-    report = manager.evaluate_scenario(
-        scenario=_scenario(),
-        diagnosis_results=[_diagnosis()],
-        evaluator="llm-fault-type-v1",
-    )
-
-    detailed = report.payload["detailed_results"][0]
-    assert report.payload["evaluator"] == "llm-fault-type-v1"
-    assert detailed["correct_fault_type"] is True
-    assert detailed["details"]["fault_type_judgment"]["mode"] == "llm_judge"
 
 
 def test_create_judge_from_env_returns_none_when_disabled():

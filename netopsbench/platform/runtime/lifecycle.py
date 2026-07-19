@@ -13,7 +13,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from netopsbench.config import config
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.observability.lifecycle import ensure_worker_observability
 from netopsbench.platform.pingmesh.deploy import deploy_pingmesh
@@ -59,8 +59,8 @@ class RuntimeLifecycleError(RuntimeError):
         super().__init__(f"Runtime lifecycle stage {result.stage!r} failed: {result.error}")
 
 
-def _parallel_job_count(scale: str, total: int) -> int:
-    configured = get_scale_profile(scale).worker_deploy_parallelism
+def _parallel_job_count(scale: str, total: int, registry: ScaleRegistry | None = None) -> int:
+    configured = get_scale_profile(scale, registry).worker_deploy_parallelism
     return max(1, min(total, configured))
 
 
@@ -76,10 +76,15 @@ def _worker_deploy_log_path(worker: RuntimeIdentity, runtime_root: Path | None =
     return runtime_root / "logs" / f"worker_{worker.worker_index:02d}.deploy.log"
 
 
-def deploy_workers(workers: Sequence[RuntimeIdentity], scale: str, runtime_root: Path | None = None) -> None:
+def deploy_workers(
+    workers: Sequence[RuntimeIdentity],
+    scale: str,
+    runtime_root: Path | None = None,
+    scale_registry: ScaleRegistry | None = None,
+) -> None:
     if not workers:
         return
-    job_count = _parallel_job_count(scale, len(workers))
+    job_count = _parallel_job_count(scale, len(workers), scale_registry)
 
     def deploy(worker: RuntimeIdentity) -> None:
         logger.info(
@@ -90,7 +95,7 @@ def deploy_workers(workers: Sequence[RuntimeIdentity], scale: str, runtime_root:
             worker.mgmt_subnet,
         )
         _append_worker_log_header(_worker_deploy_log_path(worker, runtime_root), f"worker deploy {worker.lab_name}")
-        deploy_worker_lab(worker, scale)
+        deploy_worker_lab(worker, scale, scale_registry)
 
     if job_count == 1:
         for worker in workers:
@@ -126,12 +131,14 @@ def ensure_worker_pingmesh(worker: RuntimeIdentity) -> None:
     )
 
 
-def validate_worker_health(worker: RuntimeIdentity, runtime_root: Path | None = None) -> None:
+def validate_worker_health(
+    worker: RuntimeIdentity,
+    runtime_root: Path | None = None,
+    scale_registry: ScaleRegistry | None = None,
+) -> None:
     log_path = _worker_deploy_log_path(worker, runtime_root)
     _append_worker_log_header(log_path, "worker health validation")
-    errors = check_worker_health(
-        worker,
-    )
+    errors = check_worker_health(worker, scale_registry=scale_registry)
     if errors:
         message = "; ".join(errors)
         with open(log_path, "a", encoding="utf-8") as log_file:
@@ -139,16 +146,19 @@ def validate_worker_health(worker: RuntimeIdentity, runtime_root: Path | None = 
         raise RuntimeError(f"Worker health check failed: {message}")
 
 
-def teardown_workers(workers: Sequence[RuntimeIdentity]) -> None:
+def teardown_workers(workers: Sequence[RuntimeIdentity], scale_registry: ScaleRegistry | None = None) -> None:
     for worker in workers:
         try:
-            teardown_worker_lab(worker)
+            teardown_worker_lab(worker, scale_registry)
         except Exception:
             logger.warning("worker teardown failed for %s", worker.lab_name, exc_info=True)
 
 
 class RuntimeLifecycle:
     """Execute the fixed runtime lifecycle stages."""
+
+    def __init__(self, scale_registry: ScaleRegistry | None = None):
+        self.scale_registry = scale_registry or default_scale_registry()
 
     def run(self, stage: str, runtime: RuntimePoolLike) -> LifecycleStageResult:
         operations = {
@@ -188,15 +198,14 @@ class RuntimeLifecycle:
             details=details,
         )
 
-    @staticmethod
-    def _deploy(runtime: RuntimePoolLike) -> dict[str, Any]:
+    def _deploy(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         with runtime_deploy_lock():
-            subnets = allocate_management_subnets(runtime.scale, runtime.size)
+            subnets = allocate_management_subnets(runtime.scale, runtime.size, self.scale_registry)
             runtime.workers = [
                 worker.model_copy(update={"mgmt_subnet": subnets[index]})
                 for index, worker in enumerate(runtime.workers)
             ]
-            deploy_workers(runtime.workers, runtime.scale, runtime.root_dir)
+            deploy_workers(runtime.workers, runtime.scale, runtime.root_dir, self.scale_registry)
         return {"workers": runtime.size}
 
     @staticmethod
@@ -211,15 +220,13 @@ class RuntimeLifecycle:
             ensure_worker_pingmesh(worker)
         return {"workers": runtime.size}
 
-    @staticmethod
-    def _warm(runtime: RuntimePoolLike) -> dict[str, Any]:
+    def _warm(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         for worker in runtime.workers:
-            validate_worker_health(worker, runtime.root_dir)
+            validate_worker_health(worker, runtime.root_dir, self.scale_registry)
         return {"workers": runtime.size, "health": "ready"}
 
-    @staticmethod
-    def _teardown(runtime: RuntimePoolLike) -> dict[str, Any]:
-        teardown_workers(runtime.workers)
+    def _teardown(self, runtime: RuntimePoolLike) -> dict[str, Any]:
+        teardown_workers(runtime.workers, self.scale_registry)
         return {"workers": runtime.size}
 
 

@@ -62,6 +62,7 @@ def analyze_observation_windows(
     windows: list[dict],
     total_duration_seconds: int,
     baseline_end_time: datetime | None = None,
+    baseline_window: dict | None = None,
 ) -> dict:
     """Analyze captured intervals using one baseline and one current snapshot."""
     valid_windows = [window for window in windows if isinstance(window, dict) and window.get("start_time")]
@@ -80,12 +81,18 @@ def analyze_observation_windows(
 
     from netopsbench.platform.pingmesh.detector import AnomalyDetector
 
-    baseline_end_dt = baseline_end_time or datetime.fromisoformat(
-        str(valid_windows[0]["start_time"]).replace("Z", "+00:00")
-    )
-    baseline_seconds = max(_MIN_BASELINE_WINDOW_SECONDS, _coverage_epoch_seconds(runner))
-    baseline_start = _utc_iso(baseline_end_dt - timedelta(seconds=baseline_seconds))
-    baseline_end = _utc_iso(baseline_end_dt)
+    if baseline_window is not None:
+        baseline_start = str(baseline_window.get("start_time") or "")
+        baseline_end = str(baseline_window.get("end_time") or "")
+        if not baseline_start or not baseline_end:
+            raise ValueError("baseline_window must contain start_time and end_time")
+    else:
+        baseline_end_dt = baseline_end_time or datetime.fromisoformat(
+            str(valid_windows[0]["start_time"]).replace("Z", "+00:00")
+        )
+        baseline_seconds = max(_MIN_BASELINE_WINDOW_SECONDS, _coverage_epoch_seconds(runner))
+        baseline_start = _utc_iso(baseline_end_dt - timedelta(seconds=baseline_seconds))
+        baseline_end = _utc_iso(baseline_end_dt)
     current_start = str(valid_windows[0]["start_time"])
     current_end = str(valid_windows[-1]["end_time"])
 
@@ -128,7 +135,12 @@ def analyze_observation_windows(
     }
 
 
-def wait_and_observe(runner, duration: int, baseline_end_time: datetime | None = None) -> dict:
+def wait_and_observe(
+    runner,
+    duration: int,
+    baseline_end_time: datetime | None = None,
+    baseline_window: dict | None = None,
+) -> dict:
     """Capture and analyze one observation window."""
     window = capture_observation_window(runner, duration, name="steady")
     return analyze_observation_windows(
@@ -136,4 +148,5 @@ def wait_and_observe(runner, duration: int, baseline_end_time: datetime | None =
         [window],
         total_duration_seconds=duration,
         baseline_end_time=baseline_end_time,
+        baseline_window=baseline_window,
     )

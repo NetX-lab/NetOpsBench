@@ -3,12 +3,8 @@ version: v1
 defaults:
   traffic_profile: standard
   count_per_fault: 4
-  baseline_duration_seconds: 20
   fault_duration_seconds: 30
-  recovery_duration_seconds: 20
-  baseline_stabilization_seconds: 5
   fault_stabilization_seconds: 5
-  recovery_stabilization_seconds: 10
 
 fault_templates:
   - name: link_down_core

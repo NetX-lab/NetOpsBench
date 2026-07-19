@@ -7,7 +7,7 @@ Supports various fault types for DCN troubleshooting benchmark.
 from pathlib import Path
 from typing import Any
 
-from netopsbench.platform.faults.context import FaultContext
+from netopsbench.platform.faults.context import FaultRuntimeContext
 from netopsbench.platform.faults.handlers.acl import AclHandler
 from netopsbench.platform.faults.handlers.impairment import ImpairmentHandler
 from netopsbench.platform.faults.handlers.link import LinkHandler
@@ -54,7 +54,7 @@ class FaultInjector:
                     "Pass topology_metadata or a generated topology directory."
                 )
             manifest = load_topology_manifest(metadata_file)
-        self._ctx = FaultContext(manifest=manifest, clab_dir=resolved_clab_dir)
+        self._ctx = FaultRuntimeContext(manifest=manifest, clab_dir=resolved_clab_dir)
 
         # Build services (order matters — each layer depends on previous ones)
         self._cmd = CommandRunner()

@@ -59,12 +59,12 @@ class EvaluationResult:
 
 
 def create_default_evaluator() -> Evaluator:
-    """Stable tiny factory boundary for public evaluator adapters."""
+    """Stable public factory for the default evaluator."""
     return Evaluator()
 
 
 def create_fault_type_judge_evaluator(fault_type_judge: FaultTypeJudge) -> Evaluator:
-    """Create an evaluator that uses a semantic judge for fault-type matching."""
+    """Create an evaluator using a semantic fault-type judge."""
     return Evaluator(fault_type_judge=fault_type_judge)
 
 
@@ -90,6 +90,17 @@ class Evaluator:
             "interface": INTERFACE_LOCALIZATION_WEIGHT,
         }
         self.fault_type_judge = fault_type_judge
+
+    @staticmethod
+    def _agent_details(agent_output: AgentOutput) -> dict[str, Any]:
+        """Return diagnostic accounting fields shared by every sample type."""
+        return {
+            "agent_output": agent_output.to_dict(),
+            "tool_calls_count": len(agent_output.tool_calls),
+            "time_taken": agent_output.time_taken_seconds,
+            "confidence": agent_output.confidence,
+            "inconclusive": agent_output.verdict == "inconclusive",
+        }
 
     def evaluate(self, agent_output: AgentOutput, ground_truth: dict[str, Any], testcase_id: str) -> EvaluationResult:
         """
@@ -118,6 +129,7 @@ class Evaluator:
                 correct_fault_type=True,
                 score=score,
                 details={
+                    **self._agent_details(agent_output),
                     "type": "negative_sample",
                     "negative_sample": True,
                     "agent_verdict": agent_output.verdict,
@@ -176,12 +188,8 @@ class Evaluator:
             correct_fault_type=correct_fault_type,
             score=round(score, 3),
             details={
-                "agent_output": agent_output.to_dict(),
+                **self._agent_details(agent_output),
                 "ground_truth": ground_truth,
-                "tool_calls_count": len(agent_output.tool_calls),
-                "time_taken": agent_output.time_taken_seconds,
-                "confidence": agent_output.confidence,
-                "inconclusive": agent_output.verdict == "inconclusive",
                 "interface_applicable": interface_applicable,
                 "equivalent_locations": equivalent_locations,
                 "matched_location": matched_location,

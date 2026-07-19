@@ -17,7 +17,7 @@ from netopsbench.logging_utils import get_logger
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.command_runner import CommandRunner
     from ..services.routing_runtime import RoutingRuntime
     from ..services.sonic_runtime import SonicRuntime
@@ -49,7 +49,7 @@ class AclHandler:
         sonic: SonicRuntime,
         routing: RoutingRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._cmd = cmd
         self._sonic = sonic

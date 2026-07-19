@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from netopsbench.logging_utils import get_logger
+from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime.deployment import management_subnet
 from netopsbench.platform.runtime.lifecycle import (
@@ -39,17 +40,22 @@ class RuntimePool:
     state: str = "created"
     metadata: dict[str, object] = field(default_factory=dict)
     stage_results: dict[str, LifecycleStageResult] = field(default_factory=dict)
+    scale_registry: ScaleRegistry = field(default_factory=default_scale_registry, repr=False)
 
     @property
     def size(self) -> int:
         return len(self.workers)
 
     def _payload(self) -> dict[str, object]:
+        profile = self.scale_registry.get(self.scale)
         return {
             "schema_version": "3",
             "id": self.id,
             "name": self.name,
             "scale": self.scale,
+            "scale_registry_sha256": self.scale_registry.digest,
+            "resolved_scale_profile": profile.model_dump(mode="json"),
+            "scale_profile_sha256": profile.digest,
             "state": self.state,
             "metadata": dict(self.metadata),
             "stage_results": {stage: result.model_dump(mode="json") for stage, result in self.stage_results.items()},
@@ -65,7 +71,7 @@ class RuntimePool:
         if previous is not None and previous.status == "completed":
             return self
         try:
-            result = RuntimeLifecycle().run(stage, self)
+            result = RuntimeLifecycle(scale_registry=self.scale_registry).run(stage, self)
         except RuntimeLifecycleError as exc:
             self.stage_results[stage] = exc.result
             self._write_metadata()
@@ -94,7 +100,7 @@ class RuntimePool:
         if self.state == "torn_down":
             return self
         try:
-            RuntimeLifecycle().run("teardown", self)
+            RuntimeLifecycle(scale_registry=self.scale_registry).run("teardown", self)
         except RuntimeLifecycleError as exc:
             self.stage_results["teardown"] = exc.result
             self._write_metadata()
@@ -109,14 +115,16 @@ class RuntimePool:
 
 
 class RuntimeManager:
-    def __init__(self, workspace: str = "."):
+    def __init__(self, workspace: str = ".", scale_registry: ScaleRegistry | None = None):
         self.workspace = Path(workspace).expanduser().resolve()
+        self.scale_registry = scale_registry or default_scale_registry()
         self.runtime_root_dir = self.workspace / ".netopsbench" / "runtimes"
         self.runtime_root_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_runtime(
         self, *, scale: str, workers: int = 1, name: str | None = None, root_dir: Path | None = None
     ) -> RuntimePool:
+        self.scale_registry.get(scale)
         worker_count = max(1, int(workers))
         runtime_name = str(name or f"{scale}-{worker_count}-{uuid.uuid4().hex[:8]}").strip()
         runtime_root = Path(root_dir) if root_dir is not None else (self.runtime_root_dir / runtime_name)
@@ -129,7 +137,7 @@ class RuntimeManager:
             worker_dir = runtime_root / worker_name
             worker_dir.mkdir(exist_ok=True)
             lab_name = runtime_name if worker_count == 1 else f"{runtime_name}-w{idx:02d}"
-            mgmt_subnet = management_subnet(scale, idx)
+            mgmt_subnet = management_subnet(scale, idx, self.scale_registry)
             identity = RuntimeIdentity.create(
                 runtime_id=runtime_name,
                 worker_id=worker_name,
@@ -146,6 +154,7 @@ class RuntimeManager:
             scale=scale,
             root_dir=runtime_root,
             workers=worker_items,
+            scale_registry=self.scale_registry,
         )
         runtime._write_metadata()
         return runtime
@@ -162,7 +171,7 @@ class RuntimeManager:
             # networks, containers, telegraf instances, etc.) before
             # cleaning up metadata on disk.
             try:
-                teardown_workers(runtime.workers)
+                teardown_workers(runtime.workers, self.scale_registry)
             except Exception:
                 logger.warning("Best-effort teardown_workers failed during cleanup", exc_info=True)
             # Use sudo rm to handle root-owned files left by containerlab.
@@ -199,10 +208,25 @@ class RuntimeManager:
             raise RuntimeMetadataError(
                 "Unsupported runtime.json schema; recreate the runtime with the current RuntimeManager"
             )
-        required_keys = {"schema_version", "id", "name", "scale", "workers", "stage_results"}
+        required_keys = {
+            "schema_version",
+            "id",
+            "name",
+            "scale",
+            "scale_registry_sha256",
+            "resolved_scale_profile",
+            "scale_profile_sha256",
+            "workers",
+            "stage_results",
+        }
         missing = sorted(required_keys - set(payload))
         if missing:
             raise RuntimeMetadataError(f"missing required runtime metadata: {', '.join(missing)}")
+        profile = self.scale_registry.get(str(payload["scale"]))
+        if payload["scale_profile_sha256"] != profile.digest:
+            raise RuntimeMetadataError("Scale profile changed after runtime creation; recreate the runtime")
+        if payload["resolved_scale_profile"] != profile.model_dump(mode="json"):
+            raise RuntimeMetadataError("Persisted scale profile does not match its recorded identity")
         try:
             worker_items = [RuntimeIdentity.model_validate(item) for item in payload["workers"]]
             stage_results = {
@@ -222,6 +246,7 @@ class RuntimeManager:
             state=str(payload.get("state", "created")),
             metadata=dict(payload.get("metadata", {})),
             stage_results=stage_results,
+            scale_registry=self.scale_registry,
         )
 
     def list(self) -> builtins.list[RuntimePool]:

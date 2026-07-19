@@ -13,7 +13,11 @@ class ConnectivityOpsMixin:
             safe_src = self._validate_device_name(src, field_name="source")
             safe_dst_ip = self._validate_ip_address(dst_ip, field_name="destination IP")
             container = self._resolve_container(safe_src, field_name="source")
-            result = self._docker_exec(container, ["traceroute", "-n", "-w", "2", safe_dst_ip], timeout=60)
+            result = self._docker_exec(
+                container,
+                ["traceroute", "-n", "-q", "1", "-w", "1", "-m", "8", safe_dst_ip],
+                timeout=12,
+            )
             return ToolResult(
                 success=True,
                 data={

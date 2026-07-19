@@ -94,8 +94,11 @@ class _WrappedPublicEvaluator:
                     scenario_id=scenario.id,
                     topology={"scale": scenario.scale},
                     symptoms={},
-                    ground_truth=_build_ground_truth(scenario, index),
-                    metadata={"scenario": scenario.to_dict(), "episode_index": index},
+                    metadata={
+                        "scenario": scenario.to_dict(),
+                        "episode_index": index,
+                        "ground_truth": _build_ground_truth(scenario, index),
+                    },
                     tools=None,
                 )
                 results.append(dict(self._evaluator.evaluate(context, diagnosis)))
@@ -250,6 +253,8 @@ def _diagnosis_to_agent_output(diagnosis: DiagnosisResult) -> AgentOutput:
 def _build_ground_truth(scenario: ScenarioHandle, index: int) -> dict[str, Any]:
     episodes = scenario.episodes
     episode = episodes[min(index, len(episodes) - 1)] if episodes else {}
+    if hasattr(episode, "model_dump"):
+        episode = episode.model_dump(mode="json")
     fault_type = episode.get("fault_type") or scenario.metadata.get("expected_diagnosis")
     location = {}
     if episode.get("target_device"):

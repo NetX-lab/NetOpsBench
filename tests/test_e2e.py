@@ -5,6 +5,7 @@ End-to-end tests for NetOpsBench benchmark system.
 These tests verify the complete benchmark flow works correctly.
 """
 
+import inspect
 import json
 import os
 import stat
@@ -21,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from netopsbench.evaluator.scorer import AgentOutput, EvaluationResult, Evaluator
 from netopsbench.models.profiles import supported_scales
+from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.services.topology_runtime import TopologyRuntime
@@ -29,9 +31,9 @@ from netopsbench.platform.pingmesh.generator import PinglistGenerator, generate_
 from netopsbench.platform.scenario.generator import parse_bgp_config, parse_network_interfaces
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
-from netopsbench.platform.session.scoring import score_scenario_fault_episodes
+from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.toolkit import fastmcp_server
-from netopsbench.platform.toolkit.mcp.registry import load_tool_specs
+from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_schemas
 
 # Internal test path: direct toolkit import keeps implementation-level e2e checks fast.
 from netopsbench.platform.toolkit.toolkit import AgentToolkit, ToolResult
@@ -346,6 +348,20 @@ class TestFastMCPServer:
         assert len(tool_names) == len(fastmcp_server.EXPOSED_TOOLS), "Tool count mismatch"
         for name in tool_names:
             assert name in fastmcp_server.EXPOSED_TOOLS, f"Tool {name} in definitions but not in FastMCP"
+
+    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        specs = {spec.name: spec for spec in fastmcp_server._TOOL_SPECS}
+
+        assert schemas.keys() == specs.keys()
+        for name, spec in specs.items():
+            parameters = {
+                parameter
+                for parameter in inspect.signature(spec.handler).parameters
+                if parameter != "self"
+            }
+            assert set(schemas[name]["input_schema"]["properties"]) == parameters
+            assert schemas[name]["input_schema"]["additionalProperties"] is False
 
 
 class TestFaultInjector:
@@ -718,12 +734,11 @@ topology_scale: xs
 traffic_profile: standard
 metadata:
   difficulty: easy
-  expected_diagnosis: link_down
-episodes:
-  - episode_id: ep1
-    description: bad fault
-    fault_type: made_up_fault
-    target_device: spine1
+episode:
+  episode_id: diagnosis
+  description: bad fault
+  fault_type: made_up_fault
+  target_device: spine1
 """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
@@ -737,44 +752,36 @@ episodes:
         finally:
             os.unlink(tmp_path)
 
-    def test_score_scenario_fault_episodes_only_scores_faults(self):
-        """Only non-none episodes should be scored."""
+    def test_score_scenario_episode_scores_the_canonical_episode(self):
         scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_xs_001.yaml"))
         evaluator = Evaluator()
 
         scenario_result = {
             "scenario_id": scenario.scenario_id,
-            "episodes": [
-                {
-                    "episode": {
-                        "episode_id": "ep001_baseline",
-                        "fault_type": "none",
-                        "target_device": "spine1",
-                        "target_interface": None,
-                    }
+            "episode": {
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "fault_type": "link_down",
+                    "target_device": scenario.episode.target_device,
+                    "target_interface": scenario.episode.target_interface,
                 },
-                {
-                    "episode": {
-                        "episode_id": "ep002_link_down",
-                        "fault_type": "link_down",
-                        "target_device": "spine1",
-                        "target_interface": "Ethernet0",
+                "diagnosis": {
+                    "verdict": "fault_detected",
+                    "fault_type": "link_down",
+                    "location": {
+                        "device": scenario.episode.target_device,
+                        "interface": scenario.episode.target_interface,
                     },
-                    "diagnosis": {
-                        "verdict": "fault_detected",
-                        "fault_type": "link_down",
-                        "location": {"device": "spine1", "interface": "Ethernet0"},
-                        "confidence": 0.95,
-                        "tool_calls": [],
-                        "time_taken_seconds": 1.0,
-                    },
+                    "confidence": 0.95,
+                    "tool_calls": [],
+                    "time_taken_seconds": 1.0,
                 },
-            ],
+            },
         }
 
-        scored = score_scenario_fault_episodes(scenario, scenario_result, evaluator)
+        scored = score_scenario_episode(scenario, scenario_result, evaluator)
         assert len(scored) == 1
-        assert scored[0].testcase_id == f"{scenario.scenario_id}:ep002_link_down"
+        assert scored[0].testcase_id == f"{scenario.scenario_id}:diagnosis"
         assert scored[0].score == 1.0
 
     def test_topology_guard_rejects_scale_mismatch_by_default(self):
@@ -833,17 +840,17 @@ episodes:
             spine_config = _write_config_db(tmpdir, "spine1", {"Ethernet4": ["10.0.0.2/30"]})
             _write_config_db(tmpdir, "leaf1", {"Ethernet4": ["10.0.0.1/30"]})
 
-            scenario = SimpleNamespace(
+            scenario = ScenarioSpec(
                 scenario_id="configdb_interface_case",
+                name="ConfigDB interface case",
                 topology_scale="small",
-                episodes=[
-                    SimpleNamespace(
-                        episode_id="ep001",
-                        fault_type="link_down",
-                        target_device="spine1",
-                        target_interface="e1-2",
-                    )
-                ],
+                metadata={"difficulty": "easy"},
+                episode=EpisodeSpec(
+                    episode_id="diagnosis",
+                    fault_type="link_down",
+                    target_device="spine1",
+                    target_interface="e1-2",
+                ),
             )
             result = validate_scenario_topology(scenario=scenario, topology_dir=tmpdir)
             assert result["status"] == "pass"
@@ -862,42 +869,39 @@ episodes:
                 {"fault_type": "link_down", "target_device": "leaf1", "target_interface": "Ethernet4"},
                 topology_dir=tmpdir,
             )
-            assert ground_truth["equivalent_locations"] == [{"device": "spine1", "interface": "Ethernet4"}]
+            assert ground_truth["equivalent_locations"] == [{"device": "spine2", "interface": "Ethernet0"}]
 
     def test_interface_alias_helper_keeps_scale_agnostic_equivalence(self):
         assert are_interfaces_equivalent("e1-1", "Ethernet0") is True
         assert are_interfaces_equivalent("ethernet-1/2", "Ethernet4") is True
         assert are_interfaces_equivalent("eth3", "Ethernet8") is True
 
-    def test_score_scenario_fault_episodes_accepts_link_peer_equivalence(self):
+    def test_score_scenario_episode_accepts_link_peer_equivalence(self):
         scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_xs_001.yaml"))
         evaluator = Evaluator()
         scenario_result = {
-            "episodes": [
-                {
-                    "episode": {
-                        "episode_id": "ep002_link_down",
-                        "fault_type": "link_down",
-                        "target_device": "spine1",
-                        "target_interface": "e1-1",
-                    },
-                    "diagnosis": {
-                        "verdict": "fault_detected",
-                        "fault_type": "link_down",
-                        "location": {"device": "leaf1", "interface": "Ethernet0"},
-                        "confidence": 0.9,
-                        "tool_calls": [],
-                        "time_taken_seconds": 1.0,
-                    },
-                }
-            ]
+            "episode": {
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "fault_type": "link_down",
+                    "target_device": "spine1",
+                    "target_interface": "Ethernet0",
+                },
+                "diagnosis": {
+                    "verdict": "fault_detected",
+                    "fault_type": "link_down",
+                    "location": {"device": "leaf1", "interface": "Ethernet0"},
+                    "confidence": 0.9,
+                    "tool_calls": [],
+                    "time_taken_seconds": 1.0,
+                },
+            }
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            _write_config_db(tmpdir, "spine1", {"Ethernet0": ["192.168.11.1/30"]})
-            _write_config_db(tmpdir, "leaf1", {"Ethernet0": ["192.168.11.2/30"]})
+            generate_topology("xs", tmpdir)
 
-            scored = score_scenario_fault_episodes(
+            scored = score_scenario_episode(
                 scenario,
                 scenario_result,
                 evaluator,
@@ -922,9 +926,7 @@ episodes:
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # leaf1 Ethernet0 and spine1 Ethernet0 share the same /30 subnet
-            _write_config_db(tmpdir, "leaf1", {"Ethernet0": ["10.0.0.1/30"]})
-            _write_config_db(tmpdir, "spine1", {"Ethernet0": ["10.0.0.2/30"]})
+            generate_topology("xs", tmpdir)
 
             gt = build_episode_ground_truth(episode_info, topology_dir=tmpdir)
 

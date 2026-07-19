@@ -9,7 +9,9 @@ from typing import Any
 
 from netopsbench.evaluator.scorer import Evaluator
 from netopsbench.logging_utils import get_logger
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.manager import RuntimeManager, RuntimePool
+from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.session.dispatch import execute_on_runtime_pool
 from netopsbench.platform.session.reporting import (
     LocalArtifactStore,
@@ -22,7 +24,6 @@ from netopsbench.platform.session.reporting import (
     save_run_report,
 )
 from netopsbench.platform.session.trace_store import TraceWriter
-from netopsbench.platform.session.types import ScenarioExecutionRef
 
 logger = get_logger(__name__)
 
@@ -51,7 +52,7 @@ class SessionOrchestrator:
     def run_scenario(
         self,
         *,
-        scenario: ScenarioExecutionRef | str | Path,
+        scenario: ScenarioSpec | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -75,7 +76,7 @@ class SessionOrchestrator:
     def run_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioExecutionRef] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -99,7 +100,7 @@ class SessionOrchestrator:
     def run_on_runtime_scenario(
         self,
         *,
-        scenario: ScenarioExecutionRef | str | Path,
+        scenario: ScenarioSpec | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
@@ -117,7 +118,7 @@ class SessionOrchestrator:
     def run_on_runtime_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioExecutionRef] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
@@ -136,7 +137,7 @@ class SessionOrchestrator:
         self,
         *,
         mode: str,
-        scenarios: list[ScenarioExecutionRef],
+        scenarios: list[ScenarioSpec],
         agent: Any,
         scale: str | None,
         workers: int,
@@ -175,7 +176,7 @@ class SessionOrchestrator:
         self,
         *,
         mode: str,
-        scenarios: list[ScenarioExecutionRef],
+        scenarios: list[ScenarioSpec],
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None,
@@ -201,7 +202,7 @@ class SessionOrchestrator:
         *,
         run_id: str,
         mode: str,
-        scenarios: list[ScenarioExecutionRef],
+        scenarios: list[ScenarioSpec],
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None,
@@ -277,6 +278,9 @@ class SessionOrchestrator:
             completed_at=completed_at,
             scenarios=scenarios,
             worker_summaries=dispatched.workers,
+            scale_registry_sha256=runtime.scale_registry.digest,
+            scale_profile_sha256=runtime.scale_registry.get(runtime.scale).digest,
+            resolved_scale_profile=runtime.scale_registry.get(runtime.scale).model_dump(mode="json"),
             traces_dir=traces_dir,
             trace_index_path=(trace_writer.index_path if trace_writer is not None else None),
             trace_results_path=(trace_writer.results_path if trace_writer is not None else None),
@@ -294,15 +298,19 @@ class SessionOrchestrator:
         )
         return self._run_handle_adapter(handle_payload)
 
-    def _coerce_scenario(self, scenario: Any) -> ScenarioExecutionRef:
-        return ScenarioExecutionRef.coerce(scenario)
+    def _coerce_scenario(self, scenario: Any) -> ScenarioSpec:
+        if isinstance(scenario, ScenarioSpec):
+            return scenario
+        if isinstance(scenario, (str, Path)):
+            return parse_scenario_file(scenario)
+        raise TypeError(f"Unsupported scenario value: {type(scenario)!r}")
 
-    def _coerce_scenarios(self, scenarios: Sequence[ScenarioExecutionRef] | str | Path) -> list[ScenarioExecutionRef]:
+    def _coerce_scenarios(self, scenarios: Sequence[ScenarioSpec] | str | Path) -> list[ScenarioSpec]:
         if isinstance(scenarios, (str, Path)):
             scenario_path = Path(scenarios)
             if scenario_path.is_dir():
-                return [ScenarioExecutionRef.from_path(path) for path in sorted(scenario_path.glob("*.y*ml"))]
-            return [ScenarioExecutionRef.from_path(scenario_path)]
+                return [parse_scenario_file(path) for path in sorted(scenario_path.glob("*.y*ml"))]
+            return [parse_scenario_file(scenario_path)]
         return [self._coerce_scenario(item) for item in scenarios]
 
     def _provision_runtime(self, *, scale: str, workers: int, name: str, root_dir: str | Path | None) -> RuntimePool:
@@ -315,7 +323,7 @@ class SessionOrchestrator:
     def _next_run_id(self, artifacts_root_dir: Path, *, started_at: datetime | None = None) -> str:
         return next_run_id(artifacts_root_dir, started_at=started_at)
 
-    def _resolve_scale(self, scenarios: Iterable[ScenarioExecutionRef]) -> str:
+    def _resolve_scale(self, scenarios: Iterable[ScenarioSpec]) -> str:
         return resolve_scale(scenarios)
 
     def _timestamp(self) -> datetime:

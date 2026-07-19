@@ -8,10 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from netopsbench.models.profiles import supported_scales
 from netopsbench.sdk.exceptions import RunFailedError
-
-SUPPORTED_REPORT_SCALES = set(supported_scales())
 
 
 class BenchmarkReport:
@@ -29,44 +26,43 @@ class BenchmarkReport:
         report_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ):
-        if id is None and report_id is not None:
-            payload_dict = dict(payload or {})
-            id = report_id
-            summary = dict(payload_dict.get("summary") or {})
-            for key in ("mode", "status", "runtime_id"):
-                if key in payload_dict and key not in summary:
-                    summary[key] = payload_dict[key]
-            scenario_summaries = list(payload_dict.get("scenario_summaries") or [])
-            if not scenario_summaries:
-                scenario_summaries = [
-                    {"scenario_id": scenario_id} for scenario_id in payload_dict.get("scenario_ids", [])
-                ]
-            detailed_results = list(payload_dict.get("detailed_results") or payload_dict.get("results") or [])
-            artifact_paths = dict(payload_dict.get("artifact_paths") or {})
-            raw = dict(payload_dict)
-
-        self.id = str(id or "")
-        self.summary = dict(summary or {})
-        self.scenario_summaries = [dict(item) for item in (scenario_summaries or [])]
-        self.detailed_results = [dict(item) for item in (detailed_results or [])]
-        self.artifact_paths = {str(key): str(value) for key, value in dict(artifact_paths or {}).items()}
-        self.raw = dict(raw or {})
+        legacy = dict(payload or {})
+        self.id = str(report_id or id or legacy.get("id") or "")
+        self.summary = dict(summary or legacy.get("summary") or {})
+        self.scenario_summaries = [
+            dict(item) for item in (scenario_summaries or legacy.get("scenario_summaries") or [])
+        ]
+        self.detailed_results = [
+            dict(item)
+            for item in (
+                detailed_results
+                or legacy.get("detailed_results")
+                or legacy.get("results")
+                or []
+            )
+        ]
+        self.artifact_paths = {
+            str(key): str(value)
+            for key, value in dict(artifact_paths or legacy.get("artifact_paths") or {}).items()
+        }
+        self.raw = dict(raw or legacy)
 
     @property
     def report_id(self) -> str:
+        """Compatibility alias for the original public report wrapper."""
         return self.id
 
     @property
     def payload(self) -> dict[str, Any]:
-        payload = dict(self.summary)
-        if self.scenario_summaries:
-            payload["scenario_summaries"] = [dict(item) for item in self.scenario_summaries]
+        """Compatibility payload while retaining structured report fields."""
+        payload = dict(self.raw)
+        payload.setdefault("summary", dict(self.summary))
         if self.detailed_results:
-            payload["detailed_results"] = [dict(item) for item in self.detailed_results]
+            payload.setdefault("detailed_results", [dict(item) for item in self.detailed_results])
+        if self.scenario_summaries:
+            payload.setdefault("scenario_summaries", [dict(item) for item in self.scenario_summaries])
         if self.artifact_paths:
-            payload["artifact_paths"] = dict(self.artifact_paths)
-        if self.raw:
-            payload.update(dict(self.raw))
+            payload.setdefault("artifact_paths", dict(self.artifact_paths))
         return payload
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,12 +94,6 @@ class BenchmarkReport:
             raise ValueError(f"Invalid report JSON: {report_path}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"Report payload must be a JSON object: {report_path}")
-        if "report_id" in payload or "payload" in payload:
-            report_id = payload.get("report_id")
-            report_payload = payload.get("payload")
-            if not isinstance(report_id, str) or not isinstance(report_payload, dict):
-                raise ValueError(f"Report payload must contain string report_id and object payload: {report_path}")
-            return cls(report_id=report_id, payload=report_payload)
         report_id = payload.get("id")
         summary = payload.get("summary")
         if not isinstance(report_id, str) or not isinstance(summary, dict):
@@ -163,11 +153,13 @@ class BenchmarkReport:
 
 def _short_scenario_id(scenario_id: str) -> str:
     sid = str(scenario_id or "")
-    if sid.startswith("generated_"):
+    generated = sid.startswith("generated_")
+    if generated:
         sid = sid[len("generated_") :]
-    # Strip trailing scale + numeric suffix like "_xs_001".
+    # Scale names are registry data; generated ids always end in
+    # ``_<scale>_<ordinal>`` so this parser does not need a global scale map.
     parts = sid.rsplit("_", 2)
-    if len(parts) == 3 and parts[-2] in SUPPORTED_REPORT_SCALES and parts[-1].isdigit():
+    if generated and len(parts) == 3 and parts[-1].isdigit():
         sid = parts[0]
     return sid
 

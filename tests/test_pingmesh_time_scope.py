@@ -38,7 +38,7 @@ def _toolkit_with_captured_queries(monkeypatch):
     return toolkit, captured
 
 
-def _coverage_detector(client_count=144):
+def _coverage_detector(client_count=144, *, rtt_ports_per_cycle=4):
     clients = [
         Device(name=f"client{i}", role=DeviceRole.CLIENT, attached_switch="leaf1") for i in range(1, client_count + 1)
     ]
@@ -62,7 +62,7 @@ def _coverage_detector(client_count=144):
         pingmesh=PingmeshPolicy(
             destination_batch_size=16,
             rtt_port_pool_size=16,
-            rtt_ports_per_cycle=4,
+            rtt_ports_per_cycle=rtt_ports_per_cycle,
             cycle_interval_seconds=2,
         ),
     )
@@ -480,6 +480,29 @@ def test_coverage_rejects_incomplete_socket_pool():
     assert audit["invalid_socket_rows"] == 1
 
 
+def test_coverage_accepts_smaller_final_port_batch():
+    detector = _coverage_detector(2, rtt_ports_per_cycle=6)
+    rows = [
+        {
+            "probe_cycle": float(port_batch),
+            "destination_batch_index": 0.0,
+            "port_batch_index": float(port_batch),
+            "src_name": source,
+            "dst_name": destination,
+            "rtt_ports_active": 4 if port_batch == 2 else 6,
+            "rtt_ports_total": 16,
+        }
+        for source, destination in (("client1", "client2"), ("client2", "client1"))
+        for port_batch in range(3)
+    ]
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "complete"
+    assert audit["port_batches_observed"] == [0, 1, 2]
+    assert audit["invalid_socket_rows"] == 0
+
+
 def test_pingmesh_coverage_summary_reports_missing_batches():
     detector = _coverage_detector()
     rows = [
@@ -542,6 +565,222 @@ def test_pingmesh_hotspots_applies_global_loss_first_limit(monkeypatch):
     assert '|> pivot(rowKey: ["src_leaf", "dst_leaf"]' in query
     assert '|> group()\n  |> sort(columns: ["packet_loss", "rtt_p99"], desc: true)' in query
     assert "|> limit(n: 7)" in query
+
+
+def test_pingmesh_summary_uses_fresh_materialized_rows_and_normalizes_measurement(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+    aggregate_rows = [
+        {
+            "_measurement": "pingmesh_path_type_30s",
+            "_time": "2026-01-02T00:00:30Z",
+            "path_type": "inter_leaf",
+            "_field": "rtt_p99",
+            "_value": 2.5,
+        },
+        {
+            "_measurement": "pingmesh_path_type_30s",
+            "_time": "2026-01-02T00:00:30Z",
+            "path_type": "inter_leaf",
+            "_field": "packet_loss",
+            "_value": 0.0,
+        },
+    ]
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        return aggregate_rows
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_summary(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+    )
+
+    assert result.success is True
+    assert len(queries) == 1
+    assert 'r._measurement == "pingmesh_path_type_30s"' in queries[0]
+    assert result.data["path_type_summary"]["inter_leaf"] == {"rtt_p99": 2.5, "packet_loss": 0.0}
+    assert all(row["_measurement"] == "pingmesh" for row in result.data["rows"])
+
+
+def test_pingmesh_summary_falls_back_when_materialized_rows_are_stale(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        if "pingmesh_path_type_30s" in query:
+            return [
+                {
+                    "_time": "2026-01-02T00:00:14Z",
+                    "path_type": "inter_leaf",
+                    "_field": "packet_loss",
+                    "_value": 99.0,
+                }
+            ]
+        return [
+            {
+                "_measurement": "pingmesh",
+                "_time": "2026-01-02T00:00:50Z",
+                "path_type": "inter_leaf",
+                "_field": "packet_loss",
+                "_value": 1.0,
+            }
+        ]
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_summary(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+    )
+
+    assert result.success is True
+    assert len(queries) == 2
+    assert 'r._measurement == "pingmesh"' in queries[1]
+    assert "aggregateWindow(every: 30s" in queries[1]
+    assert result.data["path_type_summary"]["inter_leaf"]["packet_loss"] == 1.0
+
+
+def test_pingmesh_hotspots_uses_fresh_leaf_pair_materialization(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        return [
+            {
+                "_measurement": "pingmesh_leaf_pair_30s",
+                "_time": "2026-01-02T00:00:30Z",
+                "src_leaf": "leaf1",
+                "dst_leaf": "leaf2",
+                "rtt_p99": 8.0,
+                "packet_loss": 25.0,
+            }
+        ]
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_hotspots(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+        limit=3,
+    )
+
+    assert result.success is True
+    assert len(queries) == 2
+    assert 'r._field == "hotspot_score"' in queries[0]
+    assert 'r._measurement == "pingmesh_leaf_pair_30s"' in queries[1]
+    assert result.data["hotspots"] == [{"src_leaf": "leaf1", "dst_leaf": "leaf2", "rtt_p99": 8.0, "packet_loss": 25.0}]
+
+
+def test_pingmesh_hotspots_falls_back_when_materialization_is_missing(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        if "pingmesh_leaf_pair_30s" in query:
+            return []
+        return [{"src_leaf": "leaf2", "dst_leaf": "leaf1", "rtt_p99": 1.0, "packet_loss": 0.0}]
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_hotspots(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+    )
+
+    assert result.success is True
+    assert len(queries) == 3
+    assert 'r._measurement == "pingmesh"' in queries[2]
+    assert result.data["hotspots"][0]["src_leaf"] == "leaf2"
+
+
+def test_pingmesh_hotspots_uses_score_to_query_only_ranked_candidates(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        if 'r._field == "hotspot_score"' in query:
+            return [
+                {
+                    "_measurement": "pingmesh_leaf_pair_30s",
+                    "_field": "hotspot_score",
+                    "_time": "2026-01-02T00:00:30Z",
+                    "_value": 25_000_000_000_008.0,
+                    "src_leaf": "leaf1",
+                    "dst_leaf": "leaf2",
+                }
+            ]
+        return [
+            {
+                "_time": "2026-01-02T00:00:30Z",
+                "src_leaf": "leaf1",
+                "dst_leaf": "leaf2",
+                "rtt_p99": 8.0,
+                "packet_loss": 25.0,
+            }
+        ]
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_hotspots(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+        limit=3,
+    )
+
+    assert result.success is True
+    assert len(queries) == 2
+    assert "|> top(n: 3" in queries[0]
+    assert 'r.src_leaf == "leaf1"' in queries[1]
+    assert 'r.dst_leaf == "leaf2"' in queries[1]
+    assert result.data["hotspots"] == [{"src_leaf": "leaf1", "dst_leaf": "leaf2", "rtt_p99": 8.0, "packet_loss": 25.0}]
+
+
+def test_pingmesh_hotspots_score_query_includes_previous_closed_window(monkeypatch):
+    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
+    queries = []
+
+    def fake_query(query, require_value=True):
+        queries.append(query)
+        if 'r._field == "hotspot_score"' in query:
+            if 'range(start: time(v: "2026-01-02T00:01:00Z")' in query:
+                return []
+            return [
+                {
+                    "_field": "hotspot_score",
+                    "_time": "2026-01-02T00:00:30Z",
+                    "_value": 8.0,
+                    "src_leaf": "leaf1",
+                    "dst_leaf": "leaf2",
+                }
+            ]
+        return [
+            {
+                "_time": "2026-01-02T00:00:30Z",
+                "src_leaf": "leaf1",
+                "dst_leaf": "leaf2",
+                "rtt_p99": 8.0,
+                "packet_loss": 0.0,
+            }
+        ]
+
+    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+
+    result = toolkit.get_pingmesh_hotspots(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:14Z",
+    )
+
+    assert result.success is True
+    assert 'range(start: time(v: "2026-01-02T00:01:00Z")' in queries[0]
+    assert 'range(start: time(v: "2026-01-02T00:00:30Z")' in queries[1]
+    assert len(queries) == 3
 
 
 def test_pingmesh_time_scope_uses_context_file_before_env(monkeypatch, tmp_path):

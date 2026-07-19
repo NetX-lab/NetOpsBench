@@ -9,6 +9,9 @@ from math import ceil
 class DetectorCoverageMixin:
     """Audit schedule coverage without consulting fault targets."""
 
+    _pingmesh_clients: list[str]
+    _pingmesh_policy: dict
+
     def summarize_coverage(self, rows: list[dict]) -> dict:
         client_count = len(self._pingmesh_clients)
         policy = self._pingmesh_policy
@@ -72,8 +75,12 @@ class DetectorCoverageMixin:
         invalid_socket_rows = sum(
             1
             for row in cycle_rows
-            if _field_int(row, "rtt_ports_total") != port_pool_size
-            or _field_int(row, "rtt_ports_active") != ports_per_cycle
+            if not _has_valid_socket_batch(
+                row,
+                port_pool_size=port_pool_size,
+                ports_per_cycle=ports_per_cycle,
+                port_batch_count=expected_port_batches,
+            )
         )
         expected_pairs = client_count * destination_count
         expected_pair_port_combinations = expected_pairs * expected_port_batches
@@ -117,3 +124,19 @@ def _field_int(row: dict, field: str) -> int | None:
         return int(row[field])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _has_valid_socket_batch(
+    row: dict,
+    *,
+    port_pool_size: int,
+    ports_per_cycle: int,
+    port_batch_count: int,
+) -> bool:
+    port_batch_index = _field_int(row, "port_batch_index")
+    if port_batch_index is None or not 0 <= port_batch_index < port_batch_count:
+        return False
+    expected_active = min(ports_per_cycle, port_pool_size - port_batch_index * ports_per_cycle)
+    return (
+        _field_int(row, "rtt_ports_total") == port_pool_size and _field_int(row, "rtt_ports_active") == expected_active
+    )
