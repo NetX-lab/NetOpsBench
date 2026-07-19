@@ -18,6 +18,7 @@ from netopsbench.platform.simulator.contracts import (
     SimulatorConfig,
     ToolAction,
 )
+from netopsbench.platform.simulator.payloads import compact_json
 from netopsbench.platform.toolkit._core.common import ToolResult
 from netopsbench.platform.toolkit.mcp.registry import tool_schemas, validate_tool_call
 
@@ -258,7 +259,9 @@ class DiagnosticSession:
             )
             return SessionTransition(
                 state=self.state,
-                observation={"tool": action.name, "success": False, "error": failure.message},
+                observation=self._bounded_tool_observation(
+                    {"tool": action.name, "success": False, "error": failure.message}
+                ),
                 failure=failure,
                 error=failure.message,
                 metrics=self._metrics(elapsed),
@@ -274,14 +277,16 @@ class DiagnosticSession:
             )
             return SessionTransition(
                 state=self.state,
-                observation={"tool": action.name, "success": False, "error": str(exc)},
+                observation=self._bounded_tool_observation(
+                    {"tool": action.name, "success": False, "error": str(exc)}
+                ),
                 failure=failure,
                 error=str(exc),
                 metrics=self._metrics(elapsed),
             )
         return SessionTransition(
             state=self.state,
-            observation={"tool": action.name, "result": result},
+            observation=self._bounded_tool_observation({"tool": action.name, "result": result}),
             metrics=self._metrics(elapsed),
         )
 
@@ -350,6 +355,10 @@ class DiagnosticSession:
 
     def _metrics(self, elapsed: float) -> dict[str, Any]:
         return {"tool_calls": self.tool_calls, "elapsed_seconds": elapsed}
+
+    def _bounded_tool_observation(self, value: dict[str, Any]) -> dict[str, Any]:
+        bounded = compact_json(value, self.config.max_tool_result_bytes)
+        return bounded if isinstance(bounded, dict) else {"result": bounded}
 
     def _elapsed(self) -> float:
         return max(0.0, time.monotonic() - self.started_at)

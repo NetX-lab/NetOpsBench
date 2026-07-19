@@ -25,7 +25,6 @@ from netopsbench.platform.simulator.engine import (
     SessionState,
     TerminationReason,
 )
-from netopsbench.platform.simulator.payloads import compact_json
 
 
 class ResetResult(BaseModel):
@@ -106,14 +105,6 @@ class DiagnosticEnvironment:
             raise RuntimeError("Environment must be reset before step")
         if isinstance(action, ToolAction):
             transition = self.session.call_tool(action)
-            transition = transition.model_copy(
-                update={
-                    "observation": compact_json(
-                        transition.observation,
-                        self.config.max_tool_result_bytes,
-                    )
-                }
-            )
         else:
             transition = self.session.submit(action.diagnosis, usage=action.usage)
             cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED

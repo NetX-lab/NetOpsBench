@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -114,6 +115,19 @@ def test_protocol_error_is_recoverable_and_does_not_break_incident():
     assert result.state is SessionState.ACTIVE
     assert incident.state is IncidentState.ACTIVE
     assert backend.tool_calls == 0
+
+
+def test_diagnostic_session_applies_tool_result_cap_for_every_facade():
+    backend = FakeBackend()
+    backend.call_tool = lambda _action: {"success": True, "data": "x" * 20_000}
+    incident = IncidentEngine(lambda: backend).prepare(_scenario())
+    session = incident.open_session(SimulatorConfig(max_tool_result_bytes=1_024))
+
+    result = session.call_tool(ToolAction(name="get_topology"))
+
+    serialized = json.dumps(result.observation, separators=(",", ":"), sort_keys=True)
+    assert len(serialized.encode("utf-8")) <= 1_024
+    assert "truncation" in serialized
 
 
 def test_prepare_failure_is_invalid_and_cleanup_failure_is_separate():
