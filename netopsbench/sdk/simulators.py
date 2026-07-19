@@ -10,6 +10,11 @@ from typing import Any
 from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.scenario.parser import parse_scenario_file
+from netopsbench.platform.session.context import (
+    build_canonical_observation,
+    build_public_case_id,
+    build_public_symptoms,
+)
 from netopsbench.platform.simulator.engine import (
     CleanupStatus,
     DiagnosticSession,
@@ -155,6 +160,7 @@ __all__ = [
     "DiagnosticSession",
     "ExecutionFailure",
     "FailureDomain",
+    "IncidentEngine",
     "IncidentState",
     "PreparedIncident",
     "ResetResult",
@@ -167,4 +173,7 @@ __all__ = [
     "ToolAction",
     "simulator_tool_schemas",
     "validate_tool_action",
+    "build_canonical_observation",
+    "build_public_case_id",
+    "build_public_symptoms",
 ]

@@ -3,6 +3,21 @@ from netopsbench.platform.session.context import (
     build_public_case_id,
     build_public_symptoms,
 )
+from netopsbench.sdk import (
+    build_canonical_observation as sdk_build_canonical_observation,
+)
+from netopsbench.sdk import (
+    build_public_case_id as sdk_build_public_case_id,
+)
+from netopsbench.sdk import (
+    build_public_symptoms as sdk_build_public_symptoms,
+)
+
+
+def test_canonical_observation_builders_are_public_sdk_contracts():
+    assert sdk_build_canonical_observation is build_canonical_observation
+    assert sdk_build_public_case_id is build_public_case_id
+    assert sdk_build_public_symptoms is build_public_symptoms
 
 
 def test_canonical_observation_is_compact_non_semantic_and_stable():
