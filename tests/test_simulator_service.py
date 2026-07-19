@@ -55,6 +55,27 @@ class FakeEnvironment:
             }
         )
 
+    def terminate_protocol(self, message):
+        return Result(
+            {
+                "valid": True,
+                "case_valid": True,
+                "state": "terminal",
+                "reward": 0.0,
+                "reward_components": {"outcome": 0.0},
+                "metrics": {},
+                "termination_reason": "protocol_error",
+                "failure": {
+                    "domain": "protocol",
+                    "phase": "diagnosis",
+                    "message": message,
+                    "error_type": None,
+                },
+                "cleanup_status": "succeeded",
+                "error": message,
+            }
+        )
+
     def close(self):
         self.closed = True
 
@@ -124,3 +145,27 @@ def test_http_service_rejects_unknown_case_and_group_fields():
         )
     assert missing.status_code == 404
     assert grouped.status_code == 422
+
+
+def test_http_service_maps_illegal_diagnosis_to_protocol_outcome_zero():
+    service = SimulatorService(FakeManager(), [_scenario()])
+    with TestClient(create_app(service)) as client:
+        created = client.post(
+            "/v1/environments",
+            json={"case_id": scenario_case_id(_scenario())},
+        ).json()
+        result = client.post(
+            f"/v1/environments/{created['environment_id']}/actions",
+            json={
+                "action": {
+                    "type": "submit_diagnosis",
+                    "diagnosis": {"verdict": "not-a-verdict"},
+                }
+            },
+        )
+
+    assert result.status_code == 200
+    assert result.json()["case_valid"] is True
+    assert result.json()["reward"] == 0.0
+    assert result.json()["termination_reason"] == "protocol_error"
+    assert result.json()["failure"]["domain"] == "protocol"

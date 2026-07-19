@@ -19,7 +19,9 @@ from netopsbench.platform.simulator.engine import (
 )
 from netopsbench.platform.simulator.environment import (
     DiagnosisSubmission,
+    DiagnosticEnvironment,
     SimulatorConfig,
+    SubmitDiagnosisAction,
     ToolAction,
 )
 from netopsbench.platform.simulator.runtime import RuntimeLeasePool, WarmRuntime
@@ -130,6 +132,42 @@ def test_prepare_failure_is_invalid_and_cleanup_failure_is_separate():
     assert result.reward == 1.0
     assert incident.failure is not None
     assert incident.failure.domain is FailureDomain.CLEANUP
+
+
+def test_environment_preserves_outcome_when_cleanup_fails():
+    backend = FakeBackend(cleanup_error=RuntimeError("recovery failed"))
+    environment = DiagnosticEnvironment(
+        IncidentEngine(lambda: backend),
+        _scenario(healthy=True),
+        SimulatorConfig(),
+    )
+    assert environment.reset().valid is True
+
+    result = environment.step(
+        SubmitDiagnosisAction(diagnosis=DiagnosisSubmission(verdict="network_healthy"))
+    )
+
+    assert result.reward == 1.0
+    assert result.cleanup_status is CleanupStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.domain is FailureDomain.CLEANUP
+
+
+def test_environment_illegal_diagnosis_terminates_as_protocol_outcome_zero():
+    environment = DiagnosticEnvironment(
+        IncidentEngine(FakeBackend),
+        _scenario(healthy=True),
+        SimulatorConfig(),
+    )
+    assert environment.reset().valid is True
+
+    result = environment.terminate_protocol("invalid diagnosis schema")
+
+    assert result.case_valid is True
+    assert result.reward == 0.0
+    assert result.failure is not None
+    assert result.failure.domain is FailureDomain.PROTOCOL
+    assert result.termination_reason == "protocol_error"
 
 
 class FakeRunner:

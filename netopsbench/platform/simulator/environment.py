@@ -117,6 +117,44 @@ class DiagnosticEnvironment:
         else:
             transition = self.session.submit(action.diagnosis, usage=action.usage)
             cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
+            cleanup_failure = (
+                self.incident.failure
+                if self.incident is not None and cleanup is CleanupStatus.FAILED
+                else None
+            )
+            transition = transition.model_copy(
+                update={
+                    "cleanup_status": cleanup,
+                    "failure": cleanup_failure,
+                    "error": cleanup_failure.message if cleanup_failure is not None else None,
+                }
+            )
+        return StepResult.model_validate(transition.model_dump(mode="python"))
+
+    def terminate_protocol(self, message: str) -> StepResult:
+        """Terminate an otherwise valid case after an invalid action envelope."""
+        if self.session is None:
+            raise RuntimeError("Environment must be reset before protocol termination")
+        transition = self.session.terminate_failure(
+            domain=FailureDomain.PROTOCOL,
+            message=message,
+            reason=TerminationReason.PROTOCOL_ERROR,
+        )
+        cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
+        cleanup_failure = (
+            self.incident.failure
+            if self.incident is not None and cleanup is CleanupStatus.FAILED
+            else None
+        )
+        if cleanup_failure is not None:
+            transition = transition.model_copy(
+                update={
+                    "cleanup_status": cleanup,
+                    "failure": cleanup_failure,
+                    "error": cleanup_failure.message,
+                }
+            )
+        else:
             transition = transition.model_copy(update={"cleanup_status": cleanup})
         return StepResult.model_validate(transition.model_dump(mode="python"))
 

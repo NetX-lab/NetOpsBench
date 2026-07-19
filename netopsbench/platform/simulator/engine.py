@@ -210,12 +210,14 @@ class PreparedIncident:
             self.backend.finish(broken=broken)
         except Exception as exc:  # noqa: BLE001 - cleanup is reported separately
             self.cleanup_status = CleanupStatus.FAILED
-            self.failure = ExecutionFailure(
+            cleanup_failure = ExecutionFailure(
                 domain=FailureDomain.CLEANUP,
                 phase="cleanup",
                 message=str(exc),
                 error_type=type(exc).__name__,
             )
+            if self.failure is None or self.failure.domain is FailureDomain.CLEANUP:
+                self.failure = cleanup_failure
             self.state = IncidentState.BROKEN
             return
         self.cleanup_status = CleanupStatus.SUCCEEDED

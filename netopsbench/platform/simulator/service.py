@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.session.context import build_public_case_id
@@ -101,9 +101,13 @@ class SimulatorService:
             slot = self.environments.get(environment_id)
         if slot is None:
             raise KeyError(environment_id)
-        parsed = _ACTION_ADAPTER.validate_python(action)
         with slot.lock:
-            result = slot.environment.step(parsed).model_dump(mode="json")
+            try:
+                parsed = _ACTION_ADAPTER.validate_python(action)
+            except ValidationError as exc:
+                result = slot.environment.terminate_protocol(str(exc)).model_dump(mode="json")
+            else:
+                result = slot.environment.step(parsed).model_dump(mode="json")
         self._record_event(
             {
                 "event": "step",
