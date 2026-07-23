@@ -310,7 +310,7 @@ def test_canonical_scenario_and_evaluator_are_single_source_of_truth(tmp_path):
     assert "episodes" not in ScenarioSpec.model_fields
     assert "ground_truth" not in {field.name for field in dataclasses.fields(DiagnosticContext)}
     assert profiles.SCALE_PROFILES["xs"] is profiles.default_scale_registry().get("xs")
-    assert (PACKAGE_ROOT / "platform" / "scenario" / "models.py").exists()
+    assert not (PACKAGE_ROOT / "platform" / "scenario" / "models.py").exists()
     assert (PACKAGE_ROOT / "sdk" / "evaluators.py").exists()
     with NetOpsBench(workspace=tmp_path) as bench:
         assert hasattr(bench, "evaluators")

@@ -8,11 +8,14 @@ lifecycle, tool registry, evaluator, and cleanup semantics. The simulator only
 changes how control is exposed: agents call `reset()` and `step()` instead of
 returning a diagnosis from one `diagnose()` call.
 
+Each environment represents one incident and is single-use. Create a new
+environment to run the scenario again.
+
 ```python
 from netopsbench.sdk import NetOpsBench, SubmitDiagnosisAction
 
 with NetOpsBench(workspace=".") as bench:
-    scenario = bench.scenarios.load("scenarios/generated/xs/example.yaml")
+    scenario = bench.scenarios.load("scenarios/generated/xs/generated_link_down_xs_001.yaml")
     environment = bench.simulators.create(scenario=scenario)
     reset = environment.reset()
 
@@ -32,18 +35,29 @@ For multiple independent agents diagnosing one prepared incident, use the
 advanced API:
 
 ```python
-from netopsbench.sdk import SimulatorConfig
+from netopsbench.sdk import NetOpsBench
 
-incident = bench.simulators.prepare(scenario=scenario)
-first = incident.open_session(SimulatorConfig())
-second = incident.open_session(SimulatorConfig())
-try:
-    # Each session has independent counters and diagnosis state.
-    ...
-finally:
-    incident.close()  # fault recovery occurs once
+with NetOpsBench(workspace=".") as bench:
+    scenario = bench.scenarios.load("scenarios/generated/xs/generated_link_down_xs_001.yaml")
+    incident = bench.simulators.prepare(scenario=scenario)
+    first = incident.open_session()
+    second = incident.open_session()
+    try:
+        # Each session has independent counters and diagnosis state.
+        ...
+    finally:
+        incident.close()  # fault recovery occurs once
 ```
 
 The optional localhost HTTP service accepts opaque case IDs and the same typed
 tool and diagnosis actions. Install `netopsbench[simulator]` and run
 `netopsbench-simulator --help` for its scenario-loading options.
+
+`max_agent_seconds` is checked at action boundaries. It prevents a session
+from accepting additional tool or submit actions after its deadline; it does
+not attempt to terminate arbitrary user threads while an action is running.
+
+When using a large topology, keep only that topology's Pingmesh, BGP collector,
+and Telegraf processes active on the host. Other labs may remain deployed and
+warm. See the observation-validity guidance in
+[Benchmark Methodology](/docs/run-benchmarks/methodology).
