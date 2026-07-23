@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import random
 import re
@@ -15,7 +16,7 @@ import yaml
 
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.models.topology import DeviceRole, TopologyManifest
-from netopsbench.platform.topology.configdb_payload import interface_names_for_config
+from netopsbench.platform.topology.configdb_payload import interface_names_for_config, interface_networks_for_config
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
 
@@ -111,7 +112,34 @@ def load_topology(scale: str, topology_dir: str | None) -> TopologyContext:
         if bgp_info.get("local_as") is None:
             raise ValueError(f"FRR artifact has no BGP router stanza: {frr_cfg}")
         device_asns[device] = int(bgp_info["local_as"])
-        bgp_neighbors[device] = list(bgp_info.get("neighbors") or [])
+        neighbors = list(bgp_info.get("neighbors") or [])
+        interface_networks = interface_networks_for_config(cfg)
+        interface_roles = leaf_interface_roles.get(device) or {}
+        for neighbor in neighbors:
+            try:
+                peer_ip = ipaddress.ip_address(str(neighbor["peer_ip"]))
+            except (KeyError, ValueError):
+                continue
+            interface = next(
+                (
+                    name
+                    for name, network in interface_networks.items()
+                    if peer_ip in ipaddress.ip_network(network, strict=False)
+                ),
+                None,
+            )
+            if interface is None:
+                continue
+            neighbor["interface"] = interface
+            neighbor["interface_role"] = next(
+                (
+                    role
+                    for role in ("uplink", "downlink")
+                    if interface in (interface_roles.get(role) or [])
+                ),
+                None,
+            )
+        bgp_neighbors[device] = neighbors
         bgp_networks[device] = list(bgp_info.get("networks") or [])
 
     return TopologyContext(
@@ -279,22 +307,26 @@ def count_for_scale(item: dict[str, Any], scale: str, default_count: int) -> int
     return int(item.get("count", default_count))
 
 
-def pick_device(role: str, topo: TopologyContext, rng: random.Random) -> str:
+def device_candidates(role: str, topo: TopologyContext) -> list[str]:
     if role == "spine":
-        return rng.choice(topo.cores if topo.cores else topo.spines)
+        return topo.cores if topo.cores else topo.spines
     if role == "core":
-        return rng.choice(topo.cores if topo.cores else topo.spines)
+        return topo.cores if topo.cores else topo.spines
     if role == "leaf":
-        return rng.choice(topo.edges if topo.edges else topo.leafs)
+        return topo.edges if topo.edges else topo.leafs
     if role == "edge":
-        return rng.choice(topo.edges if topo.edges else topo.leafs)
+        return topo.edges if topo.edges else topo.leafs
     if role == "agg":
         if not topo.aggs:
             raise ValueError("device_role 'agg' requires a fat-tree topology")
-        return rng.choice(topo.aggs)
+        return topo.aggs
     if role == "client":
-        return rng.choice([c["name"] for c in topo.clients])
+        return [c["name"] for c in topo.clients]
     raise ValueError(f"Unknown role: {role}")
+
+
+def pick_device(role: str, topo: TopologyContext, rng: random.Random) -> str:
+    return rng.choice(device_candidates(role, topo))
 
 
 def pick_network_interface(device: str, topo: TopologyContext, rng: random.Random) -> str:
@@ -303,10 +335,18 @@ def pick_network_interface(device: str, topo: TopologyContext, rng: random.Rando
     return rng.choice(normalized) if normalized else "Ethernet0"
 
 
-def pick_bgp_neighbor(device: str, topo: TopologyContext, rng: random.Random) -> dict[str, Any]:
+def pick_bgp_neighbor(
+    device: str,
+    topo: TopologyContext,
+    rng: random.Random,
+    interface_role: str | None = None,
+) -> dict[str, Any]:
     candidates = topo.bgp_neighbors.get(device) or []
+    if interface_role:
+        candidates = [item for item in candidates if item.get("interface_role") == interface_role]
     if not candidates:
-        raise ValueError(f"Device {device} has no parsed BGP neighbors")
+        suffix = f" for interface_role={interface_role}" if interface_role else ""
+        raise ValueError(f"Device {device} has no parsed BGP neighbors{suffix}")
     return dict(rng.choice(candidates))
 
 
@@ -357,24 +397,11 @@ def pick_link_down_interface(device: str, topo: TopologyContext, rng: random.Ran
     candidates = [normalize_sonic_interface(c) for c in candidates if normalize_sonic_interface(c)]
     if not candidates:
         candidates = ["Ethernet0"]
-    if device.startswith(("leaf", "edge")):
+    manifest_device = topo.manifest.device(device)
+    if manifest_device is not None and manifest_device.role in {DeviceRole.LEAF, DeviceRole.EDGE}:
         roles = topo.leaf_interface_roles.get(device)
         if roles and roles.get("downlink"):
             return rng.choice(roles["downlink"])
-    # On leafs, prefer client-facing links to create visible impact.
-    if device.startswith("leaf"):
-        num_spines = int(topo.metadata.get("scale", {}).get("num_spines", 0) or 0)
-        client_facing = []
-        for iface in candidates:
-            if iface.startswith("Ethernet") and iface[8:].isdigit():
-                port_idx = int(iface[8:])
-                if port_idx % 4 != 0:
-                    continue
-                eth_idx = (port_idx // 4) + 1
-                if num_spines and eth_idx > num_spines:
-                    client_facing.append(iface)
-        if client_facing:
-            return rng.choice(client_facing)
     return rng.choice(candidates)
 
 
@@ -387,8 +414,13 @@ def pick_leaf_interface(device: str, topo: TopologyContext, rng: random.Random, 
     return pick_network_interface(device, topo, rng)
 
 
-def is_role_aware_switch(device: str) -> bool:
-    return device.startswith(("leaf", "edge", "agg"))
+def is_role_aware_switch(device: str, topo: TopologyContext) -> bool:
+    manifest_device = topo.manifest.device(device)
+    return manifest_device is not None and manifest_device.role in {
+        DeviceRole.LEAF,
+        DeviceRole.EDGE,
+        DeviceRole.AGG,
+    }
 
 
 def pick_client_interface(device: str, topo: TopologyContext, rng: random.Random) -> str:
@@ -407,13 +439,31 @@ class FaultBuildTarget:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def _generic_fault_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    return FaultBuildTarget(device=pick_device(template.get("device_role", "leaf"), topo, rng))
+def _generic_fault_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    return FaultBuildTarget(
+        device=target_device or pick_device(template.get("device_role", "leaf"), topo, rng)
+    )
 
 
-def _link_down_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
-    target.interface = pick_link_down_interface(target.device, topo, rng)
+def _link_down_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    target = _generic_fault_target(topo, rng, template, target_device)
+    interface_role = template.get("interface_role")
+    if not interface_role:
+        target.interface = pick_link_down_interface(target.device, topo, rng)
+    elif is_role_aware_switch(target.device, topo):
+        target.interface = pick_leaf_interface(target.device, topo, rng, interface_role)
+    else:
+        target.interface = pick_network_interface(target.device, topo, rng)
     return target
 
 
@@ -421,12 +471,13 @@ def _role_interface_target(
     topo: TopologyContext,
     rng: random.Random,
     template: dict[str, Any],
+    target_device: str | None = None,
 ) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
+    target = _generic_fault_target(topo, rng, template, target_device)
     role = template.get("interface_role") or "uplink"
     target.interface = (
         pick_leaf_interface(target.device, topo, rng, role)
-        if is_role_aware_switch(target.device)
+        if is_role_aware_switch(target.device, topo)
         else pick_network_interface(target.device, topo, rng)
     )
     return target
@@ -436,11 +487,13 @@ def _packet_fault_target(
     topo: TopologyContext,
     rng: random.Random,
     template: dict[str, Any],
+    target_device: str | None = None,
 ) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
-    if target.device.startswith("client"):
+    target = _generic_fault_target(topo, rng, template, target_device)
+    manifest_device = topo.manifest.device(target.device)
+    if manifest_device is not None and manifest_device.role is DeviceRole.CLIENT:
         target.interface = pick_client_interface(target.device, topo, rng)
-    elif is_role_aware_switch(target.device):
+    elif is_role_aware_switch(target.device, topo):
         target.interface = pick_leaf_interface(
             target.device,
             topo,
@@ -452,15 +505,25 @@ def _packet_fault_target(
     return target
 
 
-def _blackhole_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
+def _blackhole_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    target = _generic_fault_target(topo, rng, template, target_device)
     client = _pick_client_for_route_fault(topo, rng, excluded_leaf=target.device)
     target.prefix = _client_subnet(client, prefix_len=30)
     return target
 
 
-def _static_route_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    device = pick_device("leaf", topo, rng)
+def _static_route_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    device = target_device or pick_device("leaf", topo, rng)
     client = _pick_client_for_route_fault(topo, rng, excluded_leaf=device)
     return FaultBuildTarget(
         device=device,
@@ -468,9 +531,19 @@ def _static_route_target(topo: TopologyContext, rng: random.Random, template: di
     )
 
 
-def _bgp_neighbor_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
-    neighbor = pick_bgp_neighbor(target.device, topo, rng)
+def _bgp_neighbor_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    target = _generic_fault_target(topo, rng, template, target_device)
+    neighbor = pick_bgp_neighbor(
+        target.device,
+        topo,
+        rng,
+        interface_role=template.get("interface_role"),
+    )
     target.metadata = {
         "peer_ip": neighbor["peer_ip"],
         "misconfig_kind": template.get("misconfig_kind", "peer_as_mismatch"),
@@ -480,8 +553,13 @@ def _bgp_neighbor_target(topo: TopologyContext, rng: random.Random, template: di
     return target
 
 
-def _route_policy_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
+def _route_policy_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    target = _generic_fault_target(topo, rng, template, target_device)
     network = pick_advertised_network(target.device, topo, rng)
     target.prefix = network["prefix"]
     target.metadata = {"misconfig_kind": template.get("misconfig_kind", "network_statement_missing")}
@@ -490,19 +568,27 @@ def _route_policy_target(topo: TopologyContext, rng: random.Random, template: di
     return target
 
 
-def _acl_target(topo: TopologyContext, rng: random.Random, template: dict[str, Any]) -> FaultBuildTarget:
-    target = _generic_fault_target(topo, rng, template)
+def _acl_target(
+    topo: TopologyContext,
+    rng: random.Random,
+    template: dict[str, Any],
+    target_device: str | None = None,
+) -> FaultBuildTarget:
+    target = _generic_fault_target(topo, rng, template, target_device)
     target.prefix = pick_advertised_network(target.device, topo, rng)["prefix"]
     target.interface = (
         pick_leaf_interface(target.device, topo, rng, "uplink")
-        if is_role_aware_switch(target.device)
+        if is_role_aware_switch(target.device, topo)
         else pick_network_interface(target.device, topo, rng)
     )
     target.metadata = {"direction": template.get("direction", "in")}
     return target
 
 
-FaultScenarioBuilder = Callable[[TopologyContext, random.Random, dict[str, Any]], FaultBuildTarget]
+FaultScenarioBuilder = Callable[
+    [TopologyContext, random.Random, dict[str, Any], str | None],
+    FaultBuildTarget,
+]
 
 FAULT_SCENARIO_BUILDERS: dict[str, FaultScenarioBuilder] = {
     "device_down": _generic_fault_target,
@@ -521,9 +607,9 @@ FAULT_SCENARIO_BUILDERS: dict[str, FaultScenarioBuilder] = {
 
 
 def diagnostic_observation_duration(base_duration: int, manifest: TopologyManifest) -> int:
-    """Return one complete canonical Pingmesh epoch for a diagnostic window."""
-    coverage_seconds = manifest.pingmesh.coverage_epoch_seconds(manifest.facts.total_clients)
-    return max(base_duration, coverage_seconds)
+    """Return one complete Pingmesh epoch plus topology-derived ingestion grace."""
+    complete_seconds = manifest.pingmesh.complete_window_seconds(manifest.facts.total_clients)
+    return max(base_duration, complete_seconds)
 
 
 def _validate_traffic_profiles(spec: dict[str, Any]) -> None:
@@ -542,6 +628,7 @@ def build_fault_instance(
     defaults: dict[str, Any],
     template: dict[str, Any],
     idx: int,
+    target_device: str | None = None,
 ) -> dict[str, Any]:
     # Healthy scenarios use the same diagnosable episode lifecycle without injection.
     if fault_type == "none":
@@ -583,7 +670,7 @@ def build_fault_instance(
         builder = FAULT_SCENARIO_BUILDERS[fault_type]
     except KeyError as exc:
         raise ValueError(f"No scenario builder registered for fault type: {fault_type}") from exc
-    target = builder(topo, rng, template)
+    target = builder(topo, rng, template, target_device)
     extra_episode_metadata = dict(target.metadata)
 
     if template.get("variant"):
@@ -651,21 +738,86 @@ def build_fault_instance(
     }
 
 
+def _stable_template_seed(seed: int, scale: str, template_name: str) -> int:
+    identity = f"{seed}\0{scale}\0{template_name}".encode()
+    return int.from_bytes(hashlib.sha256(identity).digest()[:8], "big")
+
+
+def _ordered_template_devices(
+    role: str,
+    topo: TopologyContext,
+    rng: random.Random,
+) -> list[str]:
+    candidates = device_candidates(role, topo)
+    by_name = {device.name: device for device in topo.manifest.devices}
+    pod_groups: dict[int, list[str]] = {}
+    without_pod: list[str] = []
+    for name in candidates:
+        pod = (by_name[name].metadata or {}).get("pod")
+        if pod is None:
+            without_pod.append(name)
+        else:
+            pod_groups.setdefault(int(pod), []).append(name)
+
+    if not pod_groups:
+        ordered = list(candidates)
+        rng.shuffle(ordered)
+        return ordered
+
+    pod_order = sorted(pod_groups)
+    rng.shuffle(pod_order)
+    for names in pod_groups.values():
+        rng.shuffle(names)
+    rng.shuffle(without_pod)
+
+    ordered: list[str] = []
+    while any(pod_groups.values()):
+        for pod in pod_order:
+            if pod_groups[pod]:
+                ordered.append(pod_groups[pod].pop())
+    ordered.extend(without_pod)
+    return ordered
+
+
 def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: int) -> list[Path]:
     _validate_traffic_profiles(spec)
-    rng = random.Random(seed)
     defaults = dict(spec.get("defaults", {}))
     defaults["seed"] = seed
     default_count = int(defaults.get("count_per_fault", 5))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
+    next_index_by_fault: dict[str, int] = {}
 
     for template in spec.get("fault_templates", []):
         fault_type = template["fault_type"]
         difficulty = template.get("difficulty", "medium")
         count = count_for_scale(template, topo.scale, default_count)
-        for idx in range(1, count + 1):
+        if count <= 0:
+            continue
+
+        template_name = str(template.get("name") or fault_type)
+        rng = random.Random(_stable_template_seed(seed, topo.scale, template_name))
+        target_devices: list[str | None]
+        if fault_type == "none":
+            target_devices = [None] * count
+        else:
+            # Static-route faults intentionally remain access/origin scoped to
+            # match the current handler's device-local route semantics.
+            role = "leaf" if fault_type == "static_route_misconfig" else str(
+                template.get("device_role") or "leaf"
+            )
+            ordered_devices = _ordered_template_devices(role, topo, rng)
+            if count > len(ordered_devices):
+                raise ValueError(
+                    f"Template {template_name} requests {count} unique {role} devices, "
+                    f"but topology {topo.scale} has only {len(ordered_devices)}"
+                )
+            target_devices = ordered_devices[:count]
+
+        for target_device in target_devices:
+            idx = next_index_by_fault.get(fault_type, 0) + 1
+            next_index_by_fault[fault_type] = idx
             payload = build_fault_instance(
                 fault_type=fault_type,
                 difficulty=difficulty,
@@ -674,6 +826,7 @@ def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: i
                 defaults=defaults,
                 template=template,
                 idx=idx,
+                target_device=target_device,
             )
             scenario = ScenarioSpec.model_validate(payload)
             out_path = out_dir / f"{payload['scenario_id']}.yaml"

@@ -144,6 +144,14 @@ def validate_scenario_topology(scenario, topology_dir: str) -> dict:
             f"actual='{actual_scale}'. Use matching scenario files or redeploy the topology."
         )
 
+    required_duration = manifest.pingmesh.complete_window_seconds(manifest.facts.total_clients)
+    if scenario.episode.duration_seconds < required_duration:
+        errors.append(
+            f"[scenario={scenario.scenario_id} episode={scenario.episode.episode_id}] "
+            f"duration_seconds={scenario.episode.duration_seconds} is shorter than the topology-derived "
+            f"Pingmesh complete window ({required_duration}s)"
+        )
+
     device_names = {device.name for device in manifest.devices}
     episode = scenario.episode
     if episode.fault_type != "none" and episode.target_device not in device_names:

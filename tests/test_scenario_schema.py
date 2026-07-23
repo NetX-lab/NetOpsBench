@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from netopsbench.models import topology as topology_models
+from netopsbench.models.profiles import default_scale_registry
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import Collector, Device, DeviceRole, Management, TopologyManifest
 from netopsbench.platform.faults.specs import FaultSpec, create_fault_registry
@@ -45,7 +46,7 @@ def _minimal_canonical_topology() -> dict:
     return manifest.model_dump(mode="json")
 
 
-def test_all_diagnostic_observation_durations_use_the_pingmesh_epoch():
+def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
     k12 = topology_models.PingmeshPolicy(
         destination_batch_size=16,
         rtt_port_pool_size=16,
@@ -64,8 +65,8 @@ def test_all_diagnostic_observation_durations_use_the_pingmesh_epoch():
         }
     )
 
-    assert scenario_generator.diagnostic_observation_duration(20, manifest) == 72
-    assert scenario_generator.diagnostic_observation_duration(30, manifest) == 72
+    assert scenario_generator.diagnostic_observation_duration(20, manifest) == 77
+    assert scenario_generator.diagnostic_observation_duration(30, manifest) == 77
     assert scenario_generator.diagnostic_observation_duration(90, manifest) == 90
 
     xlarge = manifest.model_copy(
@@ -79,7 +80,47 @@ def test_all_diagnostic_observation_durations_use_the_pingmesh_epoch():
             ),
         }
     )
-    assert scenario_generator.diagnostic_observation_duration(30, xlarge) == 64
+    assert scenario_generator.diagnostic_observation_duration(30, xlarge) == 69
+
+
+@pytest.mark.parametrize(
+    ("scale", "expected_window"),
+    [
+        ("xs", 7),
+        ("small", 7),
+        ("medium", 8),
+        ("large", 9),
+        ("xlarge", 69),
+        ("fat-tree-k8", 69),
+        ("fat-tree-k12", 77),
+    ],
+)
+def test_builtin_scale_complete_windows_are_topology_derived(scale, expected_window):
+    profile = default_scale_registry().get(scale)
+    policy = topology_models.PingmeshPolicy(
+        destination_batch_size=profile.pingmesh_destination_batch_size,
+        rtt_port_pool_size=profile.pingmesh_rtt_port_pool_size,
+        rtt_ports_per_cycle=profile.pingmesh_rtt_ports_per_cycle,
+        cycle_interval_seconds=profile.pingmesh_cycle_interval_seconds,
+    )
+
+    assert policy.complete_window_seconds(profile.total_clients) == expected_window
+    assert max(30, policy.complete_window_seconds(profile.total_clients)) == (
+        expected_window if scale in {"xlarge", "fat-tree-k8", "fat-tree-k12"} else 30
+    )
+
+
+def test_custom_pingmesh_policy_derives_complete_window_without_scale_name():
+    policy = topology_models.PingmeshPolicy(
+        destination_batch_size=10,
+        rtt_port_pool_size=12,
+        rtt_ports_per_cycle=3,
+        cycle_interval_seconds=3,
+    )
+
+    assert policy.coverage_epoch_seconds(41) == 48
+    assert policy.coverage_grace_seconds() == 6
+    assert policy.complete_window_seconds(41) == 54
 
 
 def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
@@ -292,6 +333,7 @@ def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
             fault_type="link_down",
             target_device="agg1",
             target_interface="Ethernet0",
+            duration_seconds=69,
         ),
     )
 
@@ -300,6 +342,26 @@ def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
     assert result["status"] == "pass"
     assert result["actual_scale"] == "fat-tree-k8"
     assert "agg1" in result["topology_devices"]
+
+
+def test_validate_scenario_topology_rejects_window_shorter_than_manifest_requires(tmp_path):
+    topology_dir = tmp_path / "generated_topology_xs"
+    generate_topology("xs", str(topology_dir), name="xs-window")
+    scenario = ScenarioSpec(
+        scenario_id="short-window",
+        name="Short observation window",
+        topology_scale="xs",
+        episode=EpisodeSpec(
+            episode_id="diagnosis",
+            fault_type="none",
+            duration_seconds=6,
+        ),
+    )
+
+    result = validate_scenario_topology(scenario, str(topology_dir))
+
+    assert result["status"] == "fail"
+    assert "topology-derived Pingmesh complete window (7s)" in result["errors"][0]
 
 
 def test_validate_scenario_topology_rejects_legacy_grouped_topology(tmp_path):
@@ -467,15 +529,42 @@ def test_scenario_runner_prefers_parameters_over_metadata(monkeypatch):
 
 
 def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_path, monkeypatch):
+    events = []
     runner = ScenarioExecutor(
         topology_dir="lab-topology",
         topology_metadata=_minimal_canonical_topology(),
-        baseline_wait_seconds=3,
+        minimum_baseline_seconds=3,
         sleep_fn=lambda _seconds: None,
         persist_results=False,
     )
     runner.results_dir = tmp_path
-    monkeypatch.setattr(runner, "_setup_traffic", lambda scale, profile: {"scale": scale, "profile": profile})
+    def setup_traffic(scale, profile):
+        events.append("traffic_ready")
+        return {"scale": scale, "profile": profile}
+
+    baseline = {"start_time": "baseline-start", "end_time": "baseline-end", "duration_seconds": 7}
+
+    def capture_baseline():
+        events.append("baseline_captured")
+        return baseline
+
+    def observe(duration, *, baseline_window):
+        events.append("current_observed")
+        assert baseline_window == baseline
+        return {
+            "start_time": "current-start",
+            "end_time": "current-end",
+            "duration_seconds": duration,
+            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
+            "anomalies_detected": False,
+            "coverage_status": "complete",
+            "data_source_status": "ok",
+            "_coverage_audit": {"coverage_status": "complete"},
+        }
+
+    monkeypatch.setattr(runner, "_setup_traffic", setup_traffic)
+    monkeypatch.setattr(runner, "_capture_baseline_window", capture_baseline)
+    monkeypatch.setattr(runner, "_wait_and_observe", observe)
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
     monkeypatch.setattr(runner, "_recover_fault", lambda: {"success": True})
 
@@ -490,5 +579,8 @@ def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_pat
     result = runner.run_scenario(scenario)
 
     assert result["success"] is True
+    assert events == ["traffic_ready", "baseline_captured", "current_observed"]
+    assert result["episode"]["coverage_audit"] == {"coverage_status": "complete"}
+    assert "_coverage_audit" not in result["episode"]["observations"]
     assert "result_file" not in result
     assert list(tmp_path.iterdir()) == []
