@@ -53,9 +53,7 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
     logger.info(f"  Estimated max leaf PPS: {max_leaf_pps}")
     logger.info(f"  Estimated max spine PPS: {max_spine_pps}")
     logger.info(
-        "  Path mix: "
-        f"cross-leaf={cross_leaf_flows}, intra-leaf={intra_leaf_flows}, "
-        f"cross-leaf-ratio={cross_leaf_ratio}"
+        f"  Path mix: cross-leaf={cross_leaf_flows}, intra-leaf={intra_leaf_flows}, cross-leaf-ratio={cross_leaf_ratio}"
     )
 
     leafs = switch_pps.get("leafs", {})
@@ -93,8 +91,12 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
         )
 
     logger.info(f"\n[Traffic Start] Starting {len(flows)} flows...")
-    runner.traffic_controller.start_matrix(flows)
+    started_flow_ids = runner.traffic_controller.start_matrix(flows)
     traffic_config["runtime"] = runner.traffic_controller.last_start_stats.to_dict()
+    if len(started_flow_ids) != len(flows):
+        runner.traffic_controller.stop_all()
+        runner.traffic_controller = None
+        raise RuntimeError(f"Background traffic matrix incomplete: started {len(started_flow_ids)}/{len(flows)} flows")
     return traffic_config
 
 

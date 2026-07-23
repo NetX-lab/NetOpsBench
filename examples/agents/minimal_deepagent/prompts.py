@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from netopsbench.platform.session.context import build_canonical_observation
+from netopsbench.sdk import build_canonical_observation
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a production network troubleshooting expert for DCN fabrics. "

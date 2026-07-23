@@ -15,10 +15,9 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
 from .commands import IperfCommandBuilder
-from .settings import DEFAULT_TRAFFIC_PARALLELISM, TrafficSettings
+from .settings import TrafficSettings
 
 logger = get_logger(__name__)
-_DEFAULT_TRAFFIC_PARALLELISM = DEFAULT_TRAFFIC_PARALLELISM
 
 
 def _traffic_parallelism() -> int:
@@ -33,14 +32,17 @@ def _flow_summary(flow: "TrafficFlow") -> str:
 
 
 def _error_detail(exc: Exception) -> str:
-    parts = [str(exc)]
     stderr = getattr(exc, "stderr", None)
     stdout = getattr(exc, "stdout", None)
     if stderr:
-        parts.append(f"stderr={str(stderr).strip()}")
+        return str(stderr).strip()
     if stdout:
-        parts.append(f"stdout={str(stdout).strip()}")
-    return "; ".join(part for part in parts if part)
+        return str(stdout).strip()
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"timeout after {exc.timeout}s"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"exit status {exc.returncode}"
+    return f"{type(exc).__name__}: {exc}"
 
 
 @dataclass
@@ -113,7 +115,6 @@ class TrafficController:
         self.server_parallelism = min(16, max(1, (self.parallelism + 1) // 2))
         self.retry_parallelism = min(4, self.server_parallelism)
         self.active_flows: dict[str, TrafficFlow] = {}
-        self.started_server_ports: dict[str, set] = {}
         self.last_start_stats = TrafficStartStats()
         # Bound external command latency to avoid benchmark hangs.
         self.command_timeout_seconds = 15
@@ -121,19 +122,13 @@ class TrafficController:
 
     def _ensure_iperf_servers_batch(self, dst_container: str, dst_ports: set[int]) -> None:
         """Ensure a destination container has all required iperf3 server ports."""
-        started_ports = self.started_server_ports.setdefault(dst_container, set())
-        missing_ports = sorted(port for port in dst_ports if port not in started_ports)
-        if not missing_ports:
-            return
-
-        script = self.command_builder.server_batch_script(missing_ports)
+        script = self.command_builder.server_batch_script(dst_ports)
         safe_run(
             [*docker_prefix(), "docker", "exec", dst_container, "sh", "-lc", script],
             check=True,
             capture_output=True,
             timeout=max(self.command_timeout_seconds, 15),
         )
-        started_ports.update(missing_ports)
 
     def _start_source_flows_batch(self, src_container: str, flows: list[TrafficFlow]) -> None:
         script = self.command_builder.source_batch_script(flows)
@@ -230,9 +225,16 @@ class TrafficController:
             self.server_parallelism,
         )
         for dst_container, exc in server_result.failures.items():
-            for flow in flows_by_dst_container.get(dst_container, []):
+            dst_flows = flows_by_dst_container.get(dst_container, [])
+            for flow in dst_flows:
                 failed_flows.add(flow.flow_id)
-                logger.warning("Failed to ensure server for %s: %s", _flow_summary(flow), _error_detail(exc))
+            logger.warning(
+                "Failed to prepare traffic destination %s (%d flows, ports=%s): %s",
+                dst_container,
+                len(dst_flows),
+                sorted(dst_ports_by_container[dst_container]),
+                _error_detail(exc),
+            )
 
         source_groups: dict[str, list[TrafficFlow]] = defaultdict(list)
         for flow in valid_flows:
@@ -250,12 +252,13 @@ class TrafficController:
             if source_error is not None:
                 for flow in src_flows:
                     failed_flows.add(flow.flow_id)
-                    logger.warning(
-                        "Failed to start flow on %s: %s: %s",
-                        src_container,
-                        _flow_summary(flow),
-                        _error_detail(source_error),
-                    )
+                    self.active_flows.pop(flow.flow_id, None)
+                logger.warning(
+                    "Failed to start traffic source %s (%d flows): %s",
+                    src_container,
+                    len(src_flows),
+                    _error_detail(source_error),
+                )
                 continue
             for flow in src_flows:
                 self.active_flows[flow.flow_id] = flow
@@ -282,49 +285,79 @@ class TrafficController:
         logger.info("Started %d/%d flows", len(flow_ids), len(flows))
         return flow_ids
 
-    def stop_all(self):
-        """Stop all active traffic flows."""
-        flow_ids = list(self.active_flows.keys())
-        flows_by_src_container: dict[str, list[TrafficFlow]] = defaultdict(list)
-        for flow_id in flow_ids:
-            flow = self.active_flows[flow_id]
-            src_container = self.container_names.get(flow.src)
-            if src_container:
-                flows_by_src_container[src_container].append(flow)
-            else:
-                del self.active_flows[flow_id]
+    def verify_active_flows(self) -> bool:
+        """Return whether all recorded clients and destination listeners are alive."""
+        if not self.active_flows:
+            return False
 
-        def stop_container(src_container: str) -> None:
+        flows_by_container: dict[str, list[TrafficFlow]] = defaultdict(list)
+        ports_by_container: dict[str, set[int]] = defaultdict(set)
+        for flow in self.active_flows.values():
+            src_container = self.container_names.get(flow.src)
+            dst_container = self.container_names.get(flow.dst)
+            if not src_container or not dst_container:
+                return False
+            flows_by_container[src_container].append(flow)
+            ports_by_container[dst_container].add(flow.dst_port)
+
+        containers = set(flows_by_container) | set(ports_by_container)
+
+        def verify_container(container: str) -> None:
+            script = self.command_builder.verify_runtime_script(
+                flows_by_container.get(container, []),
+                ports_by_container.get(container, set()),
+            )
+            safe_run(
+                [*docker_prefix(), "docker", "exec", container, "sh", "-lc", script],
+                check=True,
+                capture_output=True,
+                timeout=self.command_timeout_seconds,
+            )
+
+        with ThreadPoolExecutor(max_workers=min(self.parallelism, len(containers))) as executor:
+            futures = [executor.submit(verify_container, container) for container in containers]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.warning("Traffic liveness verification failed: %s", _error_detail(exc))
+                    return False
+        return True
+
+    def stop_all(self):
+        """Stop all iperf clients and servers in every client container."""
+        flow_ids = list(self.active_flows.keys())
+
+        def stop_container(container: str) -> None:
             safe_run(
                 [
                     *docker_prefix(),
                     "docker",
                     "exec",
-                    src_container,
+                    container,
                     "sh",
                     "-lc",
-                    self.command_builder.stop_clients_script(),
+                    self.command_builder.stop_all_script(),
                 ],
-                check=False,
+                check=True,
                 capture_output=True,
                 timeout=15,
             )
 
-        parallelism = min(self.parallelism, max(len(flows_by_src_container), 1))
+        containers = set(self.container_names.values())
+        parallelism = min(self.parallelism, max(len(containers), 1))
+        failures: list[str] = []
         with ThreadPoolExecutor(max_workers=parallelism) as executor:
-            future_map = {
-                executor.submit(stop_container, src_container): (src_container, src_flows)
-                for src_container, src_flows in flows_by_src_container.items()
-            }
+            future_map = {executor.submit(stop_container, container): container for container in containers}
             for future in as_completed(future_map):
-                src_container, src_flows = future_map[future]
+                container = future_map[future]
                 try:
                     future.result()
-                    logger.debug("Stopped %d flow(s) from %s", len(src_flows), src_flows[0].src)
                 except Exception as exc:
-                    logger.warning("Failed to stop flows on %s: %s", src_container, _error_detail(exc))
-                finally:
-                    for flow in src_flows:
-                        self.active_flows.pop(flow.flow_id, None)
+                    logger.warning("Failed to stop traffic on %s: %s", container, _error_detail(exc))
+                    failures.append(f"{container}: {_error_detail(exc)}")
 
+        if failures:
+            raise RuntimeError("Traffic cleanup failed: " + "; ".join(sorted(failures)))
+        self.active_flows.clear()
         logger.info("Stopped all %d flows", len(flow_ids))

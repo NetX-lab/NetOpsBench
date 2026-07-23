@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+from netopsbench.models.topology import DeviceRole
+
 from ..common import ToolResult
 
 
@@ -12,12 +14,27 @@ class ConnectivityOpsMixin:
         try:
             safe_src = self._validate_device_name(src, field_name="source")
             safe_dst_ip = self._validate_ip_address(dst_ip, field_name="destination IP")
+            source_device = self.manifest.device(safe_src)
+            if source_device is None:
+                raise ValueError(f"Unknown source: {safe_src}")
+            if source_device.role is not DeviceRole.CLIENT:
+                raise ValueError(
+                    "Traceroute source must be a client device, "
+                    f"got {safe_src} ({source_device.role.value})"
+                )
             container = self._resolve_container(safe_src, field_name="source")
             result = self._docker_exec(
                 container,
                 ["traceroute", "-n", "-q", "1", "-w", "1", "-m", "8", safe_dst_ip],
                 timeout=12,
             )
+            if result.returncode != 0:
+                output = (result.stderr or result.stdout or "unknown error").strip()
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Traceroute failed on {safe_src} (exit {result.returncode}): {output}",
+                )
             return ToolResult(
                 success=True,
                 data={

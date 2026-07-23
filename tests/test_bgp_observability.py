@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 from netopsbench.platform.topology.generator import generate_topology
 
@@ -286,6 +288,23 @@ def test_query_bgp_events_uses_transition_fast_path_when_index_covers_window(mon
     prior_section = queries[2].split("prior =", 1)[1]
     assert '|> group(columns: ["source", "neighbor_address", "_field"])' in prior_section
     assert "|> pivot" not in prior_section
+
+
+@pytest.mark.parametrize(("last_seen", "expected"), [("00:01:15Z", True), ("00:00:59Z", False)])
+def test_bgp_event_index_freshness_matches_runtime_pipeline_gate(tmp_path, last_seen, expected):
+    toolkit = _toolkit(tmp_path)
+    scope = toolkit._resolve_pingmesh_time_scope(
+        10,
+        "2026-07-11T00:00:00Z",
+        "2026-07-11T00:02:00Z",
+    )
+    rows = [
+        {"result": "index_first", "source": "leaf1", "_time": "2026-07-11T00:00:01Z", "_value": 1},
+        {"result": "index_last", "source": "leaf1", "_time": f"2026-07-11T{last_seen}", "_value": 1},
+        {"result": "index_count", "source": "leaf1", "_value": 8},
+    ]
+
+    assert toolkit._bgp_event_index_covers_scope(rows, scope, {"leaf1"}) is expected
 
 
 def test_query_bgp_events_fast_path_pushes_role_filter_and_limits(monkeypatch, tmp_path):

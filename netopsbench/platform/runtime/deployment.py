@@ -11,11 +11,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
-from netopsbench.platform.observability.influxdb import delete_pingmesh_aggregate_tasks
 from netopsbench.platform.runtime.apply_configs import apply_configs
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
@@ -157,15 +155,6 @@ def deploy_worker_lab(worker: RuntimeIdentity, scale: str, registry: ScaleRegist
 def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None = None) -> None:
     """Remove one worker's collector, sidecar, Containerlab lab, and network."""
     topology_dir = Path(worker.topology_dir)
-    try:
-        delete_pingmesh_aggregate_tasks(
-            config.influxdb_url,
-            config.influxdb_token,
-            runtime_id=worker.runtime_id,
-            worker_index=worker.worker_index,
-        )
-    except Exception:
-        logger.warning("Unable to remove Pingmesh aggregate tasks for %s", worker.lab_name, exc_info=True)
     _stop_collector(topology_dir / "bgp_collector.pid")
     docker = docker_prefix()
     safe_run([*docker, "docker", "rm", "-f", f"telegraf-{worker.lab_name}"], check=False, timeout=60)

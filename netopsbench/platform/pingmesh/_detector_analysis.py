@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
 
-_MIN_LATENCY_ABS_THRESHOLD_MS = 2.0
-_HIGH_IMPACT_LATENCY_INCREASE_MS = 20.0
+_MIN_LATENCY_DELTA_MS = 20.0
 _SUSTAINED_SAMPLE_FRACTION = 0.75
 _BASELINE_UNREACHABLE_LOSS_PCT = 95.0
 
@@ -157,38 +156,17 @@ class DetectorAnalysisMixin:
             current_values = [value for value in current_values if value > 0]
             if not current_values or not baseline_values:
                 continue
-            baseline = statistics.mean(baseline_values)
-            baseline_stddev = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0.0
-            current = statistics.mean(current_values)
-            threshold = max(baseline + 3 * baseline_stddev, baseline + _MIN_LATENCY_ABS_THRESHOLD_MS)
-            min_multiplier = 1.3
-            min_abs_increase = 0.0
-            if len(baseline_values) < 3 or len(current_values) < 2:
-                min_multiplier = 1.5
-                min_abs_increase = 2.0
-            elevated = [
-                value
-                for value in current_values
-                if value > threshold and value > baseline * min_multiplier and value - baseline >= min_abs_increase
-            ]
-            required = ceil(len(current_values) * _SUSTAINED_SAMPLE_FRACTION)
-            sustained = len(elevated) >= required
-            peak = max(current_values)
-            high_impact = peak > threshold and peak - baseline >= _HIGH_IMPACT_LATENCY_INCREASE_MS
-            if (current > threshold and sustained) or high_impact:
-                value = peak if high_impact and not sustained else current
+            baseline = statistics.median(baseline_values)
+            current = statistics.median(current_values)
+            threshold = baseline + _MIN_LATENCY_DELTA_MS
+            if current >= threshold:
                 anomalies.append(
                     self._new_anomaly(
                         "latency_spike",
                         current_points[0],
-                        value=value,
+                        value=current,
                         baseline=baseline,
                         threshold=threshold,
-                        severity=(
-                            self._signal_severity("latency_spike", value, baseline, threshold)
-                            if len(elevated) == len(current_values) or high_impact
-                            else "low"
-                        ),
                         sample_count=len(current_values),
                     )
                 )
@@ -243,7 +221,7 @@ class DetectorAnalysisMixin:
         insufficient_baseline = 0
         for path_key, current_points in current_paths.items():
             current = _loss_stats(current_points)
-            if current is None or current["sent"] <= 0:
+            if current is None or (current["has_counts"] and current["sent"] <= 0):
                 continue
             baseline = _loss_stats(baseline_paths.get(path_key, []), drop_unreachable=True)
             if baseline is None:
@@ -264,7 +242,7 @@ class DetectorAnalysisMixin:
                         sample_count=int(current["samples"]),
                     )
                 )
-            elif current["loss_pct"] >= threshold:
+            elif current["loss_pct"] >= threshold and (not current["has_counts"] or current["lost"] >= 2):
                 anomalies.append(
                     self._new_anomaly(
                         "packet_loss",
@@ -294,7 +272,9 @@ class DetectorAnalysisMixin:
             rtt_threshold = max(self.loss_pct_threshold, baseline_rtt["loss_pct"] + self.loss_pct_delta)
             rtt_healthy = current_rtt["sent"] > 0 and current_rtt["loss_pct"] < rtt_threshold
             df_loss_signal = (
-                current_df["loss_pct"] >= 20.0 and (current_df["loss_pct"] - baseline_df["loss_pct"]) >= 15.0
+                current_df["loss_pct"] >= 20.0
+                and (current_df["loss_pct"] - baseline_df["loss_pct"]) >= 15.0
+                and (not current_df["has_counts"] or current_df["lost"] >= 2)
             )
             if not rtt_healthy or not (df_loss_signal or current_df["mtu_drops"] > 0):
                 continue

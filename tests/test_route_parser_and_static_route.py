@@ -583,21 +583,19 @@ def test_ping_test_allows_infra_source(monkeypatch):
     assert result.success is True
 
 
-def test_traceroute_allows_infra_source(monkeypatch):
+@pytest.mark.parametrize(("source", "role"), [("spine1", "spine"), ("leaf1", "leaf")])
+def test_traceroute_rejects_infra_source_without_docker_exec(monkeypatch, source, role):
     toolkit = AgentToolkit(topology_metadata=_metadata())
+    calls = []
 
-    class Result:
-        returncode = 0
-        stdout = "traceroute to 192.168.102.2, 30 hops max\n"
-        stderr = ""
+    monkeypatch.setattr(toolkit, "_docker_exec", lambda *args, **kwargs: calls.append((args, kwargs)))
 
-    monkeypatch.setattr(
-        "netopsbench.platform.toolkit._core.device.validators.subprocess.run",
-        lambda *a, **kw: Result(),
-    )
+    result = toolkit.traceroute(source, "192.168.102.2")
 
-    result = toolkit.traceroute("spine1", "192.168.102.2")
-    assert result.success is True
+    assert result.success is False
+    assert result.data is None
+    assert result.error == f"Traceroute source must be a client device, got {source} ({role})"
+    assert calls == []
 
 
 def test_traceroute_uses_bounded_probe_budget(monkeypatch):
@@ -610,13 +608,13 @@ def test_traceroute_uses_bounded_probe_budget(monkeypatch):
 
     monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
 
-    result = toolkit.traceroute("spine1", "192.168.102.2")
+    result = toolkit.traceroute("client1", "192.168.102.2")
 
     assert result.success is True
     assert result.data["traceroute"].startswith("1  *")
     assert calls == [
         (
-            toolkit.container_names["spine1"],
+            toolkit.container_names["client1"],
             ["traceroute", "-n", "-q", "1", "-w", "1", "-m", "8", "192.168.102.2"],
             12,
         )
@@ -631,11 +629,36 @@ def test_traceroute_preserves_timeout_error_contract(monkeypatch):
 
     monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
 
-    result = toolkit.traceroute("spine1", "192.168.102.2")
+    result = toolkit.traceroute("client1", "192.168.102.2")
 
     assert result.success is False
     assert result.data is None
     assert result.error == "Traceroute timed out"
+
+
+def test_traceroute_reports_nonzero_command_exit(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+    cmd = ["traceroute", "-n", "192.168.102.2"]
+
+    monkeypatch.setattr(
+        toolkit,
+        "_docker_exec",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            cmd,
+            127,
+            'OCI runtime exec failed: exec: "traceroute": executable file not found',
+            "",
+        ),
+    )
+
+    result = toolkit.traceroute("client1", "192.168.102.2")
+
+    assert result.success is False
+    assert result.data is None
+    assert result.error == (
+        "Traceroute failed on client1 (exit 127): "
+        'OCI runtime exec failed: exec: "traceroute": executable file not found'
+    )
 
 
 def test_ping_test_allows_client_source(monkeypatch):

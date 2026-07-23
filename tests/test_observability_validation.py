@@ -69,11 +69,12 @@ def test_observability_existence_queries_are_globally_bounded():
     assert errors == []
     assert len(queries) == 4
     pingmesh_query = next(query for query in queries if '_measurement == "pingmesh"' in query)
-    bgp_query = next(query for query in queries if '_measurement == "bgp_neighbors"' in query)
+    bgp_query = next(query for query in queries if '_measurement == "bgp_event_index"' in query)
     syslog_query = next(query for query in queries if '_measurement == "syslog"' in query)
     assert '_field == "rtt_p99"' in pingmesh_query
     assert "|> group()" in pingmesh_query
     assert "|> limit(n: 1)" in pingmesh_query
     assert "|> group()" in bgp_query
+    assert '_field == "schema_version"' in bgp_query
     assert 'r.topology_id == "lab-a"' in syslog_query
     assert "|> limit(n: 1)" in syslog_query

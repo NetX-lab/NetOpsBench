@@ -10,6 +10,7 @@ from ..common import ToolResult
 from .pingmesh_scope import parse_iso8601_timestamp
 
 _VALID_STATES = {"non_established", "all", "established"}
+_EVENT_INDEX_FRESHNESS_TOLERANCE_SECONDS = 60
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -77,7 +78,11 @@ class BgpOpsMixin:
                     state,
                 )
             else:
-                rows = self._query_bgp_event_legacy_rows(scope, filters + role_filter, device_filter + role_filter)
+                rows = self._query_bgp_event_snapshot_rows(
+                    scope,
+                    filters + role_filter,
+                    device_filter + role_filter,
+                )
                 events = self._build_bgp_events(rows, scope, roles, safe_device, safe_peer, role, state)
             truncated = len(events) > safe_limit
             returned = events[:safe_limit]
@@ -124,7 +129,7 @@ index
 """
         return self._query_influx_rows(query, require_value=False)
 
-    def _query_bgp_event_legacy_rows(
+    def _query_bgp_event_snapshot_rows(
         self,
         scope: dict[str, Any],
         filters: str,
@@ -218,7 +223,7 @@ from(bucket: "{self.influxdb_bucket}")
             return False
 
         start, end = self._bgp_scope_bounds(scope)
-        tolerance = timedelta(seconds=20)
+        tolerance = timedelta(seconds=_EVENT_INDEX_FRESHNESS_TOLERANCE_SECONDS)
         for source in selected_devices:
             first_time = _timestamp(first[source].get("_time"))
             last_time = _timestamp(last[source].get("_time"))

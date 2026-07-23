@@ -56,7 +56,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         self.org = org
         self.bucket = bucket
         self.client_to_leaf: dict[str, str] = {}
-        self.leaf_to_spines: dict[str, list[str]] = {}
         self.loss_pct_threshold = float(loss_pct_threshold)
         self.loss_pct_delta = float(loss_pct_delta)
         self._pingmesh_clients: list[str] = []
@@ -73,14 +72,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
     def _anomaly_to_dict(self, anomaly: Anomaly) -> dict:
         return asdict(anomaly)
 
-    def _infer_spines_for_cross_rack(self, src_leaf: str, dst_leaf: str) -> list[str]:
-        """Return the set of spines shared between two leafs (for cross-rack paths)."""
-        if not self.leaf_to_spines:
-            return []
-        src_spines = set(self.leaf_to_spines.get(src_leaf, []))
-        dst_spines = set(self.leaf_to_spines.get(dst_leaf, []))
-        return sorted(src_spines & dst_spines) if (src_spines and dst_spines) else sorted(src_spines | dst_spines)
-
     @staticmethod
     def _anomaly_family(anomaly: Anomaly) -> str:
         if anomaly.type in {"packet_loss", "path_unreachable"}:
@@ -90,7 +81,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
     def _aggregate_anomalies(self, anomalies: list[Anomaly]) -> dict:
         by_src_leaf: dict[str, dict[str, int]] = {}
         by_dst_leaf: dict[str, dict[str, int]] = {}
-        by_spine: dict[str, dict[str, int]] = {}
         keys = ("drop_count", "latency_spikes", "jitter_spikes", "path_unreachable", "mtu_suspects")
         for anomaly in anomalies:
             src_leaf = self._resolve_leaf(anomaly.src_leaf, anomaly.src_name)
@@ -111,22 +101,7 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 by_src_leaf[src_leaf]["latency_spikes"] += 1
                 by_dst_leaf[dst_leaf]["latency_spikes"] += 1
 
-            # Spine aggregation for cross-rack anomalies
-            if src_leaf != dst_leaf and src_leaf != "unknown" and dst_leaf != "unknown":
-                inferred_spines = self._infer_spines_for_cross_rack(src_leaf, dst_leaf)
-                for spine in inferred_spines:
-                    bucket = by_spine.setdefault(spine, dict.fromkeys(keys, 0))
-                    if anomaly.type in ("packet_loss", "path_unreachable"):
-                        key = "path_unreachable" if anomaly.type == "path_unreachable" else "drop_count"
-                        bucket[key] += 1
-                    elif anomaly.type == "jitter_spike":
-                        bucket["jitter_spikes"] += 1
-                    elif anomaly.type == "mtu_or_fragmentation_suspect":
-                        bucket["mtu_suspects"] += 1
-                    else:
-                        bucket["latency_spikes"] += 1
-
-        return {"by_src_leaf": by_src_leaf, "by_dst_leaf": by_dst_leaf, "by_spine": by_spine}
+        return {"by_src_leaf": by_src_leaf, "by_dst_leaf": by_dst_leaf}
 
     def _build_report(
         self,

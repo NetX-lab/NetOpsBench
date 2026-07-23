@@ -37,6 +37,14 @@ def test_update_telegraf_config_uses_packaged_template_and_central_defaults(tmp_
     assert "replace-me" in rendered
     assert "netopsbench" in rendered
     assert "demo-runtime" in rendered
+    assert rendered.count('"172.20.20.11": "spine1"') == 1
+    assert rendered.count('"172.20.20.13": "leaf1"') == 1
+    assert 'pattern = "^172.20.20.11$"' not in rendered
+    assert (
+        'mapping_keys = ["source", "agent_host", "agent_ip", "agent", '
+        '"agent_address", "address", "target"]'
+    ) in rendered
+    assert "metric.tags[key] = ip_to_device[metric.tags[key]]" in rendered
 
 
 def test_update_telegraf_config_rejects_legacy_grouped_topology(tmp_path):

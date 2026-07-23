@@ -235,7 +235,7 @@ def test_loop_collection_spreads_device_starts_over_interval(monkeypatch, tmp_pa
     monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.docker_prefix", lambda: [])
     monkeypatch.setattr(
         "netopsbench.platform.observability.bgp_collector._collect_device_bgp",
-        lambda _lab, device, _prefix, timestamp, _topology: [f"{device} {timestamp}"],
+        lambda _lab, device, _prefix, timestamp, _topology, *_args, **_kwargs: [f"{device} {timestamp}"],
     )
 
     lines = _collect_bgp_lines_paced(metadata_file, interval_seconds=9, parallelism=3, stop_event=_StopEvent())

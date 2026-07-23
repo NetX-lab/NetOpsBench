@@ -3,7 +3,7 @@ from .contracts import ToolSpec
 
 
 def traceroute(src: str, dst_ip: str):
-    """Run traceroute from any network device (client, leaf, or spine) to a destination IP."""
+    """Run traceroute from a client device to a destination IP."""
     return as_payload(get_toolkit().traceroute(src=src, dst_ip=dst_ip))
 
 

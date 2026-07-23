@@ -120,10 +120,10 @@ def check_observability(
         bgp_query = (
             f'from(bucket: "{bucket}")\n'
             f"  |> range(start: -10m)\n"
-            f'  |> filter(fn: (r) => r._measurement == "bgp_neighbors")\n'
+            f'  |> filter(fn: (r) => r._measurement == "bgp_event_index")\n'
             f"{topology_filter}"
             f'  |> filter(fn: (r) => r.source == "{bgp_device}")\n'
-            f'  |> filter(fn: (r) => r._field == "session_state")\n'
+            f'  |> filter(fn: (r) => r._field == "schema_version")\n'
             f"  |> last()\n"
             f"  |> group()\n"
             f"  |> limit(n: 1)\n"

@@ -11,7 +11,7 @@ from pathlib import Path
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.runtime import RuntimeIdentity
-from netopsbench.platform.observability.influxdb import ensure_bucket, ensure_pingmesh_aggregate_tasks
+from netopsbench.platform.observability.influxdb import ensure_bucket
 from netopsbench.platform.observability.telegraf import update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
@@ -61,22 +61,6 @@ def ensure_worker_observability(worker: RuntimeIdentity) -> None:
         config.influxdb_org,
         worker.bucket,
     )
-    try:
-        ensure_pingmesh_aggregate_tasks(
-            config.influxdb_url,
-            config.influxdb_token,
-            config.influxdb_org,
-            bucket=worker.bucket,
-            topology_id=worker.topology_id,
-            runtime_id=worker.runtime_id,
-            worker_index=worker.worker_index,
-        )
-    except Exception:
-        logger.warning(
-            "InfluxDB Tasks API unavailable; Pingmesh queries will use raw-data fallback for %s",
-            worker.lab_name,
-            exc_info=True,
-        )
     docker = [*docker_prefix(), "docker"]
     safe_run([*docker, "inspect", "influxdb"], check=True, timeout=30)
     safe_run(

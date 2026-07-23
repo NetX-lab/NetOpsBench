@@ -131,11 +131,11 @@ def test_jitter_detector_ignores_stable_per_cycle_rtt_range():
     assert not [item for item in anomalies if item.type == "jitter_spike"]
 
 
-def test_latency_detector_reports_sustained_increase():
+def test_latency_detector_reports_sustained_twenty_millisecond_increase():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
         _rtt_rows([1.0, 1.2, 0.9, 1.1, 1.0]),
-        _rtt_rows([8.0, 8.2, 7.9, 8.1, 8.0]),
+        _rtt_rows([26.0, 26.2, 25.9, 26.1, 26.0]),
     ).anomalies
     latency = [item for item in anomalies if item.type == "latency_spike"]
 
@@ -143,17 +143,45 @@ def test_latency_detector_reports_sustained_increase():
     assert latency[0].type == "latency_spike"
 
 
-def test_latency_detector_preserves_one_high_impact_ecmp_sample():
+def test_latency_detector_ignores_one_high_impact_sample_when_path_median_is_stable():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
         _rtt_rows([1.0, 1.2, 0.9, 1.1]),
         _rtt_rows([1.0, 1.1, 1.0, 101.0]),
     ).anomalies
-    latency = [item for item in anomalies if item.type == "latency_spike"]
 
+    assert not [item for item in anomalies if item.type == "latency_spike"]
+
+
+def test_latency_detector_uses_twenty_millisecond_median_delta_boundary():
+    detector = _coverage_detector(client_count=2)
+
+    below = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0, 1.0, 1.0, 1.0]),
+        _rtt_rows([20.9, 20.9, 20.9, 20.9]),
+    ).anomalies
+    at_boundary = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0, 1.0, 1.0, 1.0]),
+        _rtt_rows([21.0, 21.0, 21.0, 21.0]),
+    ).anomalies
+
+    assert not [item for item in below if item.type == "latency_spike"]
+    latency = [item for item in at_boundary if item.type == "latency_spike"]
     assert len(latency) == 1
-    assert latency[0].value == 101.0
-    assert latency[0].severity == "high"
+    assert latency[0].baseline == 1.0
+    assert latency[0].value == 21.0
+    assert latency[0].threshold == 21.0
+
+
+def test_latency_detector_keeps_ecmp_diluted_sustained_path_signal():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([2.0, 2.1, 1.9, 2.0]),
+        _rtt_rows([27.0, 27.1, 26.9, 27.0]),
+    ).anomalies
+
+    assert [item.type for item in anomalies] == ["latency_spike"]
 
 
 def test_jitter_partial_consensus_is_advisory_low_severity():
@@ -221,6 +249,36 @@ def test_actual_complete_probe_loss_is_path_unreachable():
     assert analysis.anomalies[0].samples_lost == 4
 
 
+def test_single_counted_probe_loss_is_not_a_packet_loss_anomaly():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=1)])
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
+def test_two_counted_probe_losses_are_a_packet_loss_anomaly():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=2)])
+
+    assert [item.type for item in analysis.anomalies] == ["packet_loss"]
+
+
+def test_percentage_only_loss_input_keeps_compatibility_rule():
+    detector = _coverage_detector(client_count=2)
+    baseline = _probe_sample()
+    current = _probe_sample(lost=1)
+    baseline.pop("packets_sent")
+    baseline.pop("packets_lost")
+    current.pop("packets_sent")
+    current.pop("packets_lost")
+
+    analysis = detector.analyze_snapshot_rows([baseline], [current])
+
+    assert [item.type for item in analysis.anomalies] == ["packet_loss"]
+
+
 def test_df_loss_is_suppressed_when_rtt_is_also_lost():
     detector = _coverage_detector(client_count=2)
 
@@ -233,6 +291,32 @@ def test_df_only_loss_is_mtu_suspect():
     detector = _coverage_detector(client_count=2)
 
     analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=0, df_lost=4)])
+
+    assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
+
+
+def test_single_counted_df_probe_loss_is_not_an_mtu_suspect():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(df_lost=1)])
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+
+
+def test_two_counted_df_probe_losses_are_an_mtu_suspect():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(df_lost=2)])
+
+    assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
+
+
+def test_explicit_df_mtu_drop_overrides_minimum_loss_count():
+    detector = _coverage_detector(client_count=2)
+    current = _probe_sample(df_lost=1)
+    current["df_mtu_drops"] = 1.0
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [current])
 
     assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
 
@@ -567,31 +651,8 @@ def test_pingmesh_hotspots_applies_global_loss_first_limit(monkeypatch):
     assert "|> limit(n: 7)" in query
 
 
-def test_pingmesh_summary_uses_fresh_materialized_rows_and_normalizes_measurement(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-    aggregate_rows = [
-        {
-            "_measurement": "pingmesh_path_type_30s",
-            "_time": "2026-01-02T00:00:30Z",
-            "path_type": "inter_leaf",
-            "_field": "rtt_p99",
-            "_value": 2.5,
-        },
-        {
-            "_measurement": "pingmesh_path_type_30s",
-            "_time": "2026-01-02T00:00:30Z",
-            "path_type": "inter_leaf",
-            "_field": "packet_loss",
-            "_value": 0.0,
-        },
-    ]
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        return aggregate_rows
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+def test_pingmesh_summary_queries_only_raw_measurement(monkeypatch):
+    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
 
     result = toolkit.get_pingmesh_summary(
         start_time="2026-01-02T00:00:00Z",
@@ -599,69 +660,13 @@ def test_pingmesh_summary_uses_fresh_materialized_rows_and_normalizes_measuremen
     )
 
     assert result.success is True
-    assert len(queries) == 1
-    assert 'r._measurement == "pingmesh_path_type_30s"' in queries[0]
-    assert result.data["path_type_summary"]["inter_leaf"] == {"rtt_p99": 2.5, "packet_loss": 0.0}
-    assert all(row["_measurement"] == "pingmesh" for row in result.data["rows"])
+    assert 'r._measurement == "pingmesh"' in captured["query"]
+    assert "aggregateWindow(every: 30s" in captured["query"]
+    assert "pingmesh_path_type_30s" not in captured["query"]
 
 
-def test_pingmesh_summary_falls_back_when_materialized_rows_are_stale(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        if "pingmesh_path_type_30s" in query:
-            return [
-                {
-                    "_time": "2026-01-02T00:00:14Z",
-                    "path_type": "inter_leaf",
-                    "_field": "packet_loss",
-                    "_value": 99.0,
-                }
-            ]
-        return [
-            {
-                "_measurement": "pingmesh",
-                "_time": "2026-01-02T00:00:50Z",
-                "path_type": "inter_leaf",
-                "_field": "packet_loss",
-                "_value": 1.0,
-            }
-        ]
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
-
-    result = toolkit.get_pingmesh_summary(
-        start_time="2026-01-02T00:00:00Z",
-        end_time="2026-01-02T00:01:00Z",
-    )
-
-    assert result.success is True
-    assert len(queries) == 2
-    assert 'r._measurement == "pingmesh"' in queries[1]
-    assert "aggregateWindow(every: 30s" in queries[1]
-    assert result.data["path_type_summary"]["inter_leaf"]["packet_loss"] == 1.0
-
-
-def test_pingmesh_hotspots_uses_fresh_leaf_pair_materialization(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        return [
-            {
-                "_measurement": "pingmesh_leaf_pair_30s",
-                "_time": "2026-01-02T00:00:30Z",
-                "src_leaf": "leaf1",
-                "dst_leaf": "leaf2",
-                "rtt_p99": 8.0,
-                "packet_loss": 25.0,
-            }
-        ]
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
+def test_pingmesh_hotspots_queries_only_raw_leaf_pair_data(monkeypatch):
+    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
 
     result = toolkit.get_pingmesh_hotspots(
         start_time="2026-01-02T00:00:00Z",
@@ -670,117 +675,9 @@ def test_pingmesh_hotspots_uses_fresh_leaf_pair_materialization(monkeypatch):
     )
 
     assert result.success is True
-    assert len(queries) == 2
-    assert 'r._field == "hotspot_score"' in queries[0]
-    assert 'r._measurement == "pingmesh_leaf_pair_30s"' in queries[1]
-    assert result.data["hotspots"] == [{"src_leaf": "leaf1", "dst_leaf": "leaf2", "rtt_p99": 8.0, "packet_loss": 25.0}]
-
-
-def test_pingmesh_hotspots_falls_back_when_materialization_is_missing(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        if "pingmesh_leaf_pair_30s" in query:
-            return []
-        return [{"src_leaf": "leaf2", "dst_leaf": "leaf1", "rtt_p99": 1.0, "packet_loss": 0.0}]
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
-
-    result = toolkit.get_pingmesh_hotspots(
-        start_time="2026-01-02T00:00:00Z",
-        end_time="2026-01-02T00:01:00Z",
-    )
-
-    assert result.success is True
-    assert len(queries) == 3
-    assert 'r._measurement == "pingmesh"' in queries[2]
-    assert result.data["hotspots"][0]["src_leaf"] == "leaf2"
-
-
-def test_pingmesh_hotspots_uses_score_to_query_only_ranked_candidates(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        if 'r._field == "hotspot_score"' in query:
-            return [
-                {
-                    "_measurement": "pingmesh_leaf_pair_30s",
-                    "_field": "hotspot_score",
-                    "_time": "2026-01-02T00:00:30Z",
-                    "_value": 25_000_000_000_008.0,
-                    "src_leaf": "leaf1",
-                    "dst_leaf": "leaf2",
-                }
-            ]
-        return [
-            {
-                "_time": "2026-01-02T00:00:30Z",
-                "src_leaf": "leaf1",
-                "dst_leaf": "leaf2",
-                "rtt_p99": 8.0,
-                "packet_loss": 25.0,
-            }
-        ]
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
-
-    result = toolkit.get_pingmesh_hotspots(
-        start_time="2026-01-02T00:00:00Z",
-        end_time="2026-01-02T00:01:00Z",
-        limit=3,
-    )
-
-    assert result.success is True
-    assert len(queries) == 2
-    assert "|> top(n: 3" in queries[0]
-    assert 'r.src_leaf == "leaf1"' in queries[1]
-    assert 'r.dst_leaf == "leaf2"' in queries[1]
-    assert result.data["hotspots"] == [{"src_leaf": "leaf1", "dst_leaf": "leaf2", "rtt_p99": 8.0, "packet_loss": 25.0}]
-
-
-def test_pingmesh_hotspots_score_query_includes_previous_closed_window(monkeypatch):
-    toolkit, _ = _toolkit_with_captured_queries(monkeypatch)
-    queries = []
-
-    def fake_query(query, require_value=True):
-        queries.append(query)
-        if 'r._field == "hotspot_score"' in query:
-            if 'range(start: time(v: "2026-01-02T00:01:00Z")' in query:
-                return []
-            return [
-                {
-                    "_field": "hotspot_score",
-                    "_time": "2026-01-02T00:00:30Z",
-                    "_value": 8.0,
-                    "src_leaf": "leaf1",
-                    "dst_leaf": "leaf2",
-                }
-            ]
-        return [
-            {
-                "_time": "2026-01-02T00:00:30Z",
-                "src_leaf": "leaf1",
-                "dst_leaf": "leaf2",
-                "rtt_p99": 8.0,
-                "packet_loss": 0.0,
-            }
-        ]
-
-    monkeypatch.setattr(toolkit, "_query_influx_rows", fake_query)
-
-    result = toolkit.get_pingmesh_hotspots(
-        start_time="2026-01-02T00:00:00Z",
-        end_time="2026-01-02T00:01:14Z",
-    )
-
-    assert result.success is True
-    assert 'range(start: time(v: "2026-01-02T00:01:00Z")' in queries[0]
-    assert 'range(start: time(v: "2026-01-02T00:00:30Z")' in queries[1]
-    assert len(queries) == 3
+    assert 'r._measurement == "pingmesh"' in captured["query"]
+    assert '|> group(columns: ["src_leaf", "dst_leaf", "_field"])' in captured["query"]
+    assert "pingmesh_leaf_pair_30s" not in captured["query"]
 
 
 def test_pingmesh_time_scope_uses_context_file_before_env(monkeypatch, tmp_path):
@@ -865,24 +762,28 @@ def test_builtin_mcp_config_passes_netopsbench_env(monkeypatch):
     assert config["netopsbench"]["env"]["NETOPSBENCH_PINGMESH_CONTEXT_FILE"] == "/tmp/window.json"
 
 
-def test_pingmesh_detector_builds_spine_map_from_canonical_links(tmp_path):
-    topology = generate_topology("xs", str(tmp_path))["metadata"]
+def test_pingmesh_aggregation_keeps_endpoint_counts_without_transit_attribution():
+    detector = _coverage_detector(client_count=2)
+    anomaly = Anomaly(
+        type="packet_loss",
+        src_ip="192.0.2.1",
+        src_name="client1",
+        dst_ip="192.0.2.2",
+        dst_name="client2",
+        src_leaf="leaf1",
+        dst_leaf="leaf2",
+        value=25.0,
+        baseline=0.0,
+        threshold=5.0,
+        severity="high",
+        timestamp="2026-01-01T00:00:00Z",
+    )
 
-    detector = AnomalyDetector("http://influxdb:8086", "token", "org", "bucket", topology_metadata=topology)
+    aggregated = detector._aggregate_anomalies([anomaly])
 
-    assert detector.leaf_to_spines == {
-        "leaf1": ["spine1", "spine2"],
-        "leaf2": ["spine1", "spine2"],
-    }
-
-
-def test_pingmesh_detector_projects_canonical_fat_tree_metadata(tmp_path):
-    topology = generate_topology("fat-tree-k8", str(tmp_path))["metadata"]
-
-    detector = AnomalyDetector("http://influxdb:8086", "token", "org", "bucket", topology_metadata=topology)
-
-    assert set(detector.leaf_to_spines["edge1"]) == {f"core{index}" for index in range(1, 17)}
-    assert "core17" not in detector.leaf_to_spines["edge1"]
+    assert set(aggregated) == {"by_src_leaf", "by_dst_leaf"}
+    assert aggregated["by_src_leaf"]["leaf1"]["drop_count"] == 1
+    assert aggregated["by_dst_leaf"]["leaf2"]["drop_count"] == 1
 
 
 def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monkeypatch):
@@ -912,7 +813,11 @@ def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monke
         topology_metadata=topology,
     )
 
-    observations = wait_and_observe(runner, duration=0)
+    observations = wait_and_observe(
+        runner,
+        duration=0,
+        baseline_window={"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
+    )
 
     assert observations["data_source_status"] == "ok"
     assert captured["topology_metadata"] == topology

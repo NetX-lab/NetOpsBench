@@ -4,6 +4,7 @@ Dynamic Telegraf Configuration Generator
 Generates telegraf.conf from template based on topology metadata
 """
 
+import json
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -141,7 +142,7 @@ def update_telegraf_config(
 
     Generates telegraf.conf with:
     - {{GNMI_INPUTS}}: Role-scoped SONiC gNMI inputs and subscriptions
-    - {{IP_MAPPINGS}}: Processor rules to map IPs to hostnames
+    - {{IP_MAPPINGS}}: Starlark dictionary to map IPs to hostnames
     """
     # Read topology metadata
     topology_path = Path(topology_file)
@@ -178,17 +179,9 @@ def update_telegraf_config(
         )
     gnmi_inputs_str = "\n".join(block for block in rendered_inputs if block)
 
-    # Generate IP to hostname mappings (processor rules)
-    ip_mappings = []
-    mapping_keys = ["source", "agent_host", "agent_ip", "agent", "agent_address", "address", "target"]
-    for key in mapping_keys:
-        for d in devices:
-            ip_mappings.append(f'''
-  [[processors.regex.tags]]
-    key = "{key}"
-    pattern = "^{d['mgmt_ip']}$"
-    replacement = "{d['name']}"''')
-    ip_mappings_str = "".join(ip_mappings)
+    # Generate one O(1) lookup shared by all supported source-like tags.
+    ip_mappings = {str(device["mgmt_ip"]): str(device["name"]) for device in devices}
+    ip_mappings_str = json.dumps(ip_mappings, indent=2, sort_keys=True)
 
     # Read template file
     template_resource = files("netopsbench.platform.observability").joinpath("assets", "telegraf.conf.template")

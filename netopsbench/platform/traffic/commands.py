@@ -88,8 +88,7 @@ class IperfCommandBuilder:
                 "  sleep 0.1",
                 "done",
                 f"for pid_file in {' '.join(pid_files)}; do",
-                '  if flow_running "$pid_file"; then kill "$(cat "$pid_file")" 2>/dev/null || true; fi',
-                '  rm -f "$pid_file"',
+                '  flow_running "$pid_file" || rm -f "$pid_file"',
                 "done",
                 "exit 1",
             ]
@@ -121,17 +120,78 @@ class IperfCommandBuilder:
             ]
         )
 
+    def verify_runtime_script(
+        self,
+        flows: Iterable[TrafficFlowLike],
+        server_ports: Iterable[int],
+    ) -> str:
+        """Verify the expected clients and listeners in one container."""
+        flow_list = list(flows)
+        required_ports = " ".join(str(port) for port in sorted(set(server_ports)))
+        lines = ["set -e"]
+        lines.extend(self._flow_running_function())
+        for flow in flow_list:
+            pid_file = shlex.quote(f"{self._RUNTIME_DIR}/{flow.flow_id}.pid")
+            lines.append(f"flow_running {pid_file}")
+        lines.extend(
+            [
+                f"required_ports={shlex.quote(required_ports)}",
+                'listeners="$(ss -lntH 2>/dev/null || true)"',
+                "for port in $required_ports; do",
+                '  printf \'%s\\n\' "$listeners" | grep -q ":${port} "',
+                "done",
+            ]
+        )
+        return "\n".join(lines)
+
     @staticmethod
-    def stop_clients_script() -> str:
+    def stop_all_script() -> str:
+        """Stop NetOpsBench clients and servers on the reserved traffic ports."""
         runtime_dir = shlex.quote(IperfCommandBuilder._RUNTIME_DIR)
-        lines = [f"runtime_dir={runtime_dir}", '[ -d "$runtime_dir" ] || exit 0']
+        lines = [f"runtime_dir={runtime_dir}", "stopped_pids="]
         lines.extend(IperfCommandBuilder._flow_running_function())
         lines.extend(
             [
                 'for pid_file in "$runtime_dir"/*.pid; do',
                 '  [ -e "$pid_file" ] || continue',
-                '  if flow_running "$pid_file"; then kill "$(cat "$pid_file")" 2>/dev/null || true; fi',
+                '  if flow_running "$pid_file"; then',
+                '    pid="$(cat "$pid_file")"',
+                '    kill "$pid" 2>/dev/null || true',
+                '    stopped_pids="$stopped_pids $pid"',
+                "  fi",
                 '  rm -f "$pid_file"',
+                "done",
+                "for process_dir in /proc/[0-9]*; do",
+                '  pid="${process_dir##*/}"',
+                '  [ "$(cat "$process_dir/comm" 2>/dev/null || true)" = "iperf3" ] || continue',
+                "  cmdline=\"$(tr '\\000' ' ' < \"$process_dir/cmdline\" 2>/dev/null || true)\"",
+                '  case "$cmdline" in',
+                (
+                    '    "iperf3 -c "*|"iperf3 -s -D "|"iperf3 -s "|'
+                    '"iperf3 -s -D -p 5201 "*|'
+                    '"iperf3 -s -D -p 5202 "*|"iperf3 -s -D -p 5203 "*|'
+                    '"iperf3 -s -D -p 5204 "*|"iperf3 -s -p 5201 "*|'
+                    '"iperf3 -s -p 5202 "*|"iperf3 -s -p 5203 "*|'
+                    '"iperf3 -s -p 5204 "*)'
+                ),
+                '      kill "$pid" 2>/dev/null || true',
+                '      stopped_pids="$stopped_pids $pid"',
+                "      ;;",
+                "  esac",
+                "done",
+                "for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do",
+                "  running=0",
+                "  for pid in $stopped_pids; do",
+                '    kill -0 "$pid" 2>/dev/null && running=1',
+                "  done",
+                '  [ "$running" -eq 0 ] && break',
+                "  sleep 0.1",
+                "done",
+                "for pid in $stopped_pids; do",
+                '  if kill -0 "$pid" 2>/dev/null '
+                '&& [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = "iperf3" ]; then',
+                '    kill -9 "$pid" 2>/dev/null || true',
+                "  fi",
                 "done",
                 'rmdir "$runtime_dir" 2>/dev/null || true',
             ]

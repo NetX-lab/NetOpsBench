@@ -274,27 +274,6 @@ def _collect_device_bgp(
     return lines
 
 
-def _collect_device_bgp_with_tracker(
-    lab_name: str,
-    device: str,
-    docker_prefix: list[str],
-    timestamp_ns: int,
-    topology_id: str,
-    transition_tracker: BgpTransitionTracker | None,
-) -> list[str]:
-    """Keep the legacy five-argument collector hook compatible with tests/extensions."""
-    if transition_tracker is None:
-        return _collect_device_bgp(lab_name, device, docker_prefix, timestamp_ns, topology_id)
-    return _collect_device_bgp(
-        lab_name,
-        device,
-        docker_prefix,
-        timestamp_ns,
-        topology_id,
-        transition_tracker,
-    )
-
-
 def collect_bgp_lines(
     metadata_file: Path,
     timestamp_ns: int | None = None,
@@ -310,7 +289,7 @@ def collect_bgp_lines(
 
     if workers == 1:
         device_lines = [
-            _collect_device_bgp_with_tracker(
+            _collect_device_bgp(
                 lab_name,
                 device,
                 command_prefix,
@@ -324,7 +303,7 @@ def collect_bgp_lines(
         with ThreadPoolExecutor(max_workers=workers) as executor:
             device_lines = list(
                 executor.map(
-                    lambda device: _collect_device_bgp_with_tracker(
+                    lambda device: _collect_device_bgp(
                         lab_name,
                         device,
                         command_prefix,
@@ -370,7 +349,7 @@ def _collect_bgp_lines_paced(
                 break
             futures.append(
                 executor.submit(
-                    _collect_device_bgp_with_tracker,
+                    _collect_device_bgp,
                     lab_name,
                     device,
                     command_prefix,

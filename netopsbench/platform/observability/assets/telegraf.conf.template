@@ -30,15 +30,16 @@
   server = "udp://:514"
 
 
-# Map Management IPs to Hostnames - DYNAMIC
-[[processors.regex]]
-  # namepass = ["netflow"] # Apply to all metrics
-{{IP_MAPPINGS}}
-
-# Normalize source tag across inputs
+# Map management IPs to hostnames and normalize source in one O(1) pass.
 [[processors.starlark]]
   source = '''
+ip_to_device = {{IP_MAPPINGS}}
+mapping_keys = ["source", "agent_host", "agent_ip", "agent", "agent_address", "address", "target"]
+
 def apply(metric):
+    for key in mapping_keys:
+        if key in metric.tags and metric.tags[key] in ip_to_device:
+            metric.tags[key] = ip_to_device[metric.tags[key]]
     if "source" not in metric.tags:
         if "agent_host" in metric.tags:
             metric.tags["source"] = metric.tags["agent_host"]

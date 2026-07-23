@@ -1,8 +1,10 @@
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from netopsbench.platform.traffic import controller as controller_mod
+from netopsbench.platform.traffic import scenario_execution as scenario_execution_mod
 from netopsbench.platform.traffic.controller import TrafficController, TrafficFlow
 
 
@@ -88,6 +90,8 @@ def test_batched_source_start_is_idempotent_for_safe_retry(monkeypatch):
     assert all("</dev/null &" in script for script in source_scripts)
     assert all("missing=0" in script for script in source_scripts)
     assert all("pgrep -f" not in script for script in source_scripts)
+    assert all('flow_running "$pid_file" || rm -f "$pid_file"' in script for script in source_scripts)
+    assert all('if flow_running "$pid_file"; then kill' not in script for script in source_scripts)
 
 
 def test_start_matrix_retries_transient_batch_failure_at_lower_parallelism(monkeypatch):
@@ -117,7 +121,7 @@ def test_start_matrix_retries_transient_batch_failure_at_lower_parallelism(monke
     assert controller.last_start_stats.failed_flow_count == 0
 
 
-def test_stop_all_kills_iperf_clients_once_per_source_container(monkeypatch):
+def test_stop_all_cleans_clients_and_servers_in_every_client_container(monkeypatch):
     calls: list[list[str]] = []
 
     def fake_safe_run(cmd, **kwargs):
@@ -134,9 +138,47 @@ def test_stop_all_kills_iperf_clients_once_per_source_container(monkeypatch):
 
     command_texts = [" ".join(call) for call in calls]
     stop_calls = [text for text in command_texts if "/tmp/netopsbench-traffic" in text]
-    assert len(stop_calls) == 2
+    assert len(stop_calls) == 4
     assert all("flow_running" in text for text in stop_calls)
+    assert all("/proc/[0-9]*" in text for text in stop_calls)
+    assert all('"iperf3 -c "*' in text for text in stop_calls)
+    assert all('"iperf3 -s -D "' in text for text in stop_calls)
+    assert all("iperf3 -s -D -p 5204" in text for text in stop_calls)
     assert controller.active_flows == {}
+
+
+def test_stop_all_cleans_unrecorded_traffic(monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        controller_mod,
+        "safe_run",
+        lambda cmd, **kwargs: calls.append([str(part) for part in cmd]) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+
+    controller = _controller()
+    controller.stop_all()
+
+    assert len(calls) == 4
+    assert all("iperf3 -s -D -p 5201" in call[-1] for call in calls)
+
+
+def test_stop_all_attempts_every_container_and_reports_cleanup_failure(monkeypatch):
+    calls: list[str] = []
+
+    def fake_safe_run(cmd, **kwargs):
+        container = next(str(part) for part in cmd if str(part).startswith("clab-test-client"))
+        calls.append(container)
+        if container == "clab-test-client2":
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
+    controller = _controller()
+
+    with pytest.raises(RuntimeError, match="clab-test-client2: exit status 1"):
+        controller.stop_all()
+
+    assert sorted(calls) == [f"clab-test-client{index}" for index in range(1, 5)]
 
 
 def test_traffic_parallelism_env_override_and_invalid_value(monkeypatch):
@@ -184,11 +226,97 @@ def test_start_matrix_partial_failure_records_only_started_flows(monkeypatch):
 
     assert len(flow_ids) == 2
     assert {flow.src for flow in controller.active_flows.values()} == {"client1"}
-    assert any(
-        "src=client2" in message
-        and "dst_ip=192.168.103.2" in message
-        and "protocol=udp" in message
-        and "port=5201" in message
-        and "boom" in message
-        for message in messages
+    source_failures = [message for message in messages if "Failed to start traffic source" in message]
+    assert source_failures == ["Failed to start traffic source clab-test-client2 (2 flows): boom"]
+
+
+def test_verify_active_flows_checks_client_pids_and_server_listeners(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_safe_run(cmd, **kwargs):
+        calls.append([str(part) for part in cmd])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
+    controller = _controller()
+    controller.start_matrix(_flows())
+    calls.clear()
+
+    assert controller.verify_active_flows() is True
+    assert len(calls) == 4
+    assert all("ss -lntH" in call[-1] or "flow_running" in call[-1] for call in calls)
+    assert any("192.168.103.2" not in call[-1] and "5201" in call[-1] for call in calls)
+
+
+def test_verify_active_flows_rejects_a_missing_client_group(monkeypatch):
+    def fake_safe_run(cmd, **kwargs):
+        text = " ".join(str(part) for part in cmd)
+        if "clab-test-client2" in text and "flow_running" in text and "nohup" not in text:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
+    controller = _controller()
+    controller.start_matrix(_flows())
+
+    assert controller.verify_active_flows() is False
+
+
+def test_setup_traffic_cleans_partial_matrix_and_fails_before_baseline(tmp_path, monkeypatch):
+    (tmp_path / "topology.json").write_text("{}", encoding="utf-8")
+    traffic_config = {
+        "stats": {
+            "total_flows": 2,
+            "udp_flows": 1,
+            "tcp_flows": 1,
+            "estimated_switch_pps": {},
+        },
+        "profile": {},
+        "flows": [
+            {
+                "src": "client1",
+                "dst": "client2",
+                "dst_ip": "192.0.2.2",
+                "protocol": "udp",
+            },
+            {
+                "src": "client2",
+                "dst": "client1",
+                "dst_ip": "192.0.2.1",
+                "protocol": "tcp",
+            },
+        ],
+    }
+    controller_instances = []
+
+    class PartialController:
+        def __init__(self, _containers):
+            self.last_start_stats = SimpleNamespace(to_dict=lambda: {"started_flow_count": 1})
+            self.stop_calls = 0
+            controller_instances.append(self)
+
+        def start_matrix(self, flows):
+            return [flows[0].flow_id]
+
+        def stop_all(self):
+            self.stop_calls += 1
+
+    topology = {
+        "name": "test",
+        "devices": {"clients": [{"name": "client1"}, {"name": "client2"}]},
+    }
+    monkeypatch.setattr(scenario_execution_mod, "generate_traffic_config", lambda *args, **kwargs: traffic_config)
+    monkeypatch.setattr(scenario_execution_mod, "validate_traffic_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        scenario_execution_mod,
+        "load_topology_manifest",
+        lambda _path: SimpleNamespace(to_agent_topology=lambda: topology),
     )
+    monkeypatch.setattr(scenario_execution_mod, "TrafficController", PartialController)
+    runner = SimpleNamespace(topology_dir=tmp_path, scale_registry=SimpleNamespace(), traffic_controller=None)
+
+    with pytest.raises(RuntimeError, match="started 1/2 flows"):
+        scenario_execution_mod.setup_traffic(runner, "xs", "standard")
+
+    assert controller_instances[0].stop_calls == 1
+    assert runner.traffic_controller is None
