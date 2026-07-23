@@ -127,6 +127,7 @@ def test_deploy_pingmesh_stages_runtime_once_and_starts_clients_in_parallel(tmp_
             assert '[ "$pid" = "$$" ] && continue' in command
             assert 'kill "$pid"' in command
             assert "nohup python3 -m netopsbench.platform.pingmesh.cli" in command
+            assert "NETOPSBENCH_INFLUXDB_URL=http://telegraf:8186" in command
             return subprocess.CompletedProcess(["docker", *args], 0, stdout="", stderr="")
         if args[0] == "exec" and args[2:] == ("ps", "aux"):
             return subprocess.CompletedProcess(

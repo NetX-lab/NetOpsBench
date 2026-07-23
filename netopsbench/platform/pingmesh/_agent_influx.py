@@ -84,7 +84,7 @@ class PingInfluxMixin:
                 response = self.session.post(url, data=data, timeout=10)
                 if response.status_code == 204:
                     return True
-                if 400 <= response.status_code < 500:
+                if 400 <= response.status_code < 500 and response.status_code != 429:
                     logger.error("InfluxDB write failed (permanent): %s %s", response.status_code, response.text[:200])
                     return False
                 if attempt < self.max_retries - 1:

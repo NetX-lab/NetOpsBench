@@ -10,6 +10,7 @@ from netopsbench.platform.observability.bgp_collector import (
     build_bgp_lines,
     collect_bgp_lines,
     normalize_bgp_state,
+    run_loop,
     run_once,
 )
 
@@ -178,6 +179,39 @@ Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down Sta
     assert all(",topology_id=runtime-xs " in line for line in lines)
 
 
+def test_sparse_bgp_collection_keeps_non_established_neighbors(monkeypatch, tmp_path):
+    metadata_file = tmp_path / "topology.json"
+    _write_topology(metadata_file)
+
+    class _Result:
+        returncode = 0
+
+        def __init__(self, state: str):
+            self.stdout = f"""
+Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+192.168.11.2    4      65011       310       309       20    0    0 04:54:34            {state}       16 N/A
+"""
+
+    def fake_run(args, capture_output, text, check, timeout):
+        return _Result("Idle" if args[2].endswith("-leaf1") else "2")
+
+    monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.subprocess.run", fake_run)
+    monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.docker_prefix", lambda: [])
+
+    lines = collect_bgp_lines(
+        metadata_file,
+        timestamp_ns=7,
+        topology_id="runtime-xs",
+        include_full_snapshot=False,
+    )
+
+    neighbors = [line for line in lines if line.startswith("bgp_neighbors,")]
+    assert len(neighbors) == 1
+    assert "source=leaf1" in neighbors[0]
+    assert 'session_state="IDLE"' in neighbors[0]
+    assert sum(line.startswith("bgp_collection,") for line in lines) == 2
+
+
 def test_collect_bgp_lines_supports_parallelism(monkeypatch, tmp_path):
     metadata_file = tmp_path / "topology.json"
     _write_topology(
@@ -242,6 +276,74 @@ def test_loop_collection_spreads_device_starts_over_interval(monkeypatch, tmp_pa
 
     assert lines == ["spine1 9", "spine2 9", "leaf1 9"]
     assert waits == [3, 6]
+
+
+def test_loop_collection_can_stream_completed_device_batches(monkeypatch, tmp_path):
+    metadata_file = tmp_path / "topology.json"
+    _write_topology(metadata_file)
+
+    class _StopEvent:
+        @staticmethod
+        def wait(_seconds):
+            return False
+
+    monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.time.time_ns", lambda: 9)
+    monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.docker_prefix", lambda: [])
+    monkeypatch.setattr(
+        "netopsbench.platform.observability.bgp_collector._collect_device_bgp",
+        lambda _lab, device, _prefix, timestamp, _topology, *_args, **_kwargs: [f"{device} {timestamp}"],
+    )
+    emitted = []
+
+    lines = _collect_bgp_lines_paced(
+        metadata_file,
+        interval_seconds=2,
+        parallelism=2,
+        stop_event=_StopEvent(),
+        on_lines=emitted.extend,
+    )
+
+    assert lines == []
+    assert emitted == ["spine1 9", "leaf1 9"]
+
+
+def test_loop_uses_sparse_snapshots_only_above_large_device_threshold(monkeypatch, tmp_path):
+    def collect_modes(device_count: int) -> list[bool]:
+        class _StopEvent:
+            checks = 0
+
+            def is_set(self):
+                self.checks += 1
+                return self.checks > 2
+
+            @staticmethod
+            def set():
+                return None
+
+            @staticmethod
+            def wait(_seconds):
+                return False
+
+        modes = []
+        clock = iter([0.0, 0.0, 10.0, 10.0])
+        monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.threading.Event", _StopEvent)
+        monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.signal.signal", lambda *_args: None)
+        monkeypatch.setattr(
+            "netopsbench.platform.observability.bgp_collector._read_topology",
+            lambda _path: ("demo", [f"leaf{index}" for index in range(device_count)]),
+        )
+        monkeypatch.setattr("netopsbench.platform.observability.bgp_collector.time.monotonic", lambda: next(clock))
+        monkeypatch.setattr(
+            "netopsbench.platform.observability.bgp_collector._collect_bgp_lines_paced",
+            lambda *_args, **kwargs: modes.append(kwargs["include_full_snapshot"]) or [],
+        )
+
+        run_loop(tmp_path / "topology.json", tmp_path / f"{device_count}.lp", interval_seconds=10)
+        return modes
+
+    assert collect_modes(128) == [True, True]
+    assert collect_modes(129) == [True, False]
 
 
 def test_collect_bgp_lines_writes_collection_failure_without_fake_neighbor(monkeypatch, tmp_path):

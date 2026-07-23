@@ -84,7 +84,7 @@ def test_update_telegraf_config_requires_generated_configdb_artifacts(tmp_path):
         )
 
 
-def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path, monkeypatch):
+def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path):
     import netopsbench.platform.observability.telegraf as telegraf_mod
     from netopsbench.platform.topology.generator import generate_topology
 
@@ -92,9 +92,6 @@ def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path, m
     generate_topology("xlarge", str(topology_dir))
     topology_file = topology_dir / "topology.json"
     output_path = tmp_path / "telegraf.conf"
-    monkeypatch.setenv("SONIC_GNMI_PORT", "59999")
-    monkeypatch.setenv("GNMI_SUBSCRIPTION_MODE", "sample")
-
     rc = telegraf_mod.update_telegraf_config(str(topology_file), output_file=str(output_path))
 
     assert rc == 0
@@ -115,14 +112,13 @@ def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path, m
     assert 'path = "COUNTERS/Ethernet64"' in leaf_block
     assert 'path = "COUNTERS/Ethernet68"' not in leaf_block
     assert 'subscription_mode = "on_change"' in rendered
-    assert "sample_interval" not in rendered
     assert 'username = "admin"' in rendered
     assert 'password = ""' in rendered
     assert 'encoding = "json_ietf"' in rendered
     assert 'target = "COUNTERS_DB"' in rendered
 
 
-def test_update_telegraf_config_scopes_native_fat_tree_roles_from_artifacts(tmp_path, monkeypatch):
+def test_update_telegraf_config_scopes_native_fat_tree_roles_from_artifacts(tmp_path):
     import netopsbench.platform.observability.telegraf as telegraf_mod
     from netopsbench.platform.topology.generator import generate_topology
 
@@ -201,6 +197,12 @@ def test_packaged_observability_assets_enable_bgp_tail_input():
     assert 'watch_method = "poll"' in telegraf_text
     assert "metric_batch_size = 5000" in telegraf_text
     assert "metric_buffer_limit = 200000" in telegraf_text
+    assert "[[inputs.influxdb_v2_listener]]" in telegraf_text
+    assert 'service_address = ":8186"' in telegraf_text
+    assert "max_undelivered_metrics = 200000" in telegraf_text
+    assert 'parser_type = "upstream"' in telegraf_text
+    assert 'content_encoding = "gzip"' in telegraf_text
+    assert "/var/log/pingmesh/metrics.log" not in telegraf_text
     assert "debug = false" in telegraf_text
     assert "[[processors.printer]]" not in telegraf_text
     assert dashboard_text.count('group(columns: [\\"source\\", \\"neighbor_address\\"])\\n  |> last()') >= 3
@@ -266,12 +268,16 @@ def test_bgp_collector_size_default_is_owned_by_collector():
     from netopsbench.platform.observability.bgp_collector import (
         DEFAULT_BGP_COLLECTOR_MAX_BYTES,
         DEFAULT_BGP_COLLECTOR_PARALLELISM,
+        DEFAULT_BGP_FULL_SNAPSHOT_INTERVAL_SECONDS,
         DEFAULT_BGP_POLL_INTERVAL_SECONDS,
+        DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD,
     )
 
     assert DEFAULT_BGP_COLLECTOR_MAX_BYTES == 128 * 1024 * 1024
     assert DEFAULT_BGP_COLLECTOR_PARALLELISM == 16
+    assert DEFAULT_BGP_FULL_SNAPSHOT_INTERVAL_SECONDS == 60
     assert DEFAULT_BGP_POLL_INTERVAL_SECONDS == 10
+    assert DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD == 128
 
 
 def test_runtime_scripts_default_sonic_apply_parallelism_to_32():

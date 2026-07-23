@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
+import time
 from importlib.resources import files
 from pathlib import Path
 
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.runtime import RuntimeIdentity
+from netopsbench.platform.observability.bgp_collector import DEFAULT_BGP_POLL_INTERVAL_SECONDS
 from netopsbench.platform.observability.influxdb import ensure_bucket
 from netopsbench.platform.observability.telegraf import update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-BGP_POLL_INTERVAL_SECONDS = 10
 BGP_COLLECTOR_PARALLELISM = 16
 INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
 logger = get_logger(__name__)
@@ -108,6 +110,8 @@ def ensure_worker_telegraf(worker: RuntimeIdentity) -> None:
             "unless-stopped",
             "--network",
             worker.mgmt_network,
+            "--network-alias",
+            "telegraf",
             "--ip",
             _collector_ip(topology_file),
             "-v",
@@ -119,6 +123,7 @@ def ensure_worker_telegraf(worker: RuntimeIdentity) -> None:
         check=True,
         timeout=600,
     )
+    _wait_for_telegraf_listener(topology_file)
 
 
 def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
@@ -143,7 +148,7 @@ def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
         "--output",
         str(output_file),
         "--interval",
-        str(BGP_POLL_INTERVAL_SECONDS),
+        str(DEFAULT_BGP_POLL_INTERVAL_SECONDS),
         "--parallelism",
         str(BGP_COLLECTOR_PARALLELISM),
         "--topology-id",
@@ -174,6 +179,27 @@ def _collector_ip(topology_file: Path) -> str:
     from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
     return load_topology_manifest(topology_file).collector.ipv4
+
+
+def _wait_for_telegraf_listener(
+    topology_file: Path,
+    *,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Wait until the topology-local Pingmesh ingest listener accepts TCP."""
+    address = (_collector_ip(topology_file), 8186)
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(address, timeout=1.0):
+                return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.25)
+    raise RuntimeError(
+        f"Telegraf Pingmesh ingest listener did not become ready at {address[0]}:{address[1]}: {last_error}"
+    )
 
 
 __all__ = [

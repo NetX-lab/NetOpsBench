@@ -19,6 +19,7 @@
   token = "{{INFLUXDB_TOKEN}}"
   organization = "{{INFLUXDB_ORG}}"
   bucket = "{{INFLUXDB_BUCKET}}"
+  content_encoding = "gzip"
 
   # Removed tagdrop as we are filtering in Starlark
 
@@ -163,12 +164,16 @@ def apply(metric):
     field = "SAI_PORT_STAT_IF_OUT_ERRORS"
     dest = "out_errors"
 
-# --- PINGMESH INPUTS ---
-# Pingmesh metrics collection
-[[inputs.tail]]
-  files = ["/var/log/pingmesh/metrics.log"]
-  data_format = "influx"
-  name_override = "pingmesh"
+# Relay each topology's Pingmesh writes through its Telegraf worker so the
+# shared InfluxDB receives bounded, compressed batches instead of one HTTP
+# stream per client.
+[[inputs.influxdb_v2_listener]]
+  service_address = ":8186"
+  max_undelivered_metrics = 200000
+  read_timeout = "10s"
+  write_timeout = "10s"
+  token = "{{INFLUXDB_TOKEN}}"
+  parser_type = "upstream"
 
 # BGP neighbor snapshots collected by the worker host-side poller
 [[inputs.tail]]

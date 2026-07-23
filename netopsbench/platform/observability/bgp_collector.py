@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -20,6 +20,8 @@ from netopsbench.platform.utils.proc import docker_prefix
 DEFAULT_BGP_COLLECTOR_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_BGP_COLLECTOR_PARALLELISM = 16
 DEFAULT_BGP_POLL_INTERVAL_SECONDS = 10.0
+DEFAULT_BGP_FULL_SNAPSHOT_INTERVAL_SECONDS = 60.0
+DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD = 128
 _BGP_EVENT_SCHEMA_VERSION = 1
 
 
@@ -225,6 +227,7 @@ def _collect_device_bgp(
     timestamp_ns: int,
     topology_id: str,
     transition_tracker: BgpTransitionTracker | None = None,
+    include_full_snapshot: bool = True,
 ) -> list[str]:
     container = f"clab-{lab_name}-{device}"  # matches clab_container_name() convention
     started = time.monotonic()
@@ -249,7 +252,12 @@ def _collect_device_bgp(
     except Exception:
         error_type = "collector_error"
     duration_ms = round((time.monotonic() - started) * 1000)
-    lines = build_bgp_lines(device, rows, timestamp_ns, topology_id=topology_id)
+    snapshot_rows = (
+        rows
+        if include_full_snapshot
+        else [row for row in rows if normalize_bgp_state(row.get("state")) != "ESTABLISHED"]
+    )
+    lines = build_bgp_lines(device, snapshot_rows, timestamp_ns, topology_id=topology_id)
     if transition_tracker is not None:
         lines.extend(
             transition_tracker.process(
@@ -280,6 +288,7 @@ def collect_bgp_lines(
     parallelism: int = 1,
     topology_id: str | None = None,
     transition_tracker: BgpTransitionTracker | None = None,
+    include_full_snapshot: bool = True,
 ) -> list[str]:
     lab_name, devices = _read_topology(metadata_file)
     resolved_topology_id = topology_id or lab_name
@@ -296,6 +305,7 @@ def collect_bgp_lines(
                 resolved_timestamp,
                 resolved_topology_id,
                 transition_tracker,
+                include_full_snapshot,
             )
             for device in devices
         ]
@@ -310,6 +320,7 @@ def collect_bgp_lines(
                         resolved_timestamp,
                         resolved_topology_id,
                         transition_tracker,
+                        include_full_snapshot,
                     ),
                     devices,
                 )
@@ -328,6 +339,8 @@ def _collect_bgp_lines_paced(
     stop_event: threading.Event,
     topology_id: str | None = None,
     transition_tracker: BgpTransitionTracker | None = None,
+    include_full_snapshot: bool = True,
+    on_lines: Callable[[list[str]], None] | None = None,
 ) -> list[str]:
     """Collect one fleet snapshot while spreading docker exec starts over the interval."""
     lab_name, devices = _read_topology(metadata_file)
@@ -340,6 +353,7 @@ def _collect_bgp_lines_paced(
     launch_spacing = max(0.0, float(interval_seconds)) / len(devices)
     round_started = time.monotonic()
     futures = []
+    pending = []
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for index, device in enumerate(devices):
@@ -347,19 +361,29 @@ def _collect_bgp_lines_paced(
             wait_seconds = max(0.0, launch_at - time.monotonic())
             if wait_seconds and stop_event.wait(wait_seconds):
                 break
-            futures.append(
-                executor.submit(
-                    _collect_device_bgp,
-                    lab_name,
-                    device,
-                    command_prefix,
-                    time.time_ns(),
-                    resolved_topology_id,
-                    transition_tracker,
-                )
+            future = executor.submit(
+                _collect_device_bgp,
+                lab_name,
+                device,
+                command_prefix,
+                time.time_ns(),
+                resolved_topology_id,
+                transition_tracker,
+                include_full_snapshot,
             )
+            futures.append(future)
+            pending.append(future)
+            if on_lines is not None:
+                completed = [item for item in pending if item.done()]
+                for item in completed:
+                    on_lines(item.result())
+                    pending.remove(item)
 
     lines: list[str] = []
+    if on_lines is not None:
+        for future in pending:
+            on_lines(future.result())
+        return lines
     for future in futures:
         lines.extend(future.result())
     return lines
@@ -414,22 +438,28 @@ def run_loop(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.touch(exist_ok=True)
+    _, routing_devices = _read_topology(metadata_file)
+    use_sparse_snapshots = len(routing_devices) > DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD
+    last_full_snapshot_at = float("-inf")
 
     while not stop_event.is_set():
         iteration_started = time.monotonic()
+        include_full_snapshot = not use_sparse_snapshots or (
+            iteration_started - last_full_snapshot_at >= DEFAULT_BGP_FULL_SNAPSHOT_INTERVAL_SECONDS
+        )
         try:
-            _write_lines(
-                output_file,
-                _collect_bgp_lines_paced(
-                    metadata_file,
-                    interval_seconds,
-                    parallelism,
-                    stop_event,
-                    topology_id=topology_id,
-                    transition_tracker=transition_tracker,
-                ),
-                max_bytes=max_bytes,
+            _collect_bgp_lines_paced(
+                metadata_file,
+                interval_seconds,
+                parallelism,
+                stop_event,
+                topology_id=topology_id,
+                transition_tracker=transition_tracker,
+                include_full_snapshot=include_full_snapshot,
+                on_lines=lambda lines: _write_lines(output_file, lines, max_bytes=max_bytes),
             )
+            if include_full_snapshot:
+                last_full_snapshot_at = iteration_started
         except Exception as exc:
             print(f"WARN: bgp collector iteration failed: {exc}", file=sys.stderr)
         elapsed = time.monotonic() - iteration_started

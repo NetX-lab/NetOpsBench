@@ -77,7 +77,8 @@ class UdpEchoResponder:
         while not self._shutdown_event.is_set():
             try:
                 data, addr = sock.recvfrom(_RECV_BUF_SIZE)
-            except TimeoutError:
+            # Alpine Python may expose socket.timeout separately from TimeoutError.
+            except (TimeoutError, socket.timeout):  # noqa: UP041
                 continue
             except OSError as exc:
                 if self._shutdown_event.is_set():

@@ -51,7 +51,7 @@ _CONTAINER_AGENT_MODULE = "netopsbench.platform.pingmesh.cli"
 _CONTAINER_AGENT_SOURCE = "/tmp/pingmesh/netopsbench/platform/pingmesh/cli.py"
 _PINGMESH_BIND = "configs/pingmesh:/tmp/pingmesh:ro"
 _DEFAULT_DEPLOY_PARALLELISM = 32
-_INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
+_PINGMESH_INGEST_URL = "http://telegraf:8186"
 
 
 @dataclass
@@ -226,7 +226,6 @@ def _start_client_agent(
 def deploy_pingmesh(
     topology_dir: str,
     pinglist_file: str | None = None,
-    influxdb_url: str | None = None,
     influxdb_token: str | None = None,
     influxdb_org: str | None = None,
     influxdb_bucket: str | None = None,
@@ -241,7 +240,6 @@ def deploy_pingmesh(
     """
     # --- resolve parameters from the canonical runtime topology ---
     pinglist_file = pinglist_file or _staged_pinglist_path(topology_dir)
-    influxdb_url = influxdb_url or _INTERNAL_INFLUXDB_URL
     influxdb_token = influxdb_token or config.influxdb_token
     influxdb_org = influxdb_org or config.influxdb_org
     influxdb_bucket = influxdb_bucket or config.influxdb_bucket
@@ -265,7 +263,7 @@ def deploy_pingmesh(
     logger.info("=== Deploying Pingmesh Agents ===")
     logger.info(f"Topology: {topology_dir}")
     logger.info(f"Topology ID: {topology_id}")
-    logger.info(f"InfluxDB: {influxdb_url} bucket={influxdb_bucket}")
+    logger.info(f"Pingmesh ingest: {_PINGMESH_INGEST_URL} bucket={influxdb_bucket}")
     logger.info(f"Cycle interval: {cycle_interval}s")
     deploy_parallelism = max(1, int(parallelism))
     logger.info(f"Deploy parallelism: {deploy_parallelism}")
@@ -315,7 +313,7 @@ def deploy_pingmesh(
                     client_name=client_name,
                     container=container,
                     topology_id=topology_id,
-                    influxdb_url=influxdb_url,
+                    influxdb_url=_PINGMESH_INGEST_URL,
                     influxdb_token=influxdb_token,
                     influxdb_org=influxdb_org,
                     influxdb_bucket=influxdb_bucket,

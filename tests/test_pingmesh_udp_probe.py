@@ -112,6 +112,21 @@ def _probe(dst_ip: str, index: int, src_ip: str = "127.0.0.1") -> dict:
     }
 
 
+def test_udp_responder_treats_socket_timeout_as_idle(caplog):
+    responder = UdpEchoResponder()
+
+    class _Socket:
+        @staticmethod
+        def recvfrom(_size):
+            responder._shutdown_event.set()
+            raise socket.timeout("timed out")  # noqa: UP041
+
+    responder._socket = _Socket()
+    responder._run()
+
+    assert "UDP responder recv error" not in caplog.text
+
+
 def test_pingmesh_agent_rejects_incomplete_canonical_policy(tmp_path):
     pinglist = tmp_path / "pinglist.json"
     pinglist.write_text(json.dumps({"probes": [], "pingmesh_policy": {}}), encoding="utf-8")

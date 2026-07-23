@@ -186,6 +186,46 @@ def test_worker_observability_restarts_stale_bgp_collector(tmp_path, monkeypatch
     assert (topology_dir / "bgp_collector.pid").read_text(encoding="utf-8") == "4242\n"
     assert "netopsbench.platform.observability.bgp_collector" in started[0][0]
     assert str(topology_dir / "topology.json") in started[0][0]
+    interval_index = started[0][0].index("--interval")
+    assert started[0][0][interval_index + 1] == "10.0"
+
+
+def test_worker_telegraf_exposes_pingmesh_ingest_before_returning(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from netopsbench.platform.observability import lifecycle
+    from netopsbench.sdk.runtimes import RuntimeManager
+
+    worker = RuntimeManager(workspace=tmp_path).create(scale="xs", workers=1, name="relay-lab").workers[0]
+    (Path(worker.topology_dir) / "topology.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    def fake_update(_topology_file, *, output_file, **_kwargs):
+        Path(output_file).write_text("[agent]\n", encoding="utf-8")
+
+    def fake_safe_run(command, **kwargs):
+        calls.append(("command", [str(part) for part in command], kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(lifecycle, "update_telegraf_config", fake_update)
+    monkeypatch.setattr(lifecycle, "safe_run", fake_safe_run)
+    monkeypatch.setattr(lifecycle, "_collector_ip", lambda _topology_file: "172.31.101.2")
+    monkeypatch.setattr(
+        lifecycle,
+        "_wait_for_telegraf_listener",
+        lambda topology_file: calls.append(("ready", Path(topology_file))),
+    )
+
+    lifecycle.ensure_worker_telegraf(worker)
+
+    run_command = next(
+        command
+        for kind, command, _kwargs in calls
+        if kind == "command" and "run" in command
+    )
+    alias_index = run_command.index("--network-alias")
+    assert run_command[alias_index + 1] == "telegraf"
+    assert calls[-1] == ("ready", Path(worker.topology_dir) / "topology.json")
 
 
 def test_python_worker_deploy_owns_topology_containerlab_and_activation(tmp_path, monkeypatch):
