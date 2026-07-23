@@ -82,6 +82,14 @@ class PingmeshPolicy(_PersistedModel):
     def coverage_epoch_seconds(self, client_count: int) -> int:
         return self.coverage_epoch_cycles(client_count) * self.cycle_interval_seconds
 
+    def coverage_grace_seconds(self) -> int:
+        """Return ingestion grace after one complete probe coverage epoch."""
+        return max(5, 2 * self.cycle_interval_seconds)
+
+    def complete_window_seconds(self, client_count: int) -> int:
+        """Return the shortest window that covers one epoch plus ingestion grace."""
+        return self.coverage_epoch_seconds(client_count) + self.coverage_grace_seconds()
+
 
 class TopologyDefaults(_PersistedModel):
     link_mtu: int = Field(default=DEFAULT_LINK_MTU, gt=0)

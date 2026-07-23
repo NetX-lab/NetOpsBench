@@ -16,54 +16,21 @@ class BenchmarkReport:
 
     def __init__(
         self,
-        id: str | None = None,
+        id: str,
         summary: dict[str, Any] | None = None,
         scenario_summaries: list[dict[str, Any]] | None = None,
         detailed_results: list[dict[str, Any]] | None = None,
         artifact_paths: dict[str, str] | None = None,
         raw: dict[str, Any] | None = None,
-        *,
-        report_id: str | None = None,
-        payload: dict[str, Any] | None = None,
     ):
-        legacy = dict(payload or {})
-        self.id = str(report_id or id or legacy.get("id") or "")
-        self.summary = dict(summary or legacy.get("summary") or {})
-        self.scenario_summaries = [
-            dict(item) for item in (scenario_summaries or legacy.get("scenario_summaries") or [])
-        ]
-        self.detailed_results = [
-            dict(item)
-            for item in (
-                detailed_results
-                or legacy.get("detailed_results")
-                or legacy.get("results")
-                or []
-            )
-        ]
+        self.id = str(id)
+        self.summary = dict(summary or {})
+        self.scenario_summaries = [dict(item) for item in (scenario_summaries or [])]
+        self.detailed_results = [dict(item) for item in (detailed_results or [])]
         self.artifact_paths = {
-            str(key): str(value)
-            for key, value in dict(artifact_paths or legacy.get("artifact_paths") or {}).items()
+            str(key): str(value) for key, value in dict(artifact_paths or {}).items()
         }
-        self.raw = dict(raw or legacy)
-
-    @property
-    def report_id(self) -> str:
-        """Compatibility alias for the original public report wrapper."""
-        return self.id
-
-    @property
-    def payload(self) -> dict[str, Any]:
-        """Compatibility payload while retaining structured report fields."""
-        payload = dict(self.raw)
-        payload.setdefault("summary", dict(self.summary))
-        if self.detailed_results:
-            payload.setdefault("detailed_results", [dict(item) for item in self.detailed_results])
-        if self.scenario_summaries:
-            payload.setdefault("scenario_summaries", [dict(item) for item in self.scenario_summaries])
-        if self.artifact_paths:
-            payload.setdefault("artifact_paths", dict(self.artifact_paths))
-        return payload
+        self.raw = dict(raw or {})
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,12 +61,12 @@ class BenchmarkReport:
             raise ValueError(f"Invalid report JSON: {report_path}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"Report payload must be a JSON object: {report_path}")
-        report_id = payload.get("id")
+        identifier = payload.get("id")
         summary = payload.get("summary")
-        if not isinstance(report_id, str) or not isinstance(summary, dict):
+        if not isinstance(identifier, str) or not isinstance(summary, dict):
             raise ValueError(f"Report payload must contain string id and object summary: {report_path}")
         return cls(
-            id=report_id,
+            id=identifier,
             summary=summary,
             scenario_summaries=payload.get("scenario_summaries", []),
             detailed_results=payload.get("detailed_results", []),
@@ -116,7 +83,7 @@ class BenchmarkReport:
           3. Summary — aggregate counters / accuracy / averages.
           4. Footer — artifact paths.
 
-        Pass ``json=True`` to restore the legacy raw-JSON dump for
+        Pass ``json=True`` to emit the canonical JSON representation for
         machine consumers.
         """
         if json:

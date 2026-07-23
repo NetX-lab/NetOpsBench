@@ -1,23 +1,10 @@
 """Shared public NetOpsBench SDK types."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from netopsbench.agents.base import DiagnosisResult, DiagnosticContext
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
-
-
-@dataclass(frozen=True)
-class PlatformDefaults:
-    """Default runtime settings for a NetOpsBench platform instance."""
-
-    scale: str | None = None
-    workers: int | None = None
-    artifacts_dir: str | Path | None = None
-    runtime_root_dir: str | Path | None = None
-    keep_runtime: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -42,17 +29,11 @@ class FaultExecutionResult:
     error: str | None = None
 
 
-class ScenarioEvaluator(Protocol):
-    def evaluate(self, context: DiagnosticContext, result: DiagnosisResult) -> Mapping[str, Any]: ...
-
-
 __all__ = [
     "ScenarioSpec",
     "EpisodeSpec",
-    "PlatformDefaults",
     "DiagnosticContext",
     "DiagnosisResult",
     "FaultContext",
     "FaultExecutionResult",
-    "ScenarioEvaluator",
 ]

@@ -20,6 +20,7 @@ def test_netopsbench_exposes_all_managers():
         "artifacts",
         "scales",
         "simulators",
+        "evaluators",
     ):
         manager = getattr(bench, manager_name)
         assert manager.platform is bench
@@ -27,17 +28,20 @@ def test_netopsbench_exposes_all_managers():
 
 
 def test_netopsbench_public_manager_api_lives_under_sdk_modules():
-    from netopsbench.sdk import AgentManager, RuntimeManager, SessionManager
+    from netopsbench.sdk import AgentManager, EvaluatorManager, RuntimeManager, SessionManager
     from netopsbench.sdk.agents import AgentManager as AgentsModuleAgentManager
+    from netopsbench.sdk.evaluators import EvaluatorManager as EvaluatorsModuleEvaluatorManager
     from netopsbench.sdk.runtimes import RuntimeManager as RuntimesModuleRuntimeManager
     from netopsbench.sdk.sessions import SessionManager as SessionsModuleSessionManager
 
     assert AgentManager is AgentsModuleAgentManager
     assert RuntimeManager is RuntimesModuleRuntimeManager
     assert SessionManager is SessionsModuleSessionManager
+    assert EvaluatorManager is EvaluatorsModuleEvaluatorManager
     assert AgentManager.__module__ == "netopsbench.sdk.agents"
     assert RuntimeManager.__module__ == "netopsbench.sdk.runtimes"
     assert SessionManager.__module__ == "netopsbench.sdk.sessions"
+    assert EvaluatorManager.__module__ == "netopsbench.sdk.evaluators"
 
 
 def test_sdk_managers_namespace_is_no_longer_public():
@@ -69,6 +73,7 @@ def test_public_api_exports_shared_types():
         DiagnosticAgent,
         DiagnosticContext,
         EpisodeSpec,
+        EvaluatorManager,
         FaultContext,
         FaultExecutionResult,
         FaultExecutor,
@@ -93,6 +98,7 @@ def test_public_api_exports_shared_types():
     assert EpisodeSpec.__name__ == "EpisodeSpec"
     assert ScenarioManager.__name__ == "ScenarioManager"
     assert SimulatorManager.__name__ == "SimulatorManager"
+    assert EvaluatorManager.__name__ == "EvaluatorManager"
     assert DiagnosticAgent.__name__ == "DiagnosticAgent"
     assert DiagnosticContext.__name__ == "DiagnosticContext"
     assert DiagnosisResult.__name__ == "DiagnosisResult"
@@ -115,6 +121,13 @@ def test_public_api_exports_shared_types():
     assert SessionManager.__name__ == "SessionManager"
     assert RunHandle.__name__ == "RunHandle"
     assert ArtifactManager.__name__ == "ArtifactManager"
+
+
+def test_removed_0_1_compatibility_types_are_not_exported():
+    import netopsbench.sdk as sdk
+
+    for name in ("ScenarioHandle", "PlatformDefaults", "ScenarioEvaluator"):
+        assert not hasattr(sdk, name)
 
 
 def test_session_orchestrator_is_available_under_platform_session_package():

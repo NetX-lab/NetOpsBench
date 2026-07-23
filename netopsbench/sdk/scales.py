@@ -24,8 +24,4 @@ class ScaleManager:
     def names(self) -> tuple[str, ...]:
         return self.registry.names()
 
-    def resolved(self) -> list[dict[str, object]]:
-        return [profile.model_dump(mode="json") for profile in self.registry.values()]
-
-
 __all__ = ["ScaleManager", "ScaleProfile", "ScaleRegistry"]

@@ -75,7 +75,6 @@ class NetOpsBench:
 
             self._simulators = self._bind_manager(
                 SimulatorManager(
-                    workspace=self.workspace,
                     scale_registry=self.scales.registry,
                     runtime_manager=self.runtimes,
                     fault_registry=self.faults.spec_registry,

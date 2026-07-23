@@ -56,7 +56,6 @@ plots = [
 simulator = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
-    "httpx>=0.27.0",
 ]
 dev = [
     "pytest>=6.0.0",
@@ -67,6 +66,7 @@ dev = [
     "isort>=5.13.0",
     "mypy>=1.8.0",
     "pre-commit>=3.5.0",
+    "httpx>=0.27.0",
 ]
 [tool.setuptools.packages.find]
 include = ["netopsbench*"]
@@ -92,7 +92,7 @@ addopts = "-ra"
 
 [tool.black]
 line-length = 120
-target-version = ["py312"]
+target-version = ["py312", "py313"]
 
 [tool.isort]
 profile = "black"

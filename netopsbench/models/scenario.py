@@ -54,23 +54,9 @@ class ScenarioSpec(BaseModel):
     def scale(self) -> str:
         return self.topology_scale
 
-    @property
-    def episodes(self) -> list[EpisodeSpec]:
-        """Compatibility view for the pre-canonical public scenario handle."""
-        return [self.episode]
-
-    def to_scenario(self) -> ScenarioSpec:
-        return self
-
     def to_dict(self) -> dict[str, Any]:
-        payload = self.model_dump(mode="json", exclude={"schema_version"})
-        payload["episodes"] = [payload.pop("episode")]
-        return payload
-
-    @classmethod
-    def from_scenario(cls, scenario: ScenarioSpec, path: str | None = None) -> ScenarioSpec:
-        del path
-        return scenario
+        """Return the canonical single-episode wire representation."""
+        return self.model_dump(mode="json", exclude_none=True)
 
     @property
     def digest(self) -> str:

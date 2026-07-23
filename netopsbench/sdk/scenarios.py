@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +23,7 @@ class ScenarioManager:
         *,
         id: str,
         name: str,
-        episode: EpisodeSpec | dict[str, Any] | None = None,
-        episodes: Sequence[EpisodeSpec | dict[str, Any]] | None = None,
+        episode: EpisodeSpec | dict[str, Any],
         description: str = "",
         scale: str = "xs",
         traffic_profile: str = "standard",
@@ -35,11 +33,7 @@ class ScenarioManager:
         self.scale_registry.get(scale)
         if traffic_profile != "standard":
             raise ValueError(f"Only the standard traffic profile is supported, got: {traffic_profile}")
-        candidates = ([episode] if episode is not None else []) + list(episodes or [])
-        if len(candidates) != 1:
-            raise ValueError("Canonical scenarios require exactly one diagnosable episode")
-        item = candidates[0]
-        episode_spec = item if isinstance(item, EpisodeSpec) else EpisodeSpec.model_validate(item)
+        episode_spec = episode if isinstance(episode, EpisodeSpec) else EpisodeSpec.model_validate(episode)
         return ScenarioSpec(
             scenario_id=id,
             name=name,
@@ -70,10 +64,4 @@ class ScenarioManager:
             scale_registry=self.scale_registry,
         )
 
-
-# The old handle represented the same public scenario value.  Keeping the
-# alias preserves imports without reintroducing a second scenario model.
-ScenarioHandle = ScenarioSpec
-
-
-__all__ = ["EpisodeSpec", "ScenarioHandle", "ScenarioManager", "ScenarioSpec", "supported_scales"]
+__all__ = ["EpisodeSpec", "ScenarioManager", "ScenarioSpec", "supported_scales"]

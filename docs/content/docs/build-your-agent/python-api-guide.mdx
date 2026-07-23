@@ -109,10 +109,23 @@ NetOpsBench validates exported `job/result.json` and `trial/result.json` with Ha
 | `bench.sessions` | Run scenarios and suites. |
 | `bench.runtimes` | Provision, attach, list, and tear down runtime pools. |
 | `bench.faults` | Register or inspect fault definitions. |
-| `bench.simulators` | Build RL task catalogs and create interactive diagnostic environments. |
+| `bench.evaluators` | Score `DiagnosisResult` objects and produce canonical reports. |
+| `bench.simulators` | Create interactive diagnostic environments over benchmark scenarios. |
 | `bench.artifacts` | Resolve run artifacts and report files. |
 
 The stable external boundary is `netopsbench.sdk`, documented example scripts, and documented CLI commands such as `benchmark prepare`, `scenario validate`, `result show`, and `runtime teardown`.
+
+## Migrating to 0.2
+
+Version 0.2 uses one canonical episode per scenario. Replace an `episodes:` list
+with a singular `episode:` object; legacy multi-episode YAML now fails with an
+explicit migration error. `ScenarioManager.create()` likewise accepts only
+`episode=` and returns `ScenarioSpec` directly.
+
+Reports now use only the canonical `id`, `summary`, `scenario_summaries`,
+`detailed_results`, `artifact_paths`, and `raw` fields. The 0.1
+`ScenarioHandle`, `PlatformDefaults`, `ScenarioEvaluator`, `report_id`, and
+`payload` compatibility names are not part of the 0.2 SDK.
 
 ## Runtime ownership
 

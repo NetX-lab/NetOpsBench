@@ -4,13 +4,10 @@ from __future__ import annotations
 
 _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "NetOpsBench": ("netopsbench.sdk.core", "NetOpsBench"),
-    "PlatformDefaults": ("netopsbench.sdk.types", "PlatformDefaults"),
     "ScenarioSpec": ("netopsbench.sdk.types", "ScenarioSpec"),
     "EpisodeSpec": ("netopsbench.sdk.types", "EpisodeSpec"),
-    "ScenarioHandle": ("netopsbench.sdk.scenarios", "ScenarioHandle"),
     "ScenarioManager": ("netopsbench.sdk.scenarios", "ScenarioManager"),
     "supported_scales": ("netopsbench.sdk.scenarios", "supported_scales"),
-    "ScenarioEvaluator": ("netopsbench.sdk.types", "ScenarioEvaluator"),
     "DiagnosticAgent": ("netopsbench.sdk.agents", "DiagnosticAgent"),
     "SyncDiagnosticAgent": ("netopsbench.sdk.agents", "SyncDiagnosticAgent"),
     "AgentHandle": ("netopsbench.sdk.agents", "AgentHandle"),

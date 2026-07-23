@@ -6,6 +6,7 @@ import pytest
 
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.faults.specs import FaultSpec
+from netopsbench.platform.scenario.parser import scenario_from_dict
 from netopsbench.platform.scenario.validator import validate_scenario
 from netopsbench.sdk.scenarios import ScenarioManager
 
@@ -33,6 +34,19 @@ def test_scenario_manager_can_create_and_roundtrip_yaml(tmp_path):
     assert loaded.id == "scenario_x"
     assert loaded.scale == "small"
     assert loaded.episode.fault_type == "static_route_misconfig"
+    assert scenario_from_dict(scenario.to_dict()) == scenario
+
+
+def test_legacy_multi_episode_input_has_explicit_migration_error():
+    with pytest.raises(ValueError, match="single 'episode'"):
+        scenario_from_dict(
+            {
+                "scenario_id": "legacy",
+                "name": "Legacy",
+                "topology_scale": "xs",
+                "episodes": [{"episode_id": "diagnosis", "fault_type": "none"}],
+            }
+        )
 
 
 @pytest.mark.parametrize("profile", ["light", "stress"])

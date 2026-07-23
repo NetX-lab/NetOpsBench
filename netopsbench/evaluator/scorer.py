@@ -6,12 +6,11 @@ Compares agent outputs against ground truth and generates benchmark reports.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, canonicalize_fault_type, judge_fault_type_match
+from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, judge_fault_type_match
 from netopsbench.platform.utils.interface_names import normalize_interface_name
 
 # Composite localization score weighting (used for sorting/ranking only).
@@ -261,10 +260,6 @@ class Evaluator:
         """Normalize interface names (e.g., 'ethernet-1/1' -> 'e11')."""
         return normalize_interface_name(interface)
 
-    def _normalize_fault_type(self, fault_type: str) -> str:
-        """Normalize fault type names for comparison."""
-        return canonicalize_fault_type(fault_type)
-
     def _is_fully_correct_case(self, result: EvaluationResult) -> bool:
         """Return True when a testcase is fully solved end-to-end."""
         if result.details.get("negative_sample"):
@@ -464,13 +459,3 @@ class Evaluator:
         }
 
         return report
-
-    def save_report(self, report: dict[str, Any], filepath: str) -> None:
-        """Save benchmark report to JSON file."""
-        with open(filepath, "w") as f:
-            json.dump(report, f, indent=2, default=str)
-
-    def load_report(self, filepath: str) -> dict[str, Any]:
-        """Load benchmark report from JSON file."""
-        with open(filepath) as f:
-            return json.load(f)
