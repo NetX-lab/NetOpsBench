@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from netopsbench.sdk import NetOpsBench
+from netopsbench.sdk import DiagnosisSubmission, NetOpsBench, SubmitDiagnosisAction, simulator_tool_schemas
 from netopsbench.sdk.agents import DiagnosisResult
 
 
@@ -36,17 +36,19 @@ def _scenario_path(repo_root: Path) -> Path:
 
 
 class _RuntimeSmokeStubAgent:
+    def __init__(self):
+        self.context = None
+
     def diagnose(self, context):
-        ep = (getattr(context, "symptoms", {}) or {}).get("episode", {}) or {}
-        fault_type = ep.get("fault_type")
+        self.context = context
         return DiagnosisResult(
             agent_name="runtime-smoke-stub-agent",
-            verdict="fault_detected" if fault_type and fault_type != "none" else "network_healthy",
+            verdict="fault_detected",
             findings={
-                "fault_type": fault_type,
+                "fault_type": "link_down",
                 "location": {
-                    "device": ep.get("target_device"),
-                    "interface": ep.get("target_interface"),
+                    "device": "leaf1",
+                    "interface": "Ethernet8",
                 },
             },
             confidence=0.8,
@@ -63,12 +65,14 @@ def test_runtime_xs_link_down_smoke_observable():
     bench = NetOpsBench(workspace=str(repo))
     runtime_name = f"pytest-xs-smoke-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
     runtime = None
+    environment = None
+    agent = _RuntimeSmokeStubAgent()
     try:
         runtime = bench.runtimes.provision(scale="xs", workers=1, name=runtime_name)
         run = bench.sessions.run_on_runtime_scenario(
             scenario=scenario,
             runtime=runtime,
-            agent=_RuntimeSmokeStubAgent(),
+            agent=agent,
             artifacts_dir=repo / "scenario_results" / "pytest_xs_smoke",
         )
         report = run.wait()
@@ -87,6 +91,28 @@ def test_runtime_xs_link_down_smoke_observable():
         assert injection.get("success") is True, f"fault injection failed: {injection}"
         assert observations.get("anomalies_detected") is True, f"no observable anomaly: {summary}"
         assert int(summary.get("total_anomalies", 0) or 0) > 0, f"empty anomaly summary: {summary}"
+        assert (fault_ep.get("evaluation_result") or {}).get("score") == 1.0
+
+        environment = bench.simulators.create(scenario=scenario)
+        reset = environment.reset()
+        assert reset.valid is True
+        assert reset.observation["topology_summary"] == agent.context.metadata["canonical_observation"][
+            "topology_summary"
+        ]
+        assert reset.tools == simulator_tool_schemas()
+        simulator_result = environment.step(
+            SubmitDiagnosisAction(
+                diagnosis=DiagnosisSubmission(
+                    verdict="fault_detected",
+                    fault_type="link_down",
+                    location={"device": "leaf1", "interface": "Ethernet8"},
+                )
+            )
+        )
+        assert simulator_result.reward == 1.0
     finally:
+        if environment is not None:
+            environment.close()
         if runtime is not None:
             runtime.teardown()
+        bench.close()

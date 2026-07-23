@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,12 +59,20 @@ class StepResult(BaseModel):
 class DiagnosticEnvironment:
     """One-agent reset/step view over :class:`PreparedIncident`."""
 
-    def __init__(self, engine: IncidentEngine, scenario: Any, config: SimulatorConfig):
+    def __init__(
+        self,
+        engine: IncidentEngine,
+        scenario: Any,
+        config: SimulatorConfig,
+        on_close: Callable[[DiagnosticEnvironment], None] | None = None,
+    ):
         self.engine = engine
         self.scenario = scenario
         self.config = config
         self.incident: PreparedIncident | None = None
         self.session: DiagnosticSession | None = None
+        self._on_close = on_close
+        self._close_notified = False
 
     @property
     def state(self) -> IncidentState:
@@ -72,14 +81,12 @@ class DiagnosticEnvironment:
         return self.incident.state
 
     def reset(self) -> ResetResult:
-        if self.incident is not None and self.incident.state not in {
-            IncidentState.CLOSED,
-            IncidentState.BROKEN,
-        }:
-            raise RuntimeError("Close the active environment before reset")
+        if self.incident is not None:
+            raise RuntimeError("Diagnostic environments are single-use; create a new environment")
         self.incident = self.engine.prepare(self.scenario)
         if self.incident.state is IncidentState.BROKEN:
             failure = self.incident.failure
+            self._notify_close()
             return ResetResult(
                 valid=False,
                 case_valid=False,
@@ -120,6 +127,7 @@ class DiagnosticEnvironment:
                     "error": cleanup_failure.message if cleanup_failure is not None else None,
                 }
             )
+            self._notify_close()
         return StepResult.model_validate(transition.model_dump(mode="python"))
 
     def terminate_protocol(self, message: str) -> StepResult:
@@ -147,16 +155,18 @@ class DiagnosticEnvironment:
             )
         else:
             transition = transition.model_copy(update={"cleanup_status": cleanup})
+        self._notify_close()
         return StepResult.model_validate(transition.model_dump(mode="python"))
 
     def close(self) -> None:
         if self.incident is not None:
             self.incident.close()
+        self._notify_close()
 
-
-# Backward-compatible internal name while the implementation migrates.
-SimulatorState = IncidentState
-
+    def _notify_close(self) -> None:
+        if not self._close_notified and self._on_close is not None:
+            self._close_notified = True
+            self._on_close(self)
 
 __all__ = [
     "AgentUsage",
@@ -168,7 +178,6 @@ __all__ = [
     "FailureDomain",
     "ResetResult",
     "SimulatorConfig",
-    "SimulatorState",
     "StepResult",
     "SubmitDiagnosisAction",
     "TerminationReason",

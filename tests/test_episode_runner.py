@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from netopsbench.models.scenario import EpisodeSpec
-from netopsbench.platform.scenario.episode_runner import abort_episode, finish_episode, observe_episode, run_episode
+from netopsbench.platform.scenario.episode_runner import observe_episode
+
+_BASELINE = {"start_time": "baseline-start", "end_time": "baseline-end"}
 
 
 class StubExecutor:
@@ -28,7 +28,7 @@ class StubExecutor:
         self.calls.append("inject")
         return {"success": self._injection_success, "fault_type": episode.fault_type}
 
-    def _wait_and_observe(self, seconds, baseline_end_time=None, baseline_window=None):
+    def _wait_and_observe(self, seconds, *, baseline_window):
         self.calls.append(f"observe:{seconds}")
         self.baseline_windows.append(baseline_window)
         return {"duration": seconds, **self._observe_payload}
@@ -42,17 +42,11 @@ class StubExecutor:
         windows,
         *,
         total_duration_seconds,
-        baseline_end_time=None,
-        baseline_window=None,
+        baseline_window,
     ):
         self.calls.append("merge")
         self.baseline_windows.append(baseline_window)
         return {"windows": list(windows), "total": total_duration_seconds}
-
-    def _recover_fault(self):
-        self.calls.append("recover")
-        return {"success": True}
-
 
 def _episode(**overrides) -> EpisodeSpec:
     values = {
@@ -68,48 +62,40 @@ def _episode(**overrides) -> EpisodeSpec:
     return EpisodeSpec(**values)
 
 
-def test_healthy_episode_is_observed_and_diagnosed_without_fault_actions():
+def test_healthy_episode_is_observed_without_fault_actions():
     executor = StubExecutor()
-    result = run_episode(
+    result = observe_episode(
         executor,
         _episode(fault_type="none", duration_seconds=2, metadata={}),
-        diagnosis_callback=lambda _payload: {"verdict": "network_healthy"},
+        baseline_window=_BASELINE,
     )
 
-    assert result["success"] is True
-    assert result["diagnosis"]["verdict"] == "network_healthy"
+    assert result["state"] == "active"
     assert executor.calls == ["observe:2"]
 
 
-def test_injection_failure_is_an_infrastructure_error_and_cleanup_is_attempted():
-    executor = StubExecutor(injection_success=False)
+def test_healthy_episode_promotes_coverage_audit_without_private_observation_key():
+    coverage = {"coverage_status": "complete", "destination_pairs_observed": 2}
+    executor = StubExecutor(observe_payload={"_coverage_audit": coverage})
 
-    with pytest.raises(RuntimeError, match="Fault injection failed"):
-        run_episode(executor, _episode(duration_seconds=2, metadata={"early_observation_seconds": 0}))
+    result = observe_episode(
+        executor,
+        _episode(fault_type="none", duration_seconds=2, metadata={}),
+        baseline_window={"start_time": "start", "end_time": "end"},
+    )
 
-    assert executor.calls == ["inject", "recover"]
+    assert result["coverage_audit"] == coverage
+    assert "_coverage_audit" not in result["observations"]
 
 
-def test_interactive_kernel_keeps_fault_active_until_finish():
+def test_observation_keeps_fault_active_for_incident_engine():
     executor = StubExecutor()
     episode = _episode(duration_seconds=2, metadata={"early_observation_seconds": 0})
 
-    active = observe_episode(executor, episode)
+    active = observe_episode(executor, episode, baseline_window=_BASELINE)
 
     assert active["state"] == "active"
     assert executor.calls == ["inject", "capture:steady:2", "merge"]
-
-    terminal = finish_episode(
-        executor,
-        episode,
-        active,
-        diagnosis_callback=lambda _payload: {"verdict": "fault_detected"},
-    )
-    assert terminal["state"] == "terminal"
-    assert terminal["diagnosis"]["verdict"] == "fault_detected"
-    assert executor.calls[-1] == "recover"
-
-
 def test_interactive_kernel_uses_explicit_cached_baseline_window():
     executor = StubExecutor()
     baseline = {"start_time": "2026-07-15T00:00:00Z", "end_time": "2026-07-15T00:01:00Z"}
@@ -123,33 +109,29 @@ def test_interactive_kernel_uses_explicit_cached_baseline_window():
     assert executor.baseline_windows == [baseline]
 
 
-def test_runner_defers_detector_analysis_until_all_windows_are_captured():
+def test_observation_defers_detector_analysis_until_all_windows_are_captured():
     executor = StubExecutor()
     executor.sleep = lambda _seconds: None
 
-    result = run_episode(
+    result = observe_episode(
         executor,
         _episode(duration_seconds=12, stabilization_time=2, metadata={"early_observation_seconds": 4}),
+        baseline_window=_BASELINE,
     )
 
-    assert result["success"] is True
-    assert executor.calls == ["inject", "capture:early:4", "capture:steady:8", "merge", "recover"]
+    assert result["state"] == "active"
+    assert executor.calls == ["inject", "capture:early:4", "capture:steady:8", "merge"]
 
 
-def test_runner_uses_executor_sleep_hook_for_stabilization_and_recovery():
-    executor = StubExecutor(post_recovery_wait_seconds=2)
+def test_observation_uses_executor_sleep_hook_for_stabilization():
+    executor = StubExecutor()
     slept: list[float] = []
     executor.sleep = slept.append
 
-    run_episode(executor, _episode(duration_seconds=3, stabilization_time=1, metadata={"early_observation_seconds": 0}))
+    observe_episode(
+        executor,
+        _episode(duration_seconds=3, stabilization_time=1, metadata={"early_observation_seconds": 0}),
+        baseline_window=_BASELINE,
+    )
 
-    assert slept == [1, 2]
-
-
-def test_abort_episode_only_recovers_fault_cases():
-    executor = StubExecutor()
-
-    abort_episode(executor, _episode(fault_type="none"))
-    abort_episode(executor, _episode())
-
-    assert executor.calls == ["recover"]
+    assert slept == [1]

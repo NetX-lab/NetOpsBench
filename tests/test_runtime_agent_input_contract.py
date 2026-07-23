@@ -48,6 +48,9 @@ def test_canonical_observation_is_compact_non_semantic_and_stable():
             "family": "clos",
             "spines": 2,
             "leafs": 4,
+            "cores": 0,
+            "aggs": 0,
+            "edges": 0,
             "clients": 8,
             "links": 14,
         },
@@ -61,6 +64,36 @@ def test_canonical_observation_is_compact_non_semantic_and_stable():
     assert "task_id" not in serialized
     assert "split" not in serialized
     assert "ground_truth" not in serialized
+
+
+def test_canonical_fat_tree_summary_preserves_real_tiers():
+    observation = build_canonical_observation(
+        case_id="case-fat-tree",
+        topology={
+            "topology_type": "fat-tree",
+            "devices": {
+                "spines": [{}] * 16,
+                "leafs": [{}] * 32,
+                "cores": [{}] * 16,
+                "aggs": [{}] * 32,
+                "edges": [{}] * 32,
+                "clients": [{}] * 64,
+            },
+            "links": [{}] * 128,
+        },
+        symptoms={},
+    )
+
+    assert observation["topology_summary"] == {
+        "family": "fat-tree",
+        "spines": 0,
+        "leafs": 0,
+        "cores": 16,
+        "aggs": 32,
+        "edges": 32,
+        "clients": 64,
+        "links": 128,
+    }
 
 
 def test_build_public_symptoms_strips_fault_injection_labels():

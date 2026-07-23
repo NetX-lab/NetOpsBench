@@ -1,11 +1,16 @@
 """Execute one canonical diagnostic scenario."""
 
+from __future__ import annotations
+
 import json
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING, Any, Protocol
+
+from pydantic import ValidationError
 
 from netopsbench.evaluator.scorer import Evaluator
 from netopsbench.logging_utils import get_logger
@@ -21,13 +26,26 @@ from netopsbench.platform.traffic.controller import TrafficController
 from netopsbench.platform.traffic.scenario_execution import setup_traffic as _setup_traffic_impl
 from netopsbench.platform.traffic.scenario_execution import stop_traffic as _stop_traffic_impl
 
-from .episode_runner import run_episode
 from .incident_backend import ExecutorIncidentBackend
 from .observation import analyze_observation_windows as _analyze_observation_windows_impl
+from .observation import capture_baseline_window as _capture_baseline_window_impl
 from .observation import capture_observation_window as _capture_observation_window_impl
 from .observation import wait_and_observe as _wait_and_observe_impl
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from netopsbench.platform.simulator.engine import DiagnosticSession
+
+
+class DiagnosisCallback(Protocol):
+    def __call__(
+        self,
+        episode_result: dict[str, Any],
+        *,
+        diagnostic_session: DiagnosticSession,
+        diagnostic_payload: dict[str, Any],
+    ) -> dict[str, Any]: ...
 
 
 class ScenarioExecutor:
@@ -39,7 +57,7 @@ class ScenarioExecutor:
         self,
         topology_dir: str = "clab-topology",
         topology_metadata: dict | None = None,
-        baseline_wait_seconds: int = 60,
+        minimum_baseline_seconds: int = 60,
         post_recovery_wait_seconds: int = 2,
         influxdb_url: str | None = None,
         influxdb_token: str | None = None,
@@ -50,6 +68,7 @@ class ScenarioExecutor:
         persist_results: bool = True,
         fault_registry: FaultSpecRegistry | None = None,
         scale_registry: ScaleRegistry | None = None,
+        evaluator: Evaluator | None = None,
     ):
         """
         Initialize scenario runner.
@@ -82,10 +101,11 @@ class ScenarioExecutor:
         self.influxdb_token = influxdb_token
         self.influxdb_org = influxdb_org
         self.influxdb_bucket = influxdb_bucket
-        self.baseline_wait_seconds = max(0, int(baseline_wait_seconds))
+        self.minimum_baseline_seconds = max(0, int(minimum_baseline_seconds))
         self.post_recovery_wait_seconds = max(0, int(post_recovery_wait_seconds))
         self._sleep_fn = sleep_fn or time.sleep
         self.persist_results = bool(persist_results)
+        self.evaluator = evaluator or Evaluator()
 
     def sleep(self, seconds: float) -> None:
         self._sleep_fn(seconds)
@@ -102,10 +122,13 @@ class ScenarioExecutor:
     def _wait_and_observe(
         self,
         duration: int,
-        baseline_end_time: datetime | None = None,
-        baseline_window: dict | None = None,
+        *,
+        baseline_window: dict,
     ) -> dict:
-        return _wait_and_observe_impl(self, duration, baseline_end_time, baseline_window)
+        return _wait_and_observe_impl(self, duration, baseline_window=baseline_window)
+
+    def _capture_baseline_window(self) -> dict:
+        return _capture_baseline_window_impl(self, self.minimum_baseline_seconds)
 
     def _capture_observation_window(self, duration: int, name: str) -> dict:
         return _capture_observation_window_impl(self, duration, name=name)
@@ -120,36 +143,18 @@ class ScenarioExecutor:
         return all(isinstance(item, dict) and item.get("recovered") is True for item in results)
 
     def _cleanup_after_scenario(self, scenario: ScenarioSpec, episode_result: dict | None) -> dict:
-        """Stop traffic and retry fault recovery only when the normal cleanup failed."""
+        """Stop traffic and recover the fault, retrying within the scale health deadline."""
         started = monotonic()
         profile = self.scale_registry.get(scenario.topology_scale)
         timeout_seconds = float(profile.health_timeout_seconds)
         deadline = started + timeout_seconds
-        attempts = 1
+        attempts = 0
         errors: list[str] = []
-
         traffic_stopped = False
-        try:
-            self._stop_traffic()
-            traffic_stopped = True
-        except Exception as exc:  # noqa: BLE001 - cleanup must continue to fault recovery
-            errors.append(f"traffic_stop: {type(exc).__name__}: {exc}")
-
         prior_recovery = episode_result.get("recovery") if isinstance(episode_result, dict) else None
-        active_faults = list(getattr(self.injector, "active_faults", []) or [])
-        recovery_complete = not active_faults and (
-            prior_recovery is None or self._recovery_results_succeeded(prior_recovery)
-        )
-        if traffic_stopped and recovery_complete:
-            return {
-                "success": True,
-                "status": "clean",
-                "attempts": attempts,
-                "duration_seconds": max(0.0, monotonic() - started),
-                "errors": [],
-            }
+        recovery_results = prior_recovery
 
-        while monotonic() < deadline:
+        while attempts == 0 or monotonic() < deadline:
             attempts += 1
             if not traffic_stopped:
                 try:
@@ -158,26 +163,37 @@ class ScenarioExecutor:
                 except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
                     errors.append(f"traffic_stop: {type(exc).__name__}: {exc}")
 
-            try:
-                recovery_results = self._recover_fault()
-                active_faults = list(getattr(self.injector, "active_faults", []) or [])
-                recovery_complete = self._recovery_results_succeeded(recovery_results) and not active_faults
-                if not recovery_complete:
-                    errors.append(
-                        f"fault_recovery: remaining_faults={len(active_faults)} results={recovery_results!r}"
+            active_faults = list(getattr(self.injector, "active_faults", []) or [])
+            recovery_complete = not active_faults and (
+                recovery_results is None or self._recovery_results_succeeded(recovery_results)
+            )
+            if not recovery_complete:
+                try:
+                    recovery_results = self._recover_fault()
+                    active_faults = list(getattr(self.injector, "active_faults", []) or [])
+                    recovery_complete = (
+                        self._recovery_results_succeeded(recovery_results) and not active_faults
                     )
-            except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
-                recovery_complete = False
-                errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
+                    if not recovery_complete:
+                        errors.append(
+                            "fault_recovery: "
+                            f"remaining_faults={len(active_faults)} results={recovery_results!r}"
+                        )
+                except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
+                    recovery_complete = False
+                    errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
 
             if traffic_stopped and recovery_complete:
-                return {
+                result = {
                     "success": True,
-                    "status": "recovered_after_retry",
+                    "status": "clean" if attempts == 1 else "recovered_after_retry",
                     "attempts": attempts,
                     "duration_seconds": max(0.0, monotonic() - started),
                     "errors": list(dict.fromkeys(errors)),
                 }
+                if recovery_results is not None:
+                    result["recovery"] = recovery_results
+                return result
 
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -198,26 +214,21 @@ class ScenarioExecutor:
         self,
         windows: list[dict],
         total_duration_seconds: int,
-        baseline_end_time: datetime | None = None,
-        baseline_window: dict | None = None,
+        *,
+        baseline_window: dict,
     ) -> dict:
         return _analyze_observation_windows_impl(
             self,
             windows,
             total_duration_seconds,
-            baseline_end_time=baseline_end_time,
             baseline_window=baseline_window,
         )
 
-    def run_episode(self, episode: EpisodeSpec, diagnosis_callback=None) -> dict:
-        """Run a single episode."""
-        return run_episode(
-            self,
-            episode,
-            diagnosis_callback=diagnosis_callback,
-        )
-
-    def run_scenario(self, scenario: ScenarioSpec, diagnosis_callback=None) -> dict:
+    def run_scenario(
+        self,
+        scenario: ScenarioSpec,
+        diagnosis_callback: DiagnosisCallback | None = None,
+    ) -> dict:
         """
         Run one canonical diagnostic scenario.
 
@@ -261,8 +272,7 @@ class ScenarioExecutor:
                 SimulatorConfig,
             )
 
-            evaluator = getattr(self, "evaluator", None) or Evaluator()
-            incident = IncidentEngine(lambda: backend, evaluator=evaluator).prepare(scenario)
+            incident = IncidentEngine(lambda: backend, evaluator=self.evaluator).prepare(scenario)
             scenario_result["traffic_config"] = backend.traffic_config
             scenario_result["episode"] = backend.episode_result
             if incident.state is IncidentState.BROKEN:
@@ -276,23 +286,21 @@ class ScenarioExecutor:
                         max_tool_calls=1_000,
                         max_agent_seconds=86_400,
                         max_tool_result_bytes=64 * 1024 * 1024,
+                        orphan_lease_ttl_seconds=86_700,
                     )
                 )
                 if diagnosis_callback is not None:
                     try:
-                        if getattr(diagnosis_callback, "supports_diagnostic_session", False):
-                            diagnosis = diagnosis_callback(
-                                episode_result,
-                                diagnostic_session=session,
-                                diagnostic_payload={
-                                    "case_id": incident.case_id,
-                                    "topology": backend.topology,
-                                    "symptoms": backend.symptoms,
-                                    "canonical_observation": incident.observation,
-                                },
-                            )
-                        else:
-                            diagnosis = diagnosis_callback(episode_result)
+                        diagnosis = diagnosis_callback(
+                            episode_result,
+                            diagnostic_session=session,
+                            diagnostic_payload={
+                                "case_id": incident.case_id,
+                                "topology": backend.topology,
+                                "symptoms": backend.symptoms,
+                                "canonical_observation": incident.observation,
+                            },
+                        )
                     except Exception as exc:  # noqa: BLE001 - agent errors are scored outcomes
                         diagnosis = {
                             "error": str(exc),
@@ -315,8 +323,8 @@ class ScenarioExecutor:
                             input_tokens=int(metadata.get("input_tokens", 0) or 0),
                             output_tokens=int(metadata.get("output_tokens", 0) or 0),
                         )
-                        transition = session.submit(
-                            DiagnosisSubmission.model_validate(
+                        try:
+                            submission = DiagnosisSubmission.model_validate(
                                 {
                                     "verdict": diagnosis.get("verdict", "inconclusive"),
                                     "fault_type": diagnosis.get("fault_type"),
@@ -325,32 +333,41 @@ class ScenarioExecutor:
                                     "confidence": diagnosis.get("confidence", 0.0),
                                     "reasoning": diagnosis.get("reasoning", ""),
                                 }
-                            ),
-                            usage=usage,
-                        )
+                            )
+                        except ValidationError as exc:
+                            transition = session.terminate_failure(
+                                domain=FailureDomain.PROTOCOL,
+                                message=str(exc),
+                                reason=TerminationReason.PROTOCOL_ERROR,
+                            )
+                        else:
+                            transition = session.submit(submission, usage=usage)
                     episode_result["execution"] = transition.model_dump(mode="json")
                     if session.evaluation_result is not None:
                         episode_result["evaluation_result"] = session.evaluation_result
                 episode_result["success"] = True
                 episode_result["state"] = "terminal"
                 scenario_result["success"] = True
-            if incident is not None:
-                scenario_result["incident_cleanup_status"] = incident.close().value
-
         except Exception as e:  # noqa: BLE001 - scenario result records infrastructure failures
             logger.info(f"\n✗ Scenario failed: {e}")
             scenario_result["error"] = str(e)
-            if incident is not None:
-                scenario_result["incident_cleanup_status"] = incident.close().value
 
         finally:
-            cleanup = self._cleanup_after_scenario(
-                scenario,
-                scenario_result.get("episode") if isinstance(scenario_result.get("episode"), dict) else None,
-            )
-            scenario_result["cleanup"] = cleanup
-            if not cleanup["success"]:
-                scenario_result["cleanup_failed"] = True
+            if incident is not None:
+                scenario_result["incident_cleanup_status"] = incident.close().value
+            cleanup = backend.cleanup_result
+            if cleanup is not None:
+                scenario_result["cleanup"] = cleanup
+                if not cleanup["success"]:
+                    scenario_result["cleanup_failed"] = True
+            elif incident is not None:
+                cleanup_success = incident.cleanup_status.value == "succeeded"
+                scenario_result["cleanup"] = {
+                    "success": cleanup_success,
+                    "status": incident.cleanup_status.value,
+                }
+                if not cleanup_success:
+                    scenario_result["cleanup_failed"] = True
 
             scenario_result["end_time"] = datetime.now(UTC).isoformat()
 

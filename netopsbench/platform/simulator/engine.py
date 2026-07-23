@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -93,21 +94,35 @@ class IncidentBackend(Protocol):
 
     def call_tool(self, action: ToolAction) -> dict[str, Any]: ...
 
-    def finish(self, *, broken: bool = False) -> None: ...
+    def refresh(self, *, min_seconds: float = 0.0) -> None: ...
 
-    def close(self) -> None: ...
+    def finish(self, *, broken: bool = False) -> None: ...
 
 
 class IncidentEngine:
     """Prepare physical incidents through one authoritative state machine."""
 
-    def __init__(self, backend_factory: Any, evaluator: Evaluator | None = None):
+    def __init__(
+        self,
+        backend_factory: Any,
+        evaluator: Evaluator | None = None,
+        default_session_config: SimulatorConfig | None = None,
+        on_close: Callable[[PreparedIncident], None] | None = None,
+    ):
         self._backend_factory = backend_factory
         self._evaluator = evaluator or Evaluator()
+        self._default_session_config = default_session_config
+        self._on_close = on_close
 
     def prepare(self, scenario: ScenarioSpec) -> PreparedIncident:
         backend = self._backend_factory()
-        incident = PreparedIncident(scenario=scenario, backend=backend, evaluator=self._evaluator)
+        incident = PreparedIncident(
+            scenario=scenario,
+            backend=backend,
+            evaluator=self._evaluator,
+            default_session_config=self._default_session_config,
+            on_close=self._on_close,
+        )
         incident.prepare()
         return incident
 
@@ -115,7 +130,15 @@ class IncidentEngine:
 class PreparedIncident:
     """A physical incident that can host one or more diagnostic sessions."""
 
-    def __init__(self, *, scenario: ScenarioSpec, backend: IncidentBackend, evaluator: Evaluator):
+    def __init__(
+        self,
+        *,
+        scenario: ScenarioSpec,
+        backend: IncidentBackend,
+        evaluator: Evaluator,
+        default_session_config: SimulatorConfig | None = None,
+        on_close: Callable[[PreparedIncident], None] | None = None,
+    ):
         self.scenario = scenario
         self.backend = backend
         self.evaluator = evaluator
@@ -124,7 +147,9 @@ class PreparedIncident:
         self.tool_schemas = tool_schemas()
         self.failure: ExecutionFailure | None = None
         self.cleanup_status = CleanupStatus.NOT_STARTED
-        self._sessions: list[DiagnosticSession] = []
+        self._default_session_config = default_session_config
+        self._on_close = on_close
+        self._close_notified = False
         self._tool_lock = threading.Lock()
         self._close_lock = threading.Lock()
 
@@ -151,20 +176,30 @@ class PreparedIncident:
             return
         self.state = IncidentState.ACTIVE
 
-    def open_session(self, config: SimulatorConfig) -> DiagnosticSession:
+    def open_session(self, config: SimulatorConfig | None = None) -> DiagnosticSession:
         if self.state is not IncidentState.ACTIVE:
             raise RuntimeError(f"Incident is not active: {self.state}")
-        session = DiagnosticSession(self, config)
-        self._sessions.append(session)
-        return session
+        resolved_config = config or self._default_session_config
+        if resolved_config is None:
+            raise ValueError("A SimulatorConfig is required when the incident has no default session config")
+        self._refresh_lease(min_seconds=resolved_config.max_agent_seconds)
+        return DiagnosticSession(self, resolved_config)
 
     def call_tool(self, action: ToolAction) -> dict[str, Any]:
         if self.state is not IncidentState.ACTIVE:
             raise RuntimeError(f"Incident is not active: {self.state}")
+        if not validate_tool_call(action.name, action.arguments):
+            raise ValueError(f"Invalid tool action: {action.name}")
+        self._refresh_lease()
         with self._tool_lock:
-            return self.backend.call_tool(action)
+            result = self.backend.call_tool(action)
+        self._refresh_lease()
+        return result
 
     def evaluate(self, diagnosis: DiagnosisSubmission) -> tuple[float, dict[str, Any], dict[str, Any]]:
+        if self.state is not IncidentState.ACTIVE:
+            raise RuntimeError(f"Incident is not active: {self.state}")
+        self._refresh_lease()
         episode = self.scenario.episode
         ground_truth = (
             {}
@@ -194,6 +229,9 @@ class PreparedIncident:
             "fault_type_kpi": 1.0 if evaluation.correct_fault_type else 0.0,
         }, evaluation.to_dict()
 
+    def _refresh_lease(self, *, min_seconds: float = 0.0) -> None:
+        self.backend.refresh(min_seconds=min_seconds)
+
     def close(self) -> CleanupStatus:
         with self._close_lock:
             if self.state is IncidentState.CLOSED:
@@ -220,9 +258,16 @@ class PreparedIncident:
             if self.failure is None or self.failure.domain is FailureDomain.CLEANUP:
                 self.failure = cleanup_failure
             self.state = IncidentState.BROKEN
+            self._notify_close()
             return
         self.cleanup_status = CleanupStatus.SUCCEEDED
         self.state = IncidentState.BROKEN if broken else IncidentState.CLOSED
+        self._notify_close()
+
+    def _notify_close(self) -> None:
+        if not self._close_notified and self._on_close is not None:
+            self._close_notified = True
+            self._on_close(self)
 
 
 class DiagnosticSession:
@@ -366,6 +411,8 @@ class DiagnosticSession:
     def _require_active(self) -> None:
         if self.state is not SessionState.ACTIVE:
             raise RuntimeError(f"Diagnostic session is not active: {self.state}")
+        if self.incident.state is not IncidentState.ACTIVE:
+            raise RuntimeError(f"Incident is not active: {self.incident.state}")
 
 
 class SessionToolGateway:

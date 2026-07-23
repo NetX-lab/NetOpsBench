@@ -89,20 +89,21 @@ def _build_scenario_executor(
     worker_raw_dir: Path,
     *,
     fault_registry: Any,
-    baseline_wait_seconds: int,
+    minimum_baseline_seconds: int,
     post_recovery_wait_seconds: int,
     scale_registry: ScaleRegistry,
 ) -> ScenarioExecutor:
     runner = ScenarioExecutor(
         topology_dir=str(worker_context.topology_dir),
         topology_metadata=load_topology_metadata(worker_context.topology_dir),
-        baseline_wait_seconds=baseline_wait_seconds,
+        minimum_baseline_seconds=minimum_baseline_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
         persist_results=False,
         fault_registry=fault_registry,
         scale_registry=scale_registry,
+        evaluator=_create_evaluator(),
     )
     runner.results_dir = worker_raw_dir
     return runner
@@ -120,7 +121,7 @@ def _run_worker(
     raw_dir: Path,
     trace_writer: TraceWriter | None,
     fault_registry: Any,
-    baseline_wait_seconds: int,
+    minimum_baseline_seconds: int,
     post_recovery_wait_seconds: int,
     scale_registry: ScaleRegistry,
     worker: RuntimeIdentity,
@@ -133,12 +134,11 @@ def _run_worker(
         worker_context,
         worker_raw_dir,
         fault_registry=fault_registry,
-        baseline_wait_seconds=baseline_wait_seconds,
+        minimum_baseline_seconds=minimum_baseline_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
         scale_registry=scale_registry,
     )
-    evaluator = _create_evaluator()
-    runner.evaluator = evaluator
+    evaluator = runner.evaluator
 
     evaluations: list[Any] = []
     scenario_summaries: list[dict[str, Any]] = []
@@ -246,7 +246,7 @@ def execute_on_runtime_pool(
     raw_dir: Path,
     trace_writer: TraceWriter | None = None,
     fault_registry: Any = None,
-    baseline_wait_seconds: int = 60,
+    minimum_baseline_seconds: int = 60,
     post_recovery_wait_seconds: int = 2,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
@@ -262,7 +262,7 @@ def execute_on_runtime_pool(
             raw_dir=raw_dir,
             trace_writer=trace_writer,
             fault_registry=fault_registry,
-            baseline_wait_seconds=baseline_wait_seconds,
+            minimum_baseline_seconds=minimum_baseline_seconds,
             post_recovery_wait_seconds=post_recovery_wait_seconds,
             scale_registry=runtime.scale_registry,
             worker=worker,

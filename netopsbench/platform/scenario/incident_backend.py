@@ -14,7 +14,6 @@ from netopsbench.platform.session.context import (
     build_topology_snapshot,
 )
 from netopsbench.platform.simulator.contracts import ToolAction
-from netopsbench.platform.toolkit.mcp.registry import load_tool_specs
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 
@@ -26,14 +25,12 @@ class ExecutorIncidentBackend:
         executor: Any,
         *,
         setup_traffic: bool = True,
-        wait_for_baseline: bool = True,
         baseline_window: dict[str, Any] | None = None,
         influxdb_bucket: str | None = None,
         topology_id: str | None = None,
     ):
         self.executor = executor
         self.setup_traffic = setup_traffic
-        self.wait_for_baseline = wait_for_baseline
         self.baseline_window = baseline_window
         self.influxdb_bucket = influxdb_bucket
         self.topology_id = topology_id
@@ -45,15 +42,17 @@ class ExecutorIncidentBackend:
         self.topology: dict[str, Any] = {}
         self.symptoms: dict[str, Any] = {}
         self.pingmesh_query_window: dict[str, Any] = {}
-        self._tool_names = {spec.name for spec in load_tool_specs()}
+        self.cleanup_result: dict[str, Any] | None = None
         self._finished = False
 
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
         self.scenario = scenario
         if self.setup_traffic:
             self.traffic_config = self.executor._setup_traffic(scenario.scale, scenario.traffic_profile)
-        if self.wait_for_baseline:
-            self.executor.sleep(self.executor.baseline_wait_seconds)
+            if self.baseline_window is None:
+                self.baseline_window = self.executor._capture_baseline_window()
+        if self.baseline_window is None:
+            raise RuntimeError("Incident preparation requires an explicit Pingmesh baseline window")
         self.episode_result = observe_episode(
             self.executor,
             scenario.episode,
@@ -85,18 +84,28 @@ class ExecutorIncidentBackend:
         )
 
     def call_tool(self, action: ToolAction) -> dict[str, Any]:
-        if self.toolkit is None or action.name not in self._tool_names:
-            raise ValueError(f"Unknown toolkit action: {action.name}")
+        if self.toolkit is None:
+            raise RuntimeError("Incident backend is not prepared")
         method = getattr(self.toolkit, action.name, None)
         if not callable(method):
             raise ValueError(f"Toolkit action is not implemented: {action.name}")
         result = method(**action.arguments)
         return result.to_dict() if hasattr(result, "to_dict") else {"success": True, "data": result}
 
+    def refresh(self, *, min_seconds: float = 0.0) -> None:
+        del min_seconds
+
     def finish(self, *, broken: bool = False) -> None:
         if self._finished:
             return
         self._finished = True
+        if self.setup_traffic and self.scenario is not None:
+            self.cleanup_result = self.executor._cleanup_after_scenario(self.scenario, self.episode_result)
+            if self.episode_result is not None and "recovery" in self.cleanup_result:
+                self.episode_result["recovery"] = self.cleanup_result["recovery"]
+            if not self.cleanup_result.get("success", False):
+                raise RuntimeError(f"Scenario cleanup failed: {self.cleanup_result}")
+            return
         if self.scenario is not None and not self.scenario.episode.is_healthy:
             recovery = self.executor._recover_fault()
             if self.episode_result is not None:
@@ -105,9 +114,5 @@ class ExecutorIncidentBackend:
                 raise RuntimeError(f"Fault recovery failed: {recovery}")
             if recovery:
                 self.executor.sleep(self.executor.post_recovery_wait_seconds)
-
-    def close(self) -> None:
-        self.finish()
-
 
 __all__ = ["ExecutorIncidentBackend"]

@@ -35,7 +35,7 @@ class WarmRuntime:
     runtime: RuntimePool
     runner: ScenarioExecutor
     in_use: bool = False
-    acquired_at: float = 0.0
+    lease_deadline: float = 0.0
     baseline_signature: str | None = None
     baseline: dict[str, Any] | None = None
     quarantined: bool = False
@@ -77,7 +77,7 @@ class RuntimeLeasePool:
                     records.append(available)
                 if available is not None:
                     available.in_use = True
-                    available.acquired_at = time.monotonic()
+                    available.lease_deadline = time.monotonic() + self.config.orphan_lease_ttl_seconds
                     return available
 
                 remaining = deadline - time.monotonic()
@@ -86,13 +86,19 @@ class RuntimeLeasePool:
                         f"Timed out waiting for runtime lease for scale {scale}; "
                         f"global capacity is {self.config.max_active_runtimes}"
                     )
-                self._condition.wait(timeout=remaining)
+                self._condition.wait(timeout=self._next_wait_timeout(remaining))
 
     def release(self, record: WarmRuntime) -> None:
         with self._condition:
             record.in_use = False
-            record.acquired_at = 0.0
+            record.lease_deadline = 0.0
             self._condition.notify_all()
+
+    def refresh(self, record: WarmRuntime, *, min_seconds: float = 0.0) -> None:
+        with self._condition:
+            if record.in_use and not record.quarantined:
+                ttl = max(float(self.config.orphan_lease_ttl_seconds), float(min_seconds) + 300.0)
+                record.lease_deadline = time.monotonic() + ttl
 
     def quarantine(self, record: WarmRuntime) -> None:
         with self._condition:
@@ -129,18 +135,29 @@ class RuntimeLeasePool:
 
     def reap_orphans(self) -> None:
         now = time.monotonic()
-        ttl = self.config.orphan_lease_ttl_seconds
         stale = [
             record
             for records in self._runtimes.values()
             for record in records
-            if record.in_use and record.acquired_at and now - record.acquired_at > ttl
+            if record.in_use and record.lease_deadline and now > record.lease_deadline
         ]
         for record in stale:
             self.quarantine(record)
 
     def _runtime_count(self) -> int:
         return sum(len(records) for records in self._runtimes.values())
+
+    def _next_wait_timeout(self, remaining: float) -> float:
+        now = time.monotonic()
+        active_deadlines = [
+            record.lease_deadline
+            for records in self._runtimes.values()
+            for record in records
+            if record.in_use and record.lease_deadline > now
+        ]
+        if not active_deadlines:
+            return remaining
+        return min(remaining, max(0.01, min(active_deadlines) - now))
 
     def _make_capacity_for(self, scale: str) -> None:
         if self._runtime_count() < self.config.max_active_runtimes:
@@ -183,14 +200,11 @@ class RuntimeEpisodeBackend:
         self.leases = leases
         self.registry = registry
         self.record: WarmRuntime | None = None
-        self.scenario: ScenarioSpec | None = None
-        self.episode_result: dict[str, Any] | None = None
         self.delegate: ExecutorIncidentBackend | None = None
         self.topology_dir: str | None = None
 
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
         self.record = self.leases.acquire(scenario.scale)
-        self.scenario = scenario
         runner = self.record.runner
         worker = self.record.runtime.workers[0]
         self.topology_dir = str(worker.topology_dir)
@@ -203,21 +217,25 @@ class RuntimeEpisodeBackend:
             errors = self._health_errors(self.record, refresh=True)
             if errors:
                 raise RuntimeError("Runtime health check failed: " + "; ".join(errors))
-            if runner.traffic_controller is None or not runner.traffic_controller.active_flows:
+            traffic_is_complete = (
+                runner.traffic_controller is not None
+                and bool(runner.traffic_controller.active_flows)
+                and runner.traffic_controller.verify_active_flows()
+            )
+            if not traffic_is_complete:
                 runner._stop_traffic()
                 runner._setup_traffic(scenario.scale, "standard")
                 self.record.baseline_signature = None
+                self.record.baseline = None
             self._ensure_baseline(scenario)
             self.delegate = ExecutorIncidentBackend(
                 runner,
                 setup_traffic=False,
-                wait_for_baseline=False,
                 baseline_window=self.record.baseline,
                 influxdb_bucket=worker.bucket,
                 topology_id=worker.topology_id,
             )
             observation = self.delegate.prepare(scenario)
-            self.episode_result = self.delegate.episode_result
             return observation
         except _BaselineNotReadyError:
             # A newly started Pingmesh/traffic window can contain transient
@@ -234,6 +252,10 @@ class RuntimeEpisodeBackend:
         if self.delegate is None:
             raise RuntimeError("Incident backend is not prepared")
         return self.delegate.call_tool(action)
+
+    def refresh(self, *, min_seconds: float = 0.0) -> None:
+        if self.record is not None:
+            self.leases.refresh(self.record, min_seconds=min_seconds)
 
     def finish(self, *, broken: bool = False) -> None:
         record = self.record
@@ -256,8 +278,6 @@ class RuntimeEpisodeBackend:
             broken = True
             failure = f"{type(exc).__name__}: {exc}"
         finally:
-            self.scenario = None
-            self.episode_result = None
             self.delegate = None
             self.record = None
         if broken:
@@ -266,9 +286,6 @@ class RuntimeEpisodeBackend:
             self.leases.release(record)
         if broken and not requested_broken:
             raise RuntimeError(failure or "Runtime cleanup failed")
-
-    def close(self) -> None:
-        self.finish()
 
     def _ensure_baseline(self, scenario: ScenarioSpec) -> None:
         if self.record is None:
@@ -279,25 +296,51 @@ class RuntimeEpisodeBackend:
         signature = f"{profile.digest}:{manifest.model_dump_json()}:{id(runner.traffic_controller)}"
         if self.record.baseline_signature == signature and self.record.baseline is not None:
             return
-        duration = max(60, manifest.pingmesh.coverage_epoch_seconds(manifest.facts.total_clients))
-        baseline = runner._wait_and_observe(duration)
-        if baseline.get("data_source_status") != "ok" or baseline.get("coverage_status") != "complete":
-            raise _BaselineNotReadyError(
-                "Healthy baseline is unavailable: "
-                f"data={baseline.get('data_source_status')} coverage={baseline.get('coverage_status')}"
-            )
-        hard_types = {"packet_loss", "path_unreachable", "mtu_or_fragmentation_suspect"}
-        hard_anomalies = [
-            anomaly
-            for anomaly in (baseline.get("pingmesh_metrics", {}).get("anomalies") or [])
-            if anomaly.get("type") in hard_types or anomaly.get("severity") in {"medium", "high"}
-        ]
-        if hard_anomalies:
-            raise _BaselineNotReadyError(
-                f"Healthy baseline contains {len(hard_anomalies)} hard Pingmesh anomalies"
-            )
+        reference = runner._capture_baseline_window()
+        validation = runner._wait_and_observe(
+            int(reference["duration_seconds"]),
+            baseline_window=reference,
+        )
+        gate_errors = self._baseline_gate_errors(validation)
+        if gate_errors:
+            raise _BaselineNotReadyError("Healthy baseline is unavailable: " + "; ".join(gate_errors))
         self.record.baseline_signature = signature
-        self.record.baseline = baseline
+        self.record.baseline = {
+            "name": "baseline",
+            "start_time": validation["start_time"],
+            "end_time": validation["end_time"],
+            "duration_seconds": validation["duration_seconds"],
+        }
+
+    @staticmethod
+    def _baseline_gate_errors(observation: dict[str, Any]) -> list[str]:
+        """Validate a healthy window using rates that remain stable across scales."""
+        errors: list[str] = []
+        if observation.get("data_source_status") != "ok":
+            errors.append(f"data={observation.get('data_source_status')}")
+        if observation.get("coverage_status") != "complete":
+            errors.append(f"coverage={observation.get('coverage_status')}")
+
+        report = observation.get("pingmesh_metrics") or {}
+        summary = report.get("summary") or {}
+        quality = report.get("quality") or {}
+        current_paths = int(quality.get("current_paths_observed", 0) or 0)
+        if current_paths <= 0:
+            errors.append("current_paths_observed=0")
+            return errors
+
+        unreachable = int(summary.get("path_unreachable_events", 0) or 0)
+        packet_loss = int(summary.get("packet_loss_events", 0) or 0)
+        mtu_suspects = int(summary.get("mtu_or_fragmentation_events", 0) or 0)
+        if unreachable:
+            errors.append(f"path_unreachable_events={unreachable}")
+        loss_rate = packet_loss / current_paths
+        if loss_rate > 0.001:
+            errors.append(f"packet_loss_path_rate={loss_rate:.6f}")
+        mtu_rate = mtu_suspects / current_paths
+        if mtu_rate > 0.0002:
+            errors.append(f"mtu_suspect_path_rate={mtu_rate:.6f}")
+        return errors
 
     def _health_errors(self, record: WarmRuntime, *, refresh: bool) -> list[str]:
         worker = record.runtime.workers[0]

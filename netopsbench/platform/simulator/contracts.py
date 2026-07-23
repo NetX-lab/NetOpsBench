@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SimulatorConfig(BaseModel):
@@ -14,7 +14,16 @@ class SimulatorConfig(BaseModel):
     max_tool_calls: int = Field(default=20, ge=1)
     max_agent_seconds: int = Field(default=300, ge=1)
     max_tool_result_bytes: int = Field(default=8_192, ge=1_024)
-    orphan_lease_ttl_seconds: int = Field(default=600, ge=1)
+    orphan_lease_ttl_seconds: int = Field(default=3_600, ge=1)
+
+    @model_validator(mode="after")
+    def validate_lease_deadline(self) -> SimulatorConfig:
+        minimum = self.max_agent_seconds + 300
+        if self.orphan_lease_ttl_seconds < minimum:
+            raise ValueError(
+                "orphan_lease_ttl_seconds must cover max_agent_seconds plus 300 seconds of cleanup grace"
+            )
+        return self
 
 
 class ToolAction(BaseModel):

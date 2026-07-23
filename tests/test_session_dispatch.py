@@ -17,6 +17,7 @@ class _FakeRunner:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.results_dir = Path(".")
+        self.evaluator = kwargs["evaluator"]
 
     def run_scenario(self, scenario, diagnosis_callback=None):
         return {

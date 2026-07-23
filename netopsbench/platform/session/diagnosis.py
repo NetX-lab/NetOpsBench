@@ -15,12 +15,7 @@ from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.session.context import (
-    _build_toolkit_for_topology,
     _extract_episode_pingmesh_query_window,
-    build_canonical_observation,
-    build_public_case_id,
-    build_public_symptoms,
-    build_topology_snapshot,
 )
 from netopsbench.platform.session.trace_store import TraceWriter
 from netopsbench.platform.session.types import WorkerExecutionContext
@@ -58,10 +53,6 @@ def build_runtime_diagnosis_callback(
     scenario_scale: str | None = None,
 ):
     """Build the episode callback that presents observations to one agent."""
-    toolkit = _build_toolkit_for_topology(topology_dir)
-    if worker_context is not None:
-        toolkit.influxdb_bucket = worker_context.influxdb_bucket
-        toolkit.topology_id = worker_context.topology_id
     handle = agent if isinstance(agent, AgentHandle) else AgentHandle(agent)
     context_dir = Path(topology_dir) / ".netopsbench"
     context_file = context_dir / "pingmesh_context.json"
@@ -71,15 +62,14 @@ def build_runtime_diagnosis_callback(
     def callback(
         episode_result: dict,
         *,
-        diagnostic_session: DiagnosticSession | None = None,
-        diagnostic_payload: dict[str, Any] | None = None,
+        diagnostic_session: DiagnosticSession,
+        diagnostic_payload: dict[str, Any],
     ) -> dict:
         start_time = datetime.now(UTC)
         trace_recorder = AgentTraceRecorder(enabled=trace_writer is not None)
         pingmesh_query_window = _extract_episode_pingmesh_query_window(episode_result)
         window_start = pingmesh_query_window.get("start_time")
         window_end = pingmesh_query_window.get("end_time")
-        toolkit.set_pingmesh_time_window(window_start, window_end)
         if window_start and window_end:
             try:
                 context_dir.mkdir(parents=True, exist_ok=True)
@@ -90,22 +80,10 @@ def build_runtime_diagnosis_callback(
             except OSError:
                 logger.debug("failed to write pingmesh context file", exc_info=True)
 
-        payload = diagnostic_payload or {}
-        case_id = str(
-            payload.get("case_id")
-            or build_public_case_id(scenario_id=scenario_id, episode_result=episode_result)
-        )
-        topology = payload.get("topology") or build_topology_snapshot(toolkit)
-        symptoms = payload.get("symptoms") or build_public_symptoms(
-            episode_result=episode_result,
-            pingmesh_query_window=pingmesh_query_window,
-        )
-        canonical_observation = payload.get("canonical_observation") or build_canonical_observation(
-            case_id=case_id,
-            topology=topology,
-            symptoms=symptoms,
-        )
-        context_tools = SessionToolGateway(diagnostic_session) if diagnostic_session is not None else toolkit
+        case_id = str(diagnostic_payload["case_id"])
+        topology = diagnostic_payload["topology"]
+        symptoms = diagnostic_payload["symptoms"]
+        canonical_observation = diagnostic_payload["canonical_observation"]
         metadata: dict[str, Any] = {"canonical_observation": canonical_observation}
         if worker_env:
             metadata["worker_env"] = worker_env
@@ -113,7 +91,7 @@ def build_runtime_diagnosis_callback(
             scenario_id=case_id,
             topology=topology,
             symptoms=symptoms,
-            tools=context_tools,
+            tools=SessionToolGateway(diagnostic_session),
             trace=trace_recorder,
             metadata=metadata,
         )
@@ -223,7 +201,6 @@ def build_runtime_diagnosis_callback(
         diagnosis_payload["metadata"] = _strip_runtime_trace_metadata(diagnosis_payload["metadata"])
         return diagnosis_payload
 
-    callback.supports_diagnostic_session = True
     return callback
 
 

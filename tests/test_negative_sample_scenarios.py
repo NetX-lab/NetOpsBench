@@ -56,7 +56,7 @@ def test_healthy_scenario_observes_and_diagnoses(monkeypatch):
 
     result = runner.run_scenario(
         _healthy_scenario(),
-        diagnosis_callback=lambda payload: calls.append(payload) or {"verdict": "network_healthy"},
+        diagnosis_callback=lambda payload, **_kwargs: calls.append(payload) or {"verdict": "network_healthy"},
     )
 
     assert result["success"] is True
@@ -87,7 +87,7 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
         },
     )
 
-    def fail(_payload):
+    def fail(_payload, **_kwargs):
         raise RuntimeError("agent crashed")
 
     result = runner.run_scenario(_healthy_scenario(), diagnosis_callback=fail)
@@ -96,6 +96,40 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
     assert result["episode"]["diagnosis"]["error"] == "agent crashed"
     assert result["episode"]["execution"]["reward"] == 0.0
     assert result["episode"]["execution"]["failure"]["domain"] == "agent"
+
+
+def test_invalid_diagnosis_schema_is_protocol_outcome_zero(monkeypatch):
+    runner = ScenarioExecutor(
+        topology_metadata=_metadata(),
+        sleep_fn=lambda _seconds: None,
+        persist_results=False,
+    )
+    monkeypatch.setattr(runner, "_setup_traffic", lambda scale, profile: {"ok": True})
+    monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
+    monkeypatch.setattr(runner, "_recover_fault", lambda: [])
+    monkeypatch.setattr(
+        runner,
+        "_wait_and_observe",
+        lambda duration, **_kwargs: {
+            "duration_seconds": duration,
+            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
+            "data_source_status": "ok",
+        },
+    )
+
+    result = runner.run_scenario(
+        _healthy_scenario(),
+        diagnosis_callback=lambda _payload, **_kwargs: {
+            "verdict": "not-a-verdict",
+            "confidence": 2.0,
+        },
+    )
+
+    execution = result["episode"]["execution"]
+    assert result["success"] is True
+    assert execution["reward"] == 0.0
+    assert execution["failure"]["domain"] == "protocol"
+    assert execution["termination_reason"] == "protocol_error"
 
 
 def test_healthy_scenario_scores_network_healthy_as_correct():

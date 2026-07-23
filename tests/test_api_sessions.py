@@ -60,20 +60,15 @@ class _FakeEvaluator:
 
 
 def _install_real_runtime_mocks(monkeypatch):
-    import netopsbench.platform.session.diagnosis as diagnosis_mod
     import netopsbench.platform.session.dispatch as dispatch_mod
     import netopsbench.platform.session.orchestrator as sessions_mod
-
-    class FakeToolkit:
-        def set_pingmesh_time_window(self, start_time, end_time):
-            self.pingmesh_window = (start_time, end_time)
 
     class FakeScenarioExecutor:
         def __init__(
             self,
             topology_dir,
             topology_metadata=None,
-            baseline_wait_seconds=5,
+            minimum_baseline_seconds=5,
             post_recovery_wait_seconds=2,
             influxdb_url=None,
             influxdb_token=None,
@@ -83,10 +78,12 @@ def _install_real_runtime_mocks(monkeypatch):
             persist_results=True,
             fault_registry=None,
             scale_registry=None,
+            evaluator=None,
         ):
             self.topology_dir = topology_dir
             self.topology_metadata = topology_metadata
             self.results_dir = None
+            self.evaluator = evaluator
 
         def run_scenario(self, scenario, diagnosis_callback=None):
             diagnosis = None
@@ -101,7 +98,43 @@ def _install_real_runtime_mocks(monkeypatch):
                             "target_interface": "Ethernet1",
                         },
                         "observations": {"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
-                    }
+                    },
+                    diagnostic_session=SimpleNamespace(),
+                    diagnostic_payload={
+                        "case_id": "case-test",
+                        "topology": {"devices": {}, "links": []},
+                        "symptoms": {
+                            "episode": {
+                                "episode_id": "ep1",
+                            },
+                            "observations": {
+                                "start_time": "2026-01-01T00:00:00Z",
+                                "end_time": "2026-01-01T00:01:00Z",
+                            },
+                            "pingmesh_query_window": {},
+                        },
+                        "canonical_observation": {
+                            "case_id": "case-test",
+                            "topology_summary": {
+                                "family": "unknown",
+                                "spines": 0,
+                                "leafs": 0,
+                                "cores": 0,
+                                "aggs": 0,
+                                "edges": 0,
+                                "clients": 0,
+                                "links": 0,
+                            },
+                            "symptoms": {
+                                "episode": {"episode_id": "ep1"},
+                                "observations": {
+                                    "start_time": "2026-01-01T00:00:00Z",
+                                    "end_time": "2026-01-01T00:01:00Z",
+                                },
+                                "pingmesh_query_window": {},
+                            },
+                        },
+                    },
                 )
             return {
                 "success": True,
@@ -126,12 +159,6 @@ def _install_real_runtime_mocks(monkeypatch):
         lambda *args, **kwargs: [_FakeEvalResult(1.0)],
     )
     monkeypatch.setattr(sessions_mod, "Evaluator", _FakeEvaluator)
-    monkeypatch.setattr(diagnosis_mod, "_build_toolkit_for_topology", lambda topology_dir: FakeToolkit())
-    monkeypatch.setattr(
-        diagnosis_mod,
-        "build_topology_snapshot",
-        lambda toolkit: {"devices": {"spines": [], "leafs": [], "clients": []}, "links": []},
-    )
 
 
 def _install_platform_runtime_mocks(monkeypatch):
@@ -343,9 +370,12 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert set(canonical["symptoms"]["observations"]) <= set(agent.context.symptoms["observations"])
     assert canonical["topology_summary"] == {
         "family": "unknown",
-        "spines": 0,
-        "leafs": 0,
-        "clients": 0,
+            "spines": 0,
+            "leafs": 0,
+            "cores": 0,
+            "aggs": 0,
+            "edges": 0,
+            "clients": 0,
         "links": 0,
     }
 

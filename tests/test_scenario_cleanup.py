@@ -48,6 +48,7 @@ def test_clean_scenario_boundary_does_not_retry_or_sleep(monkeypatch):
         "attempts": 1,
         "duration_seconds": 0.0,
         "errors": [],
+        "recovery": [{"type": "link_down", "recovered": True}],
     }
     assert calls == ["stop"]
 
@@ -72,8 +73,9 @@ def test_failed_episode_recovery_is_retried_once_and_can_continue(monkeypatch):
     )
 
     assert cleanup["success"] is True
-    assert cleanup["status"] == "recovered_after_retry"
-    assert cleanup["attempts"] == 2
+    assert cleanup["status"] == "clean"
+    assert cleanup["attempts"] == 1
+    assert cleanup["recovery"] == [{"type": "link_down", "recovered": True}]
     assert calls == ["stop", "recover"]
 
 
@@ -98,7 +100,7 @@ def test_cleanup_retry_stops_at_scale_timeout(monkeypatch):
 
     assert cleanup["success"] is False
     assert cleanup["status"] == "recovery_timeout"
-    assert cleanup["attempts"] == 2
+    assert cleanup["attempts"] == 1
     assert cleanup["duration_seconds"] == 1.0
     assert cleanup["remaining_faults"] == 1
     assert calls == ["stop", "sleep:1.0"]

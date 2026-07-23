@@ -169,3 +169,31 @@ def test_http_service_maps_illegal_diagnosis_to_protocol_outcome_zero():
     assert result.json()["reward"] == 0.0
     assert result.json()["termination_reason"] == "protocol_error"
     assert result.json()["failure"]["domain"] == "protocol"
+
+
+def test_http_service_returns_conflict_after_terminal_action():
+    service = SimulatorService(FakeManager(), [_scenario()])
+    with TestClient(create_app(service)) as client:
+        created = client.post(
+            "/v1/environments",
+            json={"case_id": scenario_case_id(_scenario())},
+        ).json()
+        path = f"/v1/environments/{created['environment_id']}/actions"
+        first = client.post(
+            path,
+            json={
+                "action": {
+                    "type": "submit_diagnosis",
+                    "diagnosis": {"verdict": "network_healthy"},
+                }
+            },
+        )
+        repeated = client.post(
+            path,
+            json={"action": {"type": "tool", "name": "get_topology", "arguments": {}}},
+        )
+        assert service.environments[created["environment_id"]].environment is None
+
+    assert first.status_code == 200
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"] == "Simulator environment is terminal"

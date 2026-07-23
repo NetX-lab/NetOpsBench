@@ -32,15 +32,15 @@ def main() -> int:
     if not scenario_paths:
         parser.error("Provide at least one --scenario or --scenario-dir")
 
-    bench = NetOpsBench(workspace=args.workspace, scale_profiles=args.scale_profile)
-    scenarios = [bench.scenarios.load(path) for path in scenario_paths]
-    service = SimulatorService(
-        bench.simulators,
-        scenarios,
-        SimulatorConfig(max_active_runtimes=args.max_active_runtimes),
-        event_log=args.event_log,
-    )
-    uvicorn.run(create_app(service), host=args.host, port=args.port)
+    with NetOpsBench(workspace=args.workspace, scale_profiles=args.scale_profile) as bench:
+        scenarios = [bench.scenarios.load(path) for path in scenario_paths]
+        service = SimulatorService(
+            bench.simulators,
+            scenarios,
+            SimulatorConfig(max_active_runtimes=args.max_active_runtimes),
+            event_log=args.event_log,
+        )
+        uvicorn.run(create_app(service), host=args.host, port=args.port)
     return 0
 
 

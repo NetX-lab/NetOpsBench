@@ -46,9 +46,14 @@ class StepRequest(BaseModel):
 
 @dataclass
 class _EnvironmentSlot:
-    environment: Any
+    environment: Any | None
     case_id: str
+    terminal: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class TerminalEnvironmentError(RuntimeError):
+    """The environment already produced a terminal transition."""
 
 
 class SimulatorService:
@@ -82,8 +87,15 @@ class SimulatorService:
         environment = self.manager.create(scenario=scenario, config=self.config)
         environment_id = uuid.uuid4().hex
         result = environment.reset().model_dump(mode="json")
+        terminal = not bool(result.get("valid"))
+        if terminal:
+            environment.close()
         with self._lock:
-            self.environments[environment_id] = _EnvironmentSlot(environment, case_id)
+            self.environments[environment_id] = _EnvironmentSlot(
+                None if terminal else environment,
+                case_id,
+                terminal=terminal,
+            )
         self._record_event(
             {
                 "event": "create",
@@ -102,12 +114,21 @@ class SimulatorService:
         if slot is None:
             raise KeyError(environment_id)
         with slot.lock:
+            if slot.terminal:
+                raise TerminalEnvironmentError(environment_id)
+            environment = slot.environment
+            if environment is None:
+                raise TerminalEnvironmentError(environment_id)
             try:
                 parsed = _ACTION_ADAPTER.validate_python(action)
             except ValidationError as exc:
-                result = slot.environment.terminate_protocol(str(exc)).model_dump(mode="json")
+                result = environment.terminate_protocol(str(exc)).model_dump(mode="json")
             else:
-                result = slot.environment.step(parsed).model_dump(mode="json")
+                result = environment.step(parsed).model_dump(mode="json")
+            slot.terminal = result.get("state") == "terminal"
+            if slot.terminal:
+                environment.close()
+                slot.environment = None
         self._record_event(
             {
                 "event": "step",
@@ -125,7 +146,9 @@ class SimulatorService:
         if slot is None:
             raise KeyError(environment_id)
         with slot.lock:
-            slot.environment.close()
+            if slot.environment is not None:
+                slot.environment.close()
+                slot.environment = None
         self._record_event(
             {"event": "delete", "environment_id": environment_id, "case_id": slot.case_id}
         )
@@ -137,7 +160,9 @@ class SimulatorService:
         for slot in slots:
             try:
                 with slot.lock:
-                    slot.environment.close()
+                    if slot.environment is not None:
+                        slot.environment.close()
+                        slot.environment = None
             except Exception:
                 logger.warning("Failed to close simulator environment", exc_info=True)
         self.manager.close()
@@ -180,6 +205,8 @@ def create_app(service: SimulatorService):
             return service.step(environment_id, request.action)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Unknown simulator environment") from exc
+        except TerminalEnvironmentError as exc:
+            raise HTTPException(status_code=409, detail="Simulator environment is terminal") from exc
 
     @app.delete("/v1/environments/{environment_id}")
     def delete_environment(environment_id: str):
@@ -196,6 +223,7 @@ __all__ = [
     "CreateEnvironmentRequest",
     "SimulatorService",
     "StepRequest",
+    "TerminalEnvironmentError",
     "create_app",
     "scenario_case_id",
 ]

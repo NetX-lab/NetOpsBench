@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.topology.topology_utils import coerce_topology_manifest
 
 logger = get_logger(__name__)
-
-_MIN_BASELINE_WINDOW_SECONDS = 60
-
 
 def _utc_iso(dt: datetime) -> str:
     value = dt.isoformat()
@@ -21,9 +18,15 @@ def _utc_iso(dt: datetime) -> str:
     return value if value.endswith("Z") else value + "Z"
 
 
-def _coverage_epoch_seconds(runner) -> int:
+def complete_window_seconds(runner) -> int:
+    """Return the topology-derived complete Pingmesh observation window."""
     manifest = coerce_topology_manifest(runner.topology_metadata)
-    return manifest.pingmesh.coverage_epoch_seconds(manifest.facts.total_clients)
+    return manifest.pingmesh.complete_window_seconds(manifest.facts.total_clients)
+
+
+def baseline_window_seconds(runner, minimum_seconds: int) -> int:
+    """Return the explicit baseline duration for one runner."""
+    return max(max(0, int(minimum_seconds)), complete_window_seconds(runner))
 
 
 def capture_observation_window(runner, duration: int, *, name: str = "window") -> dict:
@@ -45,6 +48,15 @@ def capture_observation_window(runner, duration: int, *, name: str = "window") -
     }
 
 
+def capture_baseline_window(runner, minimum_seconds: int) -> dict:
+    """Capture a baseline only after traffic setup has completed."""
+    return capture_observation_window(
+        runner,
+        baseline_window_seconds(runner, minimum_seconds),
+        name="baseline",
+    )
+
+
 def _summary_for_window(anomalies: list[dict], window_name: str) -> dict:
     selected = [item for item in anomalies if window_name in (item.get("windows_observed") or [])]
     return {
@@ -61,8 +73,7 @@ def analyze_observation_windows(
     runner,
     windows: list[dict],
     total_duration_seconds: int,
-    baseline_end_time: datetime | None = None,
-    baseline_window: dict | None = None,
+    baseline_window: dict,
 ) -> dict:
     """Analyze captured intervals using one baseline and one current snapshot."""
     valid_windows = [window for window in windows if isinstance(window, dict) and window.get("start_time")]
@@ -81,18 +92,10 @@ def analyze_observation_windows(
 
     from netopsbench.platform.pingmesh.detector import AnomalyDetector
 
-    if baseline_window is not None:
-        baseline_start = str(baseline_window.get("start_time") or "")
-        baseline_end = str(baseline_window.get("end_time") or "")
-        if not baseline_start or not baseline_end:
-            raise ValueError("baseline_window must contain start_time and end_time")
-    else:
-        baseline_end_dt = baseline_end_time or datetime.fromisoformat(
-            str(valid_windows[0]["start_time"]).replace("Z", "+00:00")
-        )
-        baseline_seconds = max(_MIN_BASELINE_WINDOW_SECONDS, _coverage_epoch_seconds(runner))
-        baseline_start = _utc_iso(baseline_end_dt - timedelta(seconds=baseline_seconds))
-        baseline_end = _utc_iso(baseline_end_dt)
+    baseline_start = str(baseline_window.get("start_time") or "")
+    baseline_end = str(baseline_window.get("end_time") or "")
+    if not baseline_start or not baseline_end:
+        raise ValueError("baseline_window must contain start_time and end_time")
     current_start = str(valid_windows[0]["start_time"])
     current_end = str(valid_windows[-1]["end_time"])
 
@@ -138,8 +141,8 @@ def analyze_observation_windows(
 def wait_and_observe(
     runner,
     duration: int,
-    baseline_end_time: datetime | None = None,
-    baseline_window: dict | None = None,
+    *,
+    baseline_window: dict,
 ) -> dict:
     """Capture and analyze one observation window."""
     window = capture_observation_window(runner, duration, name="steady")
@@ -147,6 +150,15 @@ def wait_and_observe(
         runner,
         [window],
         total_duration_seconds=duration,
-        baseline_end_time=baseline_end_time,
         baseline_window=baseline_window,
     )
+
+
+__all__ = [
+    "analyze_observation_windows",
+    "baseline_window_seconds",
+    "capture_baseline_window",
+    "capture_observation_window",
+    "complete_window_seconds",
+    "wait_and_observe",
+]

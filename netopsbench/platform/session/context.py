@@ -156,7 +156,7 @@ def build_canonical_observation(
     topology: dict[str, Any],
     symptoms: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the shared model-visible observation for benchmark and RL agents."""
+    """Build the shared model-visible observation for benchmark and simulator agents."""
     devices = topology.get("devices", {}) if isinstance(topology, dict) else {}
     if not isinstance(devices, dict):
         devices = {}
@@ -166,11 +166,7 @@ def build_canonical_observation(
         return len(entries) if isinstance(entries, list) else 0
 
     family = topology.get("topology_type") or topology.get("family") or "unknown"
-    spines = count("spines")
-    leafs = count("leafs")
-    if family == "fat-tree":
-        spines = count("cores") or spines
-        leafs = count("edges") or leafs
+    is_fat_tree = family == "fat-tree"
     links = topology.get("links", []) if isinstance(topology, dict) else []
     source_symptoms = symptoms if isinstance(symptoms, dict) else {}
     canonical_symptoms = {
@@ -182,8 +178,11 @@ def build_canonical_observation(
         "case_id": case_id,
         "topology_summary": {
             "family": str(family),
-            "spines": spines,
-            "leafs": leafs,
+            "spines": 0 if is_fat_tree else count("spines"),
+            "leafs": 0 if is_fat_tree else count("leafs"),
+            "cores": count("cores") if is_fat_tree else 0,
+            "aggs": count("aggs") if is_fat_tree else 0,
+            "edges": count("edges") if is_fat_tree else 0,
             "clients": count("clients"),
             "links": len(links) if isinstance(links, list) else 0,
         },
