@@ -46,6 +46,7 @@ class RuntimePool:
     stage_results: dict[str, LifecycleStageResult] = field(default_factory=dict)
     scale_registry: ScaleRegistry = field(default_factory=default_scale_registry, repr=False)
     telemetry_ownership_file: Path = field(repr=False, default=Path(".netopsbench/telemetry-buckets.json"))
+    _provision_created_buckets: list[str] = field(default_factory=list, repr=False)
 
     @property
     def size(self) -> int:
@@ -115,7 +116,13 @@ class RuntimePool:
                 self.stage_results["teardown"] = exc.result
                 self._write_metadata()
                 raise
-            ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in self.workers])
+            pending = self.metadata.get("cleanup_pending_buckets")
+            if self.state == "cleanup_failed" and isinstance(pending, list):
+                self._provision_created_buckets = [str(bucket) for bucket in pending]
+                self._delete_provision_created_buckets()
+                self.metadata.pop("cleanup_pending_buckets", None)
+            else:
+                ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in self.workers])
         self.state = "torn_down"
         metadata_path = self.root_dir / "runtime.json"
         if metadata_path.exists():
@@ -123,6 +130,22 @@ class RuntimePool:
         if self.root_dir.exists():
             shutil.rmtree(self.root_dir, ignore_errors=True)
         return self
+
+    def _delete_provision_created_buckets(self) -> None:
+        registry = ManagedBucketRegistry(self.telemetry_ownership_file)
+        failed: list[str] = []
+        errors: list[str] = []
+        for bucket in self._provision_created_buckets:
+            try:
+                delete_bucket(config.influxdb_url, config.influxdb_token, bucket)
+            except Exception as exc:  # noqa: BLE001 - retain exact cleanup failures for retry
+                failed.append(bucket)
+                errors.append(f"{bucket}: {type(exc).__name__}: {exc}")
+            else:
+                registry.mark_deleted(bucket)
+        self._provision_created_buckets = failed
+        if errors:
+            raise RuntimeError("Managed bucket cleanup failed: " + "; ".join(errors))
 
 
 class RuntimeManager:
@@ -187,6 +210,7 @@ class RuntimeManager:
                 runtime.state = "cleanup_failed"
                 runtime.metadata["quarantined"] = True
                 runtime.metadata["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                runtime.metadata["cleanup_pending_buckets"] = list(runtime._provision_created_buckets)
                 runtime._write_metadata()
                 raise RuntimeError(
                     f"Runtime provisioning failed ({type(provision_error).__name__}: "
@@ -194,7 +218,20 @@ class RuntimeManager:
                     f"({type(cleanup_error).__name__}: {cleanup_error})"
                 ) from cleanup_error
 
-            ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in runtime.workers])
+            try:
+                runtime._delete_provision_created_buckets()
+            except Exception as cleanup_error:
+                logger.warning("Managed bucket cleanup failed during provisioning compensation", exc_info=True)
+                runtime.state = "cleanup_failed"
+                runtime.metadata["quarantined"] = True
+                runtime.metadata["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                runtime.metadata["cleanup_pending_buckets"] = list(runtime._provision_created_buckets)
+                runtime._write_metadata()
+                raise RuntimeError(
+                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
+                    f"{provision_error}) and cleanup failed "
+                    f"({type(cleanup_error).__name__}: {cleanup_error})"
+                ) from cleanup_error
             # Use sudo rm to handle root-owned files left by containerlab.
             try:
                 safe_run(

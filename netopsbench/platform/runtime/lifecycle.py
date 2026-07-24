@@ -35,6 +35,7 @@ class RuntimePoolLike(Protocol):
     root_dir: Path
     telemetry_ownership_file: Path
     workers: list[RuntimeIdentity]
+    _provision_created_buckets: list[str]
 
     @property
     def size(self) -> int: ...
@@ -244,6 +245,7 @@ class RuntimeLifecycle:
         def record_created(bucket: str) -> None:
             registry.record_created(bucket, runtime.id)
             created.append(bucket)
+            runtime._provision_created_buckets.append(bucket)
 
         for worker in runtime.workers:
             ensure_worker_observability(

@@ -24,6 +24,7 @@ from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
 BGP_COLLECTOR_PARALLELISM = 16
 INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
+TELEGRAF_IMAGE = "telegraf@sha256:9768f82ebf8bde6da0d61ba220c00161750740c3e322b507a5982b89bbfca99a"
 logger = get_logger(__name__)
 
 
@@ -129,7 +130,7 @@ def ensure_worker_telegraf(worker: RuntimeIdentity) -> None:
             f"{config_path}:/etc/telegraf/telegraf.conf:ro",
             "-v",
             f"{topology_dir}:/var/lib/netopsbench:ro",
-            "telegraf@sha256:9768f82bde9e68722a58732f9da2d57677703875db2ca9274a2f8625eb0eaf78",
+            TELEGRAF_IMAGE,
         ],
         check=True,
         timeout=600,

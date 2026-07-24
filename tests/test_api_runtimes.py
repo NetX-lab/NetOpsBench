@@ -222,6 +222,8 @@ def test_worker_telegraf_exposes_pingmesh_ingest_before_returning(tmp_path, monk
     run_command = next(command for kind, command, _kwargs in calls if kind == "command" and "run" in command)
     alias_index = run_command.index("--network-alias")
     assert run_command[alias_index + 1] == "telegraf"
+    assert run_command[-1] == lifecycle.TELEGRAF_IMAGE
+    assert lifecycle.TELEGRAF_IMAGE.startswith("telegraf@sha256:")
     assert calls[-1] == ("ready", Path(worker.topology_dir) / "topology.json")
 
 
@@ -708,6 +710,37 @@ def test_provision_cleans_up_metadata_on_deploy_failure(tmp_path, monkeypatch):
 
     assert not runtime_dir.exists(), "stale runtime directory should be cleaned up on provision failure"
     assert manager.list() == [], "no stale runtimes should remain after provision failure"
+
+
+def test_provision_failure_deletes_bucket_created_by_transaction(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.lifecycle as lifecycle
+    import netopsbench.platform.runtime.manager as runtimes_mod
+
+    calls = []
+    _record_lifecycle_operations(monkeypatch, calls, fail_stage="pingmesh")
+
+    def create_bucket(worker, *, on_bucket_created):
+        calls.append(("observability", worker.runtime_id))
+        on_bucket_created(worker.bucket)
+
+    deleted = []
+    monkeypatch.setattr(lifecycle, "ensure_worker_observability", create_bucket)
+    monkeypatch.setattr(runtimes_mod, "teardown_workers", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runtimes_mod,
+        "delete_bucket",
+        lambda _url, _token, bucket: deleted.append(bucket) or True,
+    )
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    bucket = "network_data_will-fail-after-bucket_w01"
+
+    with pytest.raises(RuntimeError, match="pingmesh failed"):
+        manager.provision(scale="xs", workers=1, name="will-fail-after-bucket")
+
+    assert deleted == [bucket]
+    assert not (tmp_path / ".netopsbench" / "runtimes" / "will-fail-after-bucket").exists()
+    ownership = json.loads(manager.telemetry_ownership_file.read_text(encoding="utf-8"))
+    assert bucket not in ownership["buckets"]
 
 
 def test_provision_preserves_quarantined_metadata_when_cleanup_fails(tmp_path, monkeypatch):
