@@ -202,6 +202,7 @@ def test_packaged_observability_assets_enable_bgp_tail_input():
     assert "/var/lib/netopsbench/bgp_neighbors*.lp" in telegraf_text
     assert "from_beginning = true" in telegraf_text
     assert 'watch_method = "poll"' in telegraf_text
+    assert "max_undelivered_lines = 10000" in telegraf_text
     assert "metric_batch_size = 5000" in telegraf_text
     assert "metric_buffer_limit = 200000" in telegraf_text
     assert "[[inputs.influxdb_v2_listener]]" in telegraf_text

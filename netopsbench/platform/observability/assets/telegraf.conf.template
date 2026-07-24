@@ -168,4 +168,5 @@ def apply(metric):
   files = ["/var/lib/netopsbench/bgp_neighbors*.lp"]
   from_beginning = true
   watch_method = "poll"
+  max_undelivered_lines = 10000
   data_format = "influx"

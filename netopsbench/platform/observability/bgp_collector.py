@@ -33,6 +33,7 @@ DEFAULT_BGP_FULL_SNAPSHOT_INTERVAL_SECONDS = 60.0
 DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD = 128
 DEFAULT_BGP_LOG_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_BGP_LOG_BACKUP_COUNT = 2
+BGP_SPOOL_MODE = 0o644
 _BGP_EVENT_SCHEMA_VERSION = 1
 
 
@@ -465,6 +466,13 @@ def _sealed_segment_identity(path: Path) -> tuple[str, int] | None:
     return (f"{match.group(1)}-{match.group(2)}", int(match.group(1))) if match else None
 
 
+def _ensure_spool_file(output_file: Path) -> None:
+    """Keep the host spool readable by the unprivileged Telegraf container."""
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.touch(exist_ok=True)
+    output_file.chmod(BGP_SPOOL_MODE)
+
+
 def _rotate_active_segment(output_file: Path, topology_id: str, max_bytes: int) -> None:
     if not output_file.exists() or output_file.stat().st_size == 0:
         return
@@ -492,7 +500,7 @@ def _rotate_active_segment(output_file: Path, topology_id: str, max_bytes: int) 
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(output_file, sealed)
-    output_file.touch()
+    _ensure_spool_file(output_file)
 
 
 def _spool_size(output_file: Path) -> int:
@@ -508,7 +516,7 @@ def _write_segmented_lines(
     segment_bytes: int = DEFAULT_BGP_SEGMENT_BYTES,
     topology_id: str = "",
 ) -> None:
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_spool_file(output_file)
     rendered = "\n".join(lines)
     if rendered:
         rendered += "\n"
@@ -615,8 +623,7 @@ def run_loop(
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.touch(exist_ok=True)
+    _ensure_spool_file(output_file)
     _, routing_devices = _read_topology(metadata_file)
     use_sparse_snapshots = len(routing_devices) > DEFAULT_BGP_SPARSE_DEVICE_THRESHOLD
     last_full_snapshot_at = float("-inf")

@@ -452,6 +452,8 @@ def test_segmented_spool_rotates_atomically_and_preserves_all_lines(tmp_path):
         "schema_version=1i 100\n"
     )
     assert output_file.read_text(encoding="utf-8") == f"{second}\n"
+    assert segments[0].stat().st_mode & 0o777 == 0o644
+    assert output_file.stat().st_mode & 0o777 == 0o644
 
 
 def test_segment_marker_is_included_in_bounded_spool_limit(tmp_path):
