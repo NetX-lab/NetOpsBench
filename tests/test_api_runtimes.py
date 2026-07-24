@@ -661,7 +661,7 @@ def test_worker_teardown_uses_scale_profile_timeout(monkeypatch, tmp_path):
 
     topology_dir = tmp_path / "worker-1"
     topology_dir.mkdir()
-    (topology_dir / "topology.json").write_text("{}", encoding="utf-8")
+    (topology_dir / "topology.json").write_text('{"scale":"fat-tree-k12"}', encoding="utf-8")
     (topology_dir / "runtime-k12.clab.yaml").write_text("name: runtime-k12\n", encoding="utf-8")
     worker = RuntimeIdentity.create(
         runtime_id="runtime-k12",
@@ -684,12 +684,6 @@ def test_worker_teardown_uses_scale_profile_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(deployment, "_wait_for_lab_removal", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(deployment, "docker_prefix", lambda: [])
     monkeypatch.setattr(deployment, "sudo_prefix", lambda: [])
-    monkeypatch.setattr(
-        deployment,
-        "load_topology_manifest",
-        lambda _path: SimpleNamespace(scale="fat-tree-k12"),
-    )
-
     deployment.teardown_worker_lab(worker)
 
     destroy_call = next(call for call in calls if "containerlab" in call[0])

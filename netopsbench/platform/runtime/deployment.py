@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import ipaddress
+import json
 import os
 import signal
 import tempfile
@@ -12,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from netopsbench.logging_utils import get_logger
-from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
+from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime.apply_configs import apply_configs
 from netopsbench.platform.topology.generator import generate_topology
@@ -165,10 +166,7 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
     )
 
     topology_file = topology_dir / f"{worker.lab_name}.clab.yaml"
-    manifest_file = topology_dir / "topology.json"
-    profile = (
-        get_scale_profile(load_topology_manifest(topology_dir).scale, registry) if manifest_file.is_file() else None
-    )
+    profile = _teardown_profile(topology_dir / "topology.json", registry)
     command = (
         [*sudo_prefix(), "containerlab", "destroy", "-t", str(topology_file), "--cleanup"]
         if topology_file.is_file()
@@ -184,6 +182,17 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
         safe_run([*docker, "docker", "rm", "-f", *names], check=False, timeout=300)
     _wait_for_lab_removal(docker, worker.lab_name)
     safe_run([*docker, "docker", "network", "rm", worker.mgmt_network], check=False, timeout=60)
+
+
+def _teardown_profile(manifest_file: Path, registry: ScaleRegistry | None) -> ScaleProfile | None:
+    """Read only the scale needed for cleanup; never gate teardown on topology validity."""
+    try:
+        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+        scale = payload.get("scale") if isinstance(payload, dict) else None
+        return get_scale_profile(scale, registry) if isinstance(scale, str) else None
+    except (OSError, ValueError, TypeError):
+        logger.warning("unable to resolve scale profile for teardown from %s", manifest_file)
+        return None
 
 
 def _lab_container_names(docker: list[str], lab_name: str) -> list[str]:
