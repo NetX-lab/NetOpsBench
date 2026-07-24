@@ -90,15 +90,36 @@ def test_one_incident_hosts_independent_sessions_and_recovers_once():
     assert sessions[1].tool_calls == 0
 
     for session in sessions:
+        accounting = (
+            {
+                "tool_calls": [{"tool": "get_topology", "args": {}}],
+                "time_taken_seconds": 12.5,
+                "metadata": {"input_tokens": 1200, "output_tokens": 80},
+            }
+            if session is sessions[0]
+            else {}
+        )
         result = session.submit(
             DiagnosisSubmission(
                 verdict="fault_detected",
                 fault_type="link_down",
                 location={"device": "leaf1", "interface": "Ethernet1"},
-            )
+            ),
+            **accounting,
         )
         assert result.reward == 1.0
         assert result.state is SessionState.TERMINAL
+        if session is sessions[0]:
+            assert result.metrics["tool_calls"] == 1
+            assert session.evaluation_result["details"]["tool_calls_count"] == 1
+            assert session.evaluation_result["details"]["time_taken"] == 12.5
+            assert session.evaluation_result["details"]["agent_output"]["metadata"] == {
+                "input_tokens": 1200,
+                "output_tokens": 80,
+            }
+            assert session.evaluation_result["details"]["agent_output"]["tool_calls"] == [
+                {"tool": "get_topology", "args": {}}
+            ]
 
     assert incident.close() is CleanupStatus.SUCCEEDED
     assert incident.close() is CleanupStatus.SUCCEEDED

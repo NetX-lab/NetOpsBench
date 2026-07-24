@@ -240,7 +240,7 @@ class ScenarioExecutor:
         logger.info("# Episode: 1")
         logger.info(f"{'#'*70}")
 
-        scenario_result = {
+        scenario_result: dict[str, Any] = {
             "scenario_id": scenario.scenario_id,
             "name": scenario.name,
             "start_time": datetime.now(UTC).isoformat(),
@@ -334,7 +334,13 @@ class ScenarioExecutor:
                                 reason=TerminationReason.PROTOCOL_ERROR,
                             )
                         else:
-                            transition = session.submit(submission, usage=usage)
+                            transition = session.submit(
+                                submission,
+                                usage=usage,
+                                tool_calls=list(diagnosis.get("tool_calls") or []) or None,
+                                time_taken_seconds=float(diagnosis.get("time_taken_seconds", 0.0) or 0.0),
+                                metadata=metadata,
+                            )
                     episode_result["execution"] = transition.model_dump(mode="json")
                     if session.evaluation_result is not None:
                         episode_result["evaluation_result"] = session.evaluation_result
@@ -364,6 +370,7 @@ class ScenarioExecutor:
 
             scenario_result["end_time"] = datetime.now(UTC).isoformat()
 
+        result_file: Path | str | None
         if self.persist_results:
             result_file = self._persist_scenario_result(scenario, scenario_result)
             scenario_result["result_file"] = str(result_file)

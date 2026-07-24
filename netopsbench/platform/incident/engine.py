@@ -196,7 +196,14 @@ class PreparedIncident:
         self._refresh_lease()
         return result
 
-    def evaluate(self, diagnosis: DiagnosisSubmission) -> tuple[float, dict[str, Any], dict[str, Any]]:
+    def evaluate(
+        self,
+        diagnosis: DiagnosisSubmission,
+        *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        time_taken_seconds: float = 0.0,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[float, dict[str, Any], dict[str, Any]]:
         if self.state is not IncidentState.ACTIVE:
             raise RuntimeError(f"Incident is not active: {self.state}")
         self._refresh_lease()
@@ -217,6 +224,9 @@ class PreparedIncident:
                 evidence=diagnosis.evidence,
                 confidence=diagnosis.confidence,
                 reasoning=diagnosis.reasoning,
+                tool_calls=list(tool_calls or []),
+                time_taken_seconds=max(0.0, float(time_taken_seconds)),
+                metadata=dict(metadata or {}),
             ),
             ground_truth,
             self.case_id,
@@ -281,6 +291,7 @@ class DiagnosticSession:
         self.state = SessionState.ACTIVE
         self.started_at = time.monotonic()
         self.tool_calls = 0
+        self.tool_call_records: list[dict[str, Any]] = []
         self.evaluation_result: dict[str, Any] | None = None
 
     @property
@@ -298,6 +309,7 @@ class DiagnosticSession:
         if limit is not None:
             return limit
         self.tool_calls += 1
+        self.tool_call_records.append({"tool": action.name, "args": dict(action.arguments)})
         if not validate_tool_call(action.name, action.arguments):
             failure = ExecutionFailure(
                 domain=FailureDomain.PROTOCOL,
@@ -335,15 +347,31 @@ class DiagnosticSession:
             metrics=self._metrics(elapsed),
         )
 
-    def submit(self, diagnosis: DiagnosisSubmission, *, usage: AgentUsage | None = None) -> SessionTransition:
+    def submit(
+        self,
+        diagnosis: DiagnosisSubmission,
+        *,
+        usage: AgentUsage | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        time_taken_seconds: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SessionTransition:
         self._require_active()
         elapsed = self._elapsed()
         limit = self._limit_transition(elapsed)
         if limit is not None:
             return limit
-        reward, evaluation_metrics, self.evaluation_result = self.incident.evaluate(diagnosis)
+        accounting_tool_calls = list(tool_calls or self.tool_call_records)
+        accounting_time = elapsed if time_taken_seconds is None else max(0.0, float(time_taken_seconds))
+        reward, evaluation_metrics, self.evaluation_result = self.incident.evaluate(
+            diagnosis,
+            tool_calls=accounting_tool_calls,
+            time_taken_seconds=accounting_time,
+            metadata=metadata,
+        )
         self.state = SessionState.TERMINAL
         metrics = {**evaluation_metrics, **self._metrics(elapsed)}
+        metrics["tool_calls"] = len(accounting_tool_calls)
         if usage is not None:
             metrics.update(
                 input_tokens=usage.input_tokens,
