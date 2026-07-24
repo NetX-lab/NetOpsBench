@@ -177,7 +177,7 @@ def update_telegraf_config(
 
     logger.info("Found %d network devices:", len(devices))
     for d in devices:
-        logger.info("  - %s: %s", d["name"], d["mgmt_ip"])
+        logger.debug("  - %s: %s", d["name"], d["mgmt_ip"])
 
     rendered_inputs = []
     role_subscription_counts: dict[str, set[int]] = {}

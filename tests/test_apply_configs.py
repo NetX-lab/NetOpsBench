@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -264,7 +265,7 @@ def test_reconcile_preseed_interfaces_repairs_only_missing_kernel_address(monkey
                         "addr_info": [{"local": "10.1.1.2", "prefixlen": 30}],
                     }
                 )
-            return _completed(cmd, stdout=__import__("json").dumps(addresses))
+            return _completed(cmd, stdout=json.dumps(addresses))
         return _completed(cmd)
 
     monkeypatch.setattr(apply_configs, "safe_run", fake_safe_run)
