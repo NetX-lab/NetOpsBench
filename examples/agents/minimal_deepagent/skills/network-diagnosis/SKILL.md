@@ -17,12 +17,21 @@ Use this skill for the public DeepAgent example when you need to diagnose a like
    - `get_interface_metrics`
    - For each event, confirm only the affected device with `get_bgp_neighbors`, then inspect the peer with `get_bgp_neighbor`.
    - Use `get_bgp_rib`, `get_route_table`, or `get_device_config` only when route impact or configuration needs confirmation.
+   - Do not assume client-facing prefixes should be `/24`. NetOpsBench commonly uses `/30`
+     point-to-point access subnets; compare the configured prefix with topology and route
+     evidence before calling it a misconfiguration.
    - Report the canonical fault label `bgp_neighbor_misconfig`; do not substitute `bgp_down` or `link_flap`.
    - For an AS mismatch, set `location.device` to the device whose configured remote-AS disagrees with the peer's actual local AS. Do not report the correctly configured peer.
    - Separate a control-plane session event from confirmed data-plane impact. Historical events outside the episode window are not current faults.
    - `get_device_logs`: always pass the observation `start_time` and `end_time`; ignore log entries outside that episode window.
 4. Use `ping_test` and `traceroute` only when they are likely to clarify the fault. `traceroute`
    must originate from a client; use `ping_test` for probes sourced from switches.
+   Do not use jumbo DF probes unless topology evidence says that payload size is supported;
+   failure above the configured path MTU is expected and does not prove an MTU mismatch.
+
+When low-rate Pingmesh anomalies are not persistent, current probes succeed, interfaces are
+healthy, routes are installed, and BGP is established, return `network_healthy`. Do not keep
+expanding the search solely to explain isolated loss or jitter samples.
 
 For a symmetric Pingmesh leaf pair, do not infer the faulty side from probe direction alone: an echoed reply can
 cross a discard route in either direction. Inspect the exact affected client IP on both attached switches with
