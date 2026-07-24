@@ -163,6 +163,10 @@ def test_grafana_configs_use_runtime_scoping_variables():
     assert "NETOPSBENCH_INFLUXDB_TOKEN=${NETOPSBENCH_INFLUXDB_TOKEN:-replace-me}" in compose_text
     assert "NETOPSBENCH_INFLUXDB_BUCKET=${NETOPSBENCH_INFLUXDB_BUCKET:-netopsbench}" in compose_text
     assert "NETOPSBENCH_INFLUXDB_URL=http://influxdb:8086" in compose_text
+    assert "image: influxdb@sha256:" in compose_text
+    assert "image: grafana/grafana@sha256:" in compose_text
+    assert "image: influxdb:" not in compose_text
+    assert "image: grafana/grafana:" not in compose_text
 
 
 def test_grafana_dashboards_parameterize_bucket_and_topology():
