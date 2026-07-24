@@ -98,7 +98,6 @@ def test_domain_and_service_modules_do_not_read_process_environment():
             "netopsbench/platform/topology/fat_tree_builder.py",
             "netopsbench/platform/topology/plan.py",
             "netopsbench/platform/topology/renderer.py",
-            "netopsbench/platform/traffic/commands.py",
             "netopsbench/platform/traffic/generator.py",
             "netopsbench/platform/traffic/planner.py",
             "netopsbench/platform/session/diagnosis.py",
@@ -172,7 +171,6 @@ def test_removed_environment_controls_do_not_return():
 def test_library_modules_do_not_call_sys_exit():
     cli_boundaries = {
         PACKAGE_ROOT / "cli" / "main.py",
-        PACKAGE_ROOT / "platform" / "pingmesh" / "cli.py",
     }
     offenders: list[str] = []
     for path in _python_files():
@@ -209,6 +207,14 @@ def test_runtime_lifecycle_cli_imports_without_package_cycle():
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_client_image_docker_context_excludes_repository_artifacts():
+    patterns = set((PROJECT_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines())
+
+    assert {".git", ".netopsbench*", "scenario_results", "native/client-agent/target"} <= patterns
+    assert "native/client-agent" not in patterns
+    assert "containers" not in patterns
 
 
 def test_removed_internal_compatibility_trees_do_not_return():

@@ -145,73 +145,76 @@ def _run_worker(
     worker_success = True
 
     executed_count = 0
-    for scenario_index, scenario in enumerate(scenarios):
-        callback = build_runtime_diagnosis_callback(
-            agent,
-            str(worker_context.topology_dir),
-            scenario.id,
-            worker_context,
-            trace_writer,
-            worker.worker_id,
-            runtime.id,
-            scenario.scale,
-        )
-        scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
-        executed_count += 1
-        raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
-        try:
-            scored = score_scenario_episode(
-                scenario,
-                scenario_result,
-                evaluator,
-                topology_dir=str(worker_context.topology_dir),
+    try:
+        for scenario_index, scenario in enumerate(scenarios):
+            callback = build_runtime_diagnosis_callback(
+                agent,
+                str(worker_context.topology_dir),
+                scenario.id,
+                worker_context,
+                trace_writer,
+                worker.worker_id,
+                runtime.id,
+                scenario.scale,
             )
-        except Exception as exc:
+            scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
+            executed_count += 1
+            raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
+            try:
+                scored = score_scenario_episode(
+                    scenario,
+                    scenario_result,
+                    evaluator,
+                    topology_dir=str(worker_context.topology_dir),
+                )
+            except Exception as exc:
+                if trace_writer is not None:
+                    try:
+                        trace_writer.write_failure_result(
+                            scenario_id=scenario.id,
+                            scenario_result=scenario_result,
+                            stage="evaluator",
+                            error=exc,
+                        )
+                    except Exception:
+                        logger.debug("failed to persist evaluator failure trace result", exc_info=True)
+                raise
             if trace_writer is not None:
                 try:
-                    trace_writer.write_failure_result(
-                        scenario_id=scenario.id,
+                    trace_writer.write_evaluation_results(
+                        evaluation_results=scored,
                         scenario_result=scenario_result,
-                        stage="evaluator",
-                        error=exc,
                     )
                 except Exception:
-                    logger.debug("failed to persist evaluator failure trace result", exc_info=True)
-            raise
-        if trace_writer is not None:
-            try:
-                trace_writer.write_evaluation_results(
-                    evaluation_results=scored,
-                    scenario_result=scenario_result,
-                )
-            except Exception:
-                logger.debug("failed to persist trace evaluation results", exc_info=True)
-        evaluations.extend(scored)
-        cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
-        success = bool(scenario_result.get("success")) and cleanup_success
-        scenario_summaries.append(
-            {
-                "scenario_id": scenario.id,
-                "status": "completed" if success else "failed",
-                "scale": scenario.scale,
-                "worker": worker.worker_id,
-                "raw_result_path": raw_result_path,
-                **({"failure_stage": "cleanup"} if not cleanup_success else {}),
-            }
-        )
-        worker_success &= success
-        if not cleanup_success:
-            for skipped in scenarios[scenario_index + 1 :]:
-                scenario_summaries.append(
-                    {
-                        "scenario_id": skipped.id,
-                        "status": "skipped_infrastructure_failure",
-                        "scale": skipped.scale,
-                        "worker": worker.worker_id,
-                        "failure_stage": "prior_case_cleanup",
-                    }
-                )
-            break
+                    logger.debug("failed to persist trace evaluation results", exc_info=True)
+            evaluations.extend(scored)
+            cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
+            success = bool(scenario_result.get("success")) and cleanup_success
+            scenario_summaries.append(
+                {
+                    "scenario_id": scenario.id,
+                    "status": "completed" if success else "failed",
+                    "scale": scenario.scale,
+                    "worker": worker.worker_id,
+                    "raw_result_path": raw_result_path,
+                    **({"failure_stage": "cleanup"} if not cleanup_success else {}),
+                }
+            )
+            worker_success &= success
+            if not cleanup_success:
+                for skipped in scenarios[scenario_index + 1 :]:
+                    scenario_summaries.append(
+                        {
+                            "scenario_id": skipped.id,
+                            "status": "skipped_infrastructure_failure",
+                            "scale": skipped.scale,
+                            "worker": worker.worker_id,
+                            "failure_stage": "prior_case_cleanup",
+                        }
+                    )
+                break
+    finally:
+        runner.close()
 
     worker_summary = {
         "worker_id": worker.worker_id,

@@ -23,16 +23,13 @@ def _scenario() -> ScenarioSpec:
 def _runner(*, active_faults, timeout_seconds=10):
     runner = object.__new__(ScenarioExecutor)
     runner.injector = SimpleNamespace(active_faults=list(active_faults))
-    runner.scale_registry = SimpleNamespace(
-        get=lambda _scale: SimpleNamespace(health_timeout_seconds=timeout_seconds)
-    )
+    runner.scale_registry = SimpleNamespace(get=lambda _scale: SimpleNamespace(health_timeout_seconds=timeout_seconds))
     return runner
 
 
 def test_clean_scenario_boundary_does_not_retry_or_sleep(monkeypatch):
     runner = _runner(active_faults=[])
     calls = []
-    runner._stop_traffic = lambda: calls.append("stop")
     runner._recover_fault = lambda: calls.append("recover")
     runner.sleep = lambda seconds: calls.append(f"sleep:{seconds}")
     monkeypatch.setattr(executor_module, "monotonic", lambda: 0.0)
@@ -50,13 +47,12 @@ def test_clean_scenario_boundary_does_not_retry_or_sleep(monkeypatch):
         "errors": [],
         "recovery": [{"type": "link_down", "recovered": True}],
     }
-    assert calls == ["stop"]
+    assert calls == []
 
 
 def test_failed_episode_recovery_is_retried_once_and_can_continue(monkeypatch):
     runner = _runner(active_faults=[{"type": "link_down"}])
     calls = []
-    runner._stop_traffic = lambda: calls.append("stop")
 
     def recover():
         calls.append("recover")
@@ -76,14 +72,13 @@ def test_failed_episode_recovery_is_retried_once_and_can_continue(monkeypatch):
     assert cleanup["status"] == "clean"
     assert cleanup["attempts"] == 1
     assert cleanup["recovery"] == [{"type": "link_down", "recovered": True}]
-    assert calls == ["stop", "recover"]
+    assert calls == ["recover"]
 
 
 def test_cleanup_retry_stops_at_scale_timeout(monkeypatch):
     runner = _runner(active_faults=[{"type": "link_down"}], timeout_seconds=1)
     clock = [0.0]
     calls = []
-    runner._stop_traffic = lambda: calls.append("stop")
     runner._recover_fault = lambda: [{"type": "link_down", "recovered": False}]
 
     def sleep(seconds):
@@ -103,4 +98,14 @@ def test_cleanup_retry_stops_at_scale_timeout(monkeypatch):
     assert cleanup["attempts"] == 1
     assert cleanup["duration_seconds"] == 1.0
     assert cleanup["remaining_faults"] == 1
-    assert calls == ["stop", "sleep:1.0"]
+    assert calls == ["sleep:1.0"]
+
+
+def test_executor_close_stops_suite_owned_traffic_once():
+    runner = _runner(active_faults=[])
+    calls = []
+    runner._stop_traffic = lambda: calls.append("stop")
+
+    runner.close()
+
+    assert calls == ["stop"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from netopsbench.logging_utils import get_logger
-from netopsbench.platform.topology.topology_utils import clab_container_name, load_topology_manifest
+from netopsbench.platform.topology.topology_utils import load_topology_manifest
 from netopsbench.platform.traffic.controller import TrafficController, TrafficFlow
 from netopsbench.platform.traffic.generator import generate_traffic_config, validate_traffic_config
 
@@ -63,15 +63,12 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
     if spines:
         logger.debug("Spine PPS breakdown: %s", spines)
 
-    topology = load_topology_manifest(topology_file).to_agent_topology()
+    manifest = load_topology_manifest(topology_file)
+    management_ips = {client.name: client.mgmt_ip for client in manifest.clients() if client.mgmt_ip}
+    if len(management_ips) != len(manifest.clients()):
+        raise RuntimeError("Every traffic client requires a management IP")
 
-    lab_name = topology.get("name", "dcn")
-    container_names = {}
-    for client in topology["devices"]["clients"]:
-        client_name = client["name"]
-        container_names[client_name] = clab_container_name(lab_name, client_name)
-
-    runner.traffic_controller = TrafficController(container_names)
+    runner.traffic_controller = TrafficController(management_ips)
 
     flows: list[TrafficFlow] = []
     for flow_dict in traffic_config["flows"]:
@@ -83,8 +80,6 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
                 dst_port=flow_dict.get("dst_port", 5201),
                 protocol=flow_dict["protocol"],
                 bandwidth=flow_dict.get("bandwidth", "1M"),
-                duration=flow_dict.get("duration", 0),
-                parallel=flow_dict.get("parallel", 1),
                 udp_payload_len=flow_dict.get("udp_payload_len", 1400),
                 tcp_mss=flow_dict.get("tcp_mss", 1360),
             )

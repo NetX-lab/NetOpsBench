@@ -91,7 +91,11 @@ bash scripts/runtime/deploy.sh xs lab-topology
 export NETOPSBENCH_TOPOLOGY_DIR="$PWD/lab-topology/generated_topology_xs"
 ```
 
-`deploy.sh` generates topology metadata, renders Telegraf config, starts InfluxDB / Telegraf / Grafana, and deploys Pingmesh agents.
+`deploy.sh` generates topology metadata, renders Telegraf config, starts InfluxDB / Telegraf / Grafana, and starts the native Pingmesh and background-traffic processes in each client.
+
+The default client image is pinned by digest. A custom client image must provide
+`/usr/local/bin/netopsbench-client-agent`; runtime preparation fails explicitly
+when the binary is absent.
 
 Common overrides:
 

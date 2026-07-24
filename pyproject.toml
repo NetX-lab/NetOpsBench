@@ -33,7 +33,6 @@ Issues = "https://github.com/NetX-lab/NetOpsBench/issues"
 
 [project.scripts]
 netopsbench = "netopsbench.cli.main:main"
-netopsbench-pingmesh-agent = "netopsbench.platform.pingmesh.cli:main"
 netopsbench-bgp-collector = "netopsbench.platform.observability.bgp_collector:main"
 netopsbench-mcp-server = "netopsbench.platform.toolkit.fastmcp_server:main"
 netopsbench-runtime = "netopsbench.platform.runtime.cli:main"
@@ -119,8 +118,14 @@ files = [
     "netopsbench/sdk",
     "netopsbench/agents",
     "netopsbench/models",
+    "netopsbench/platform/client_agent",
+    "netopsbench/platform/pingmesh/_detector_analysis.py",
+    "netopsbench/platform/runtime/cli.py",
+    "netopsbench/platform/runtime/health.py",
+    "netopsbench/platform/runtime/lifecycle.py",
     "netopsbench/platform/session",
     "netopsbench/platform/simulator",
+    "netopsbench/platform/traffic",
 ]
 
 [[tool.mypy.overrides]]

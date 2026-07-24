@@ -76,10 +76,11 @@ def _coverage_detector(client_count=144, *, rtt_ports_per_cycle=4):
     )
 
 
-def _rtt_rows(values, *, ranges=None):
+def _rtt_rows(values, *, ranges=None, port_batches=None):
     ranges = ranges or [0.2] * len(values)
-    return [
-        {
+    rows = []
+    for index, value in enumerate(values):
+        row = {
             "_time": f"2026-01-01T00:00:{index:02d}Z",
             "_field": "rtt_avg",
             "value": value,
@@ -93,8 +94,10 @@ def _rtt_rows(values, *, ranges=None):
             "src_leaf": "edge1",
             "dst_leaf": "edge2",
         }
-        for index, value in enumerate(values)
-    ]
+        if port_batches is not None:
+            row["port_batch_index"] = port_batches[index]
+        rows.append(row)
+    return rows
 
 
 def _snapshot_sequence(monkeypatch, detector, responses):
@@ -184,6 +187,32 @@ def test_latency_detector_keeps_ecmp_diluted_sustained_path_signal():
     assert [item.type for item in anomalies] == ["latency_spike"]
 
 
+def test_latency_detector_ignores_one_elevated_ecmp_port_batch():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0] * 4, port_batches=[0, 1, 2, 3]),
+        _rtt_rows([26.0, 1.0, 1.0, 1.0], port_batches=[0, 1, 2, 3]),
+    ).anomalies
+
+    assert not [item for item in anomalies if item.type == "latency_spike"]
+
+
+def test_latency_detector_accepts_two_elevated_ecmp_port_batches():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0] * 4, port_batches=[0, 1, 2, 3]),
+        _rtt_rows([26.0, 26.0, 1.0, 1.0], port_batches=[0, 1, 2, 3]),
+    ).anomalies
+    latency = [item for item in anomalies if item.type == "latency_spike"]
+
+    assert len(latency) == 1
+    assert latency[0].baseline == 1.0
+    assert latency[0].value == 26.0
+    assert latency[0].sample_count == 2
+
+
 def test_jitter_partial_consensus_is_advisory_low_severity():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
@@ -263,6 +292,27 @@ def test_two_counted_probe_losses_are_a_packet_loss_anomaly():
     analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=2)])
 
     assert [item.type for item in analysis.anomalies] == ["packet_loss"]
+
+
+def test_distributed_background_loss_does_not_create_a_path_anomaly():
+    detector = _coverage_detector(client_count=62)
+    baseline = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 63)]
+    current = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 63)]
+    current[0] = _probe_sample(dst_ip="192.0.2.2", lost=2)
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
+def test_endpoint_concentration_keeps_single_loss_path_evidence():
+    detector = _coverage_detector(client_count=11)
+    baseline = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 12)]
+    current = [_probe_sample(dst_ip=f"192.0.2.{index}", lost=1) for index in range(2, 12)]
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert len([item for item in analysis.anomalies if item.type == "packet_loss"]) == 10
 
 
 def test_percentage_only_loss_input_keeps_compatibility_rule():

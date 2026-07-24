@@ -48,7 +48,17 @@ class ExecutorIncidentBackend:
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
         self.scenario = scenario
         if self.setup_traffic:
-            self.traffic_config = self.executor._setup_traffic(scenario.scale, scenario.traffic_profile)
+            controller = self.executor.traffic_controller
+            traffic_ready = (
+                controller is not None and bool(controller.active_flows) and controller.verify_active_flows()
+            )
+            if not traffic_ready:
+                if controller is not None:
+                    self.executor._stop_traffic()
+                self.traffic_config = self.executor._setup_traffic(
+                    scenario.scale,
+                    scenario.traffic_profile,
+                )
             if self.baseline_window is None:
                 self.baseline_window = self.executor._capture_baseline_window()
         if self.baseline_window is None:
@@ -114,5 +124,6 @@ class ExecutorIncidentBackend:
                 raise RuntimeError(f"Fault recovery failed: {recovery}")
             if recovery:
                 self.executor.sleep(self.executor.post_recovery_wait_seconds)
+
 
 __all__ = ["ExecutorIncidentBackend"]

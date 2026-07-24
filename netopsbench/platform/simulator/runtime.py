@@ -13,7 +13,7 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.health import check_worker_health
-from netopsbench.platform.runtime.lifecycle import ensure_worker_observability, ensure_worker_pingmesh
+from netopsbench.platform.runtime.lifecycle import ensure_worker_client_agent, ensure_worker_observability
 from netopsbench.platform.runtime.manager import RuntimeManager, RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
@@ -348,7 +348,7 @@ class RuntimeEpisodeBackend:
         if not errors or not refresh:
             return errors
         ensure_worker_observability(worker)
-        ensure_worker_pingmesh(worker)
+        ensure_worker_client_agent(worker)
         record.baseline_signature = None
         record.baseline = None
         return check_worker_health(worker, scale_registry=self.registry)

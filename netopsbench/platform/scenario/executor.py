@@ -116,6 +116,10 @@ class ScenarioExecutor:
     def _stop_traffic(self):
         _stop_traffic_impl(self)
 
+    def close(self) -> None:
+        """Release runtime-owned traffic after the worker or simulator is done."""
+        self._stop_traffic()
+
     def _inject_fault(self, episode: EpisodeSpec) -> dict:
         return _inject_fault_impl(self, episode)
 
@@ -143,26 +147,18 @@ class ScenarioExecutor:
         return all(isinstance(item, dict) and item.get("recovered") is True for item in results)
 
     def _cleanup_after_scenario(self, scenario: ScenarioSpec, episode_result: dict | None) -> dict:
-        """Stop traffic and recover the fault, retrying within the scale health deadline."""
+        """Recover the fault while runtime-owned background traffic remains active."""
         started = monotonic()
         profile = self.scale_registry.get(scenario.topology_scale)
         timeout_seconds = float(profile.health_timeout_seconds)
         deadline = started + timeout_seconds
         attempts = 0
         errors: list[str] = []
-        traffic_stopped = False
         prior_recovery = episode_result.get("recovery") if isinstance(episode_result, dict) else None
         recovery_results = prior_recovery
 
         while attempts == 0 or monotonic() < deadline:
             attempts += 1
-            if not traffic_stopped:
-                try:
-                    self._stop_traffic()
-                    traffic_stopped = True
-                except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
-                    errors.append(f"traffic_stop: {type(exc).__name__}: {exc}")
-
             active_faults = list(getattr(self.injector, "active_faults", []) or [])
             recovery_complete = not active_faults and (
                 recovery_results is None or self._recovery_results_succeeded(recovery_results)
@@ -171,19 +167,17 @@ class ScenarioExecutor:
                 try:
                     recovery_results = self._recover_fault()
                     active_faults = list(getattr(self.injector, "active_faults", []) or [])
-                    recovery_complete = (
-                        self._recovery_results_succeeded(recovery_results) and not active_faults
-                    )
+                    recovery_complete = self._recovery_results_succeeded(recovery_results) and not active_faults
                     if not recovery_complete:
                         errors.append(
-                            "fault_recovery: "
-                            f"remaining_faults={len(active_faults)} results={recovery_results!r}"
+                            f"fault_recovery: remaining_faults={len(active_faults)} "
+                            f"results={recovery_results!r}"
                         )
                 except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
                     recovery_complete = False
                     errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
 
-            if traffic_stopped and recovery_complete:
+            if recovery_complete:
                 result = {
                     "success": True,
                     "status": "clean" if attempts == 1 else "recovered_after_retry",

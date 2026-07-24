@@ -88,7 +88,7 @@ def test_rendered_clos_artifacts_keep_preseed_and_addressing_contract(tmp_path):
     assert links[-1] == {"endpoints": ["leaf128:eth17", "client128:eth1"], "mtu": 9232}
 
     assert (tmp_path / "configs" / "sonic" / "start.sh").is_file()
-    assert (tmp_path / "configs" / "pingmesh").is_dir()
+    assert (tmp_path / "configs" / "client-agent" / "client-agent.json").is_file()
     spine = json.loads((tmp_path / "configs" / "sonic" / "spine16" / "config_db.json").read_text())
     leaf = json.loads((tmp_path / "configs" / "sonic" / "leaf128" / "config_db.json").read_text())
     assert len([name for name in spine["PORT"]]) == 128

@@ -6,8 +6,13 @@ import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
+from typing import Any
 
 _MIN_LATENCY_DELTA_MS = 20.0
+_MIN_ELEVATED_PORT_BATCHES = 2
+_MIN_PATH_LOST_PROBES = 3
+_MIN_ENDPOINT_LOSS_DELTA_PCT = 1.0
+_MIN_ENDPOINT_LOST_PROBES = 2
 _SUSTAINED_SAMPLE_FRACTION = 0.75
 _BASELINE_UNREACHABLE_LOSS_PCT = 95.0
 
@@ -31,6 +36,20 @@ def _group_by_path(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     for points in paths.values():
         points.sort(key=lambda point: str(point.get("_time") or point.get("time") or ""))
     return paths
+
+
+def _median_rtt_by_port_batch(rows: list[dict]) -> dict[int, tuple[float, int]]:
+    batches: dict[int, list[float]] = {}
+    for row in rows:
+        value = _as_float(row.get("rtt_avg"))
+        if value <= 0 or row.get("port_batch_index") is None:
+            continue
+        try:
+            batch = int(float(row["port_batch_index"]))
+        except (TypeError, ValueError):
+            continue
+        batches.setdefault(batch, []).append(value)
+    return {batch: (statistics.median(values), len(values)) for batch, values in batches.items()}
 
 
 def _loss_stats(rows: list[dict], *, prefix: str = "", drop_unreachable: bool = False) -> dict | None:
@@ -82,6 +101,11 @@ class SnapshotAnalysis:
 
 
 class DetectorAnalysisMixin:
+    client_to_leaf: dict[str, str]
+    loss_pct_threshold: float
+    loss_pct_delta: float
+    _anomaly_type: Any
+
     def _resolve_leaf(self, leaf_tag: str, client_name: str) -> str:
         if isinstance(leaf_tag, str) and leaf_tag:
             return leaf_tag
@@ -144,6 +168,41 @@ class DetectorAnalysisMixin:
             sample_count=sample_count,
         )
 
+    def _elevated_loss_endpoints(
+        self,
+        baseline_rows: list[dict],
+        current_rows: list[dict],
+        *,
+        leaf_field: str,
+        client_field: str,
+    ) -> set[str]:
+        def aggregate(rows: list[dict]) -> dict[str, tuple[float, float]]:
+            totals: dict[str, list[float]] = {}
+            for row in rows:
+                sent = _as_float(row.get("packets_sent"))
+                if sent <= 0:
+                    continue
+                leaf = self._resolve_leaf(str(row.get(leaf_field, "")), str(row.get(client_field, "")))
+                if leaf == "unknown":
+                    continue
+                current = totals.setdefault(leaf, [0.0, 0.0])
+                current[0] += sent
+                current[1] += _as_float(row.get("packets_lost"))
+            return {leaf: (values[0], values[1]) for leaf, values in totals.items()}
+
+        baseline = aggregate(baseline_rows)
+        current = aggregate(current_rows)
+        elevated = set()
+        for leaf, (sent, lost) in current.items():
+            baseline_sent, baseline_lost = baseline.get(leaf, (0.0, 0.0))
+            if sent <= 0 or baseline_sent <= 0 or lost < _MIN_ENDPOINT_LOST_PROBES:
+                continue
+            loss_pct = lost / sent * 100.0
+            baseline_pct = baseline_lost / baseline_sent * 100.0
+            if loss_pct - baseline_pct >= _MIN_ENDPOINT_LOSS_DELTA_PCT:
+                elevated.add(leaf)
+        return elevated
+
     def _detect_latency_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> list:
         baseline_paths = _group_by_path(baseline_rows)
         current_paths = _group_by_path(current_rows)
@@ -159,17 +218,36 @@ class DetectorAnalysisMixin:
             baseline = statistics.median(baseline_values)
             current = statistics.median(current_values)
             threshold = baseline + _MIN_LATENCY_DELTA_MS
-            if current >= threshold:
-                anomalies.append(
-                    self._new_anomaly(
-                        "latency_spike",
-                        current_points[0],
-                        value=current,
-                        baseline=baseline,
-                        threshold=threshold,
-                        sample_count=len(current_values),
+            sample_count = len(current_values)
+            if current < threshold:
+                baseline_batches = _median_rtt_by_port_batch(baseline_points)
+                current_batches = _median_rtt_by_port_batch(current_points)
+                elevated = sorted(
+                    (
+                        current_batch[0] - baseline_batches[batch][0],
+                        baseline_batches[batch][0],
+                        current_batch[0],
+                        current_batch[1],
                     )
+                    for batch, current_batch in current_batches.items()
+                    if batch in baseline_batches
+                    and current_batch[0] - baseline_batches[batch][0] >= _MIN_LATENCY_DELTA_MS
                 )
+                if len(elevated) < _MIN_ELEVATED_PORT_BATCHES:
+                    continue
+                _delta, baseline, current, _count = elevated[-_MIN_ELEVATED_PORT_BATCHES]
+                threshold = baseline + _MIN_LATENCY_DELTA_MS
+                sample_count = sum(item[3] for item in elevated[-_MIN_ELEVATED_PORT_BATCHES:])
+            anomalies.append(
+                self._new_anomaly(
+                    "latency_spike",
+                    current_points[0],
+                    value=current,
+                    baseline=baseline,
+                    threshold=threshold,
+                    sample_count=sample_count,
+                )
+            )
         return anomalies
 
     def _detect_jitter_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> list:
@@ -217,6 +295,18 @@ class DetectorAnalysisMixin:
     def _detect_loss_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> tuple[list, int]:
         baseline_paths = _group_by_path(baseline_rows)
         current_paths = _group_by_path(current_rows)
+        elevated_sources = self._elevated_loss_endpoints(
+            baseline_rows,
+            current_rows,
+            leaf_field="src_leaf",
+            client_field="src_name",
+        )
+        elevated_destinations = self._elevated_loss_endpoints(
+            baseline_rows,
+            current_rows,
+            leaf_field="dst_leaf",
+            client_field="dst_name",
+        )
         anomalies = []
         insufficient_baseline = 0
         for path_key, current_points in current_paths.items():
@@ -242,7 +332,25 @@ class DetectorAnalysisMixin:
                         sample_count=int(current["samples"]),
                     )
                 )
-            elif current["loss_pct"] >= threshold and (not current["has_counts"] or current["lost"] >= 2):
+            elif current["loss_pct"] >= threshold and (
+                not current["has_counts"]
+                or current["lost"] >= _MIN_PATH_LOST_PROBES
+                or (
+                    current["lost"] > 0
+                    and (
+                        self._resolve_leaf(
+                            str(current_points[0].get("src_leaf", "")),
+                            str(current_points[0].get("src_name", "")),
+                        )
+                        in elevated_sources
+                        or self._resolve_leaf(
+                            str(current_points[0].get("dst_leaf", "")),
+                            str(current_points[0].get("dst_name", "")),
+                        )
+                        in elevated_destinations
+                    )
+                )
+            ):
                 anomalies.append(
                     self._new_anomaly(
                         "packet_loss",

@@ -10,7 +10,9 @@ from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_p
 from netopsbench.models.topology import PingmeshPolicy
 
 DEFAULT_SONIC_VS_IMAGE = "yyyyyt123/netopsbench-sonic-vs-202505-telemetry:202505-telemetry"
-DEFAULT_CLIENT_IMAGE = "yyyyyt123/netopsbench-client:python3"
+DEFAULT_CLIENT_IMAGE = (
+    "ghcr.io/netx-lab/netopsbench-client" "@sha256:6be2d580d8c1592a684b0bf2fef039b545fa0130d4225d77a0a51c825ec599c9"
+)
 SONIC_PLATFORM = "x86_64-kvm_x86_64-r0"
 SONIC_HWSKU = "Force10-S6000"
 SONIC_HWSKU_PATH = f"/usr/share/sonic/device/{SONIC_PLATFORM}/{SONIC_HWSKU}"

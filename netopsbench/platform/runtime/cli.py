@@ -13,8 +13,8 @@ from netopsbench.platform.runtime.deployment import (
     worker_from_topology,
 )
 from netopsbench.platform.runtime.lifecycle import (
+    ensure_worker_client_agent,
     ensure_worker_observability,
-    ensure_worker_pingmesh,
     validate_worker_health,
 )
 
@@ -49,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     deploy_worker_lab(worker, args.scale, registry)
     ensure_worker_observability(worker)
-    ensure_worker_pingmesh(worker)
+    ensure_worker_client_agent(worker)
     validate_worker_health(worker, scale_registry=registry)
     return 0
 

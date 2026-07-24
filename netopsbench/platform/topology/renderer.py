@@ -10,6 +10,11 @@ from typing import Any
 
 import yaml
 
+from netopsbench.platform.client_agent.config import (
+    CLIENT_AGENT_CONFIG_NAME,
+    write_client_agent_config,
+)
+
 from .config import (
     SONIC_BASE_CONFIG_DB,
     SONIC_HWSKU,
@@ -144,7 +149,7 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
                 },
                 "linux": {
                     "image": plan.client_image,
-                    "binds": ["configs/pingmesh:/tmp/pingmesh:ro"],
+                    "binds": ["configs/client-agent:/etc/netopsbench:ro"],
                 },
             },
             "nodes": {},
@@ -182,10 +187,10 @@ def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, An
     root = Path(output_dir)
     sonic_root = root / "configs" / "sonic"
     frr_root = root / "configs" / "frr"
-    pingmesh_root = root / "configs" / "pingmesh"
+    client_agent_root = root / "configs" / "client-agent"
     sonic_root.mkdir(parents=True, exist_ok=True)
     frr_root.mkdir(parents=True, exist_ok=True)
-    pingmesh_root.mkdir(parents=True, exist_ok=True)
+    client_agent_root.mkdir(parents=True, exist_ok=True)
 
     sonic_start_wrapper = sonic_root / "start.sh"
     if not SONIC_START_WRAPPER_SOURCE.is_file():
@@ -225,9 +230,14 @@ def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, An
         json.dumps(plan.manifest.model_dump(mode="json"), indent=2) + "\n",
         encoding="utf-8",
     )
+    client_agent_config = write_client_agent_config(
+        plan.manifest,
+        client_agent_root / CLIENT_AGENT_CONFIG_NAME,
+    )
     return {
         "yaml_file": str(yaml_path),
         "metadata_file": str(metadata_path),
+        "client_agent_config_file": str(client_agent_config),
         "config_files": config_paths,
         "startup_config_files": config_paths,
         "sonic_start_wrapper_file": str(sonic_start_wrapper),

@@ -1,4 +1,5 @@
 import subprocess
+import time
 from pathlib import Path
 
 from netopsbench.models.runtime import RuntimeIdentity
@@ -118,13 +119,23 @@ def test_worker_health_retries_observability_until_collector_is_ready(tmp_path, 
             output = "".join(f"10.0.0.{index} 4 65001 0 0 0 0 0 00:10:00 1\n" for index in range(1, 5))
         elif "show interfaces status" in joined:
             output = "".join(f"Ethernet{index * 4} 1,2,3,4 100G 9100 N/A up up QSFP\n" for index in range(4))
-        elif "ps aux" in joined:
-            output = "root 1 0.0 0.0 python3 -m netopsbench.platform.pingmesh.cli\n"
         else:
             output = ""
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(health, "_docker_exec", fake_docker_exec)
+    monkeypatch.setattr(
+        health,
+        "request_agent",
+        lambda *_args, **_kwargs: {
+            "protocol_version": 1,
+            "ok": True,
+            "status": {
+                "ready": True,
+                "heartbeat_unix_ns": time.time_ns(),
+            },
+        },
+    )
     attempts = []
 
     def fake_check_observability(*_args, **_kwargs):

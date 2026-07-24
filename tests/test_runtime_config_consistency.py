@@ -2,7 +2,6 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -41,8 +40,7 @@ def test_update_telegraf_config_uses_packaged_template_and_central_defaults(tmp_
     assert rendered.count('"172.20.20.13": "leaf1"') == 1
     assert 'pattern = "^172.20.20.11$"' not in rendered
     assert (
-        'mapping_keys = ["source", "agent_host", "agent_ip", "agent", '
-        '"agent_address", "address", "target"]'
+        'mapping_keys = ["source", "agent_host", "agent_ip", "agent", ' '"agent_address", "address", "target"]'
     ) in rendered
     assert "metric.tags[key] = ip_to_device[metric.tags[key]]" in rendered
 
@@ -286,100 +284,36 @@ def test_runtime_scripts_default_sonic_apply_parallelism_to_32():
     assert APPLY_CONFIG_PARALLELISM == 32
 
 
-def test_env_example_documents_only_public_runtime_parallelism():
+def test_env_example_does_not_expose_internal_runtime_parallelism():
     env_example = Path(".env.example").read_text(encoding="utf-8")
 
-    assert "NETOPSBENCH_TRAFFIC_PARALLELISM=32" in env_example
+    assert "NETOPSBENCH_TRAFFIC_PARALLELISM" not in env_example
     assert "NETOPSBENCH_BGP_COLLECTOR_PARALLELISM" not in env_example
     assert "NETOPSBENCH_BGP_COLLECTOR_MAX_BYTES" not in env_example
 
 
-def test_pingmesh_agent_runs_from_its_package_module(tmp_path):
-    import json
-    import os
-    import subprocess
-    import sys
-    import time
+def test_native_client_image_has_no_python_or_iperf_runtime():
+    from netopsbench.platform.topology.config import DEFAULT_CLIENT_IMAGE
 
-    pinglist = tmp_path / "pinglist.json"
-    pinglist.write_text(
-        json.dumps(
-            {
-                "probes": [],
-                "topology_id": "xs",
-                "pingmesh_policy": {
-                    "destination_batch_size": None,
-                    "rtt_port_pool_size": 16,
-                    "rtt_ports_per_cycle": 8,
-                    "cycle_interval_seconds": 1,
-                    "destination_batch_count": 1,
-                    "port_batch_count": 2,
-                    "coverage_epoch_cycles": 2,
-                    "coverage_epoch_seconds": 2,
-                    "df_payload_size": 9072,
-                },
-            }
-        ),
-        encoding="utf-8",
+    dockerfile = Path("containers/client/Dockerfile").read_text(encoding="utf-8")
+
+    runtime_stage = dockerfile.split("FROM alpine:3.24.1@", 1)[1]
+    assert "python" not in runtime_stage.lower()
+    assert "iperf" not in runtime_stage.lower()
+    assert "/usr/local/bin/netopsbench-client-agent" in runtime_stage
+    assert DEFAULT_CLIENT_IMAGE.startswith("ghcr.io/netx-lab/netopsbench-client@sha256:")
+    assert ":latest" not in DEFAULT_CLIENT_IMAGE
+
+
+def test_native_management_contract_matches_rust_constants():
+    from netopsbench.platform.client_agent.contract import (
+        CONTROL_PROTOCOL_VERSION,
+        PINGMESH_CONTROL_PORT,
+        TRAFFIC_CONTROL_PORT,
     )
 
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env["HOSTNAME"] = "client1"
-
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "netopsbench.platform.pingmesh.cli", str(pinglist)],
-        cwd=str(Path.cwd()),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    time.sleep(1)
-    still_running = proc.poll() is None
-    if still_running:
-        proc.terminate()
-        stdout, stderr = proc.communicate(timeout=3)
-    else:
-        stdout, stderr = proc.communicate(timeout=3)
-
-    assert "ModuleNotFoundError" not in stderr
-    assert still_running or proc.returncode == 0
-
-    agent_text = Path("netopsbench/platform/pingmesh/agent.py").read_text(encoding="utf-8")
-    generator_text = Path("netopsbench/platform/pingmesh/generator.py").read_text(encoding="utf-8")
-    detector_text = Path("netopsbench/platform/pingmesh/detector.py").read_text(encoding="utf-8")
-
-    assert "except ModuleNotFoundError" not in agent_text
-    assert "except ModuleNotFoundError" not in generator_text
-    assert "except ModuleNotFoundError" not in detector_text
-
-
-def test_pingmesh_agent_uses_single_fanout_probe_worker():
-    from netopsbench.platform.pingmesh._agent_runtime import PingRuntimeMixin
-
-    class StopAfterCycle(Exception):
-        pass
-
-    class Runtime(PingRuntimeMixin):
-        min_interval = 1.0
-        max_interval = 1.0
-        startup_jitter_s = 0.0
-        tasks = [{"src_name": "client1", "dst_name": "client2"}]
-
-        def __init__(self):
-            self.calls = []
-
-        def next_probe_batch(self):
-            return self.tasks, {"port_batch_index": 3}
-
-        def udp_probe_cycle(self, tasks, port_batch_index):
-            self.calls.append((tasks, port_batch_index))
-            return []
-
-    runtime = Runtime()
-    with pytest.raises(StopAfterCycle):
-        with patch("netopsbench.platform.pingmesh._agent_runtime.time.sleep", side_effect=StopAfterCycle):
-            runtime.run()
-
-    assert runtime.calls == [(runtime.tasks, 3)]
+    root = Path(__file__).resolve().parents[1]
+    rust_config = (root / "native" / "client-agent" / "src" / "config.rs").read_text(encoding="utf-8")
+    assert f"CONTROL_PROTOCOL_VERSION: u32 = {CONTROL_PROTOCOL_VERSION};" in rust_config
+    assert f"PINGMESH_CONTROL_PORT: u16 = {PINGMESH_CONTROL_PORT};" in rust_config
+    assert f"TRAFFIC_CONTROL_PORT: u16 = {TRAFFIC_CONTROL_PORT};" in rust_config

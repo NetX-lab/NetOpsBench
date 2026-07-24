@@ -40,8 +40,6 @@ def build_candidate_flow(
         "dst_port": dst_port,
         "protocol": protocol,
         "bandwidth": bandwidth_by_protocol[protocol],
-        "duration": 0,
-        "parallel": 1,
     }
     if protocol == "udp":
         flow["udp_payload_len"] = udp_payload_len_bytes
@@ -61,8 +59,8 @@ def generate_traffic_config_from_topology(
     bandwidth_by_protocol: dict[str, str],
     link_mtu_bytes: int,
     switch_pps_limit,
-    iperf_server_port_base: int,
-    iperf_server_port_pool_size: int,
+    listener_port_base: int,
+    listener_port_pool_size: int,
     build_candidate_flow_fn,
     estimate_flow_pps_fn,
     estimate_client_pps_fn,
@@ -177,7 +175,7 @@ def generate_traffic_config_from_topology(
         for dst_client in ordered_candidates:
             dst_name = dst_client["name"]
             incoming_slot = incoming_flow_count[dst_name]
-            if incoming_slot >= iperf_server_port_pool_size:
+            if incoming_slot >= listener_port_pool_size:
                 rejected["destination_budget"] += 1
                 continue
             protocol = "udp" if source_flow_count[src_client["name"]] % 2 == 0 else "tcp"
@@ -188,7 +186,7 @@ def generate_traffic_config_from_topology(
                 protocol=protocol,
                 bandwidth_by_protocol=bandwidth_by_protocol,
                 link_mtu_bytes=link_mtu_bytes,
-                dst_port=iperf_server_port_base + incoming_slot,
+                dst_port=listener_port_base + incoming_slot,
             )
             if error := admission_error(candidate_flow):
                 rejected[error] += 1

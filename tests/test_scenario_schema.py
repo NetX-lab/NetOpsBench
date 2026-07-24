@@ -12,7 +12,6 @@ from netopsbench.models.profiles import default_scale_registry
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import Collector, Device, DeviceRole, Management, TopologyManifest
 from netopsbench.platform.faults.specs import FaultSpec, create_fault_registry
-from netopsbench.platform.pingmesh.generator import PinglistGenerator
 from netopsbench.platform.scenario import generator as scenario_generator
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.parser import parse_scenario_file
@@ -442,8 +441,9 @@ def _xlarge_topology_context(tmp_path):
 
 
 def _pingmesh_destination_names(topo, src_leaf: str) -> set[str]:
-    tasks = PinglistGenerator().generate(topo.manifest.model_dump(mode="json"))
-    return {task.dst_name for task in tasks if task.src_leaf == src_leaf}
+    clients = topo.manifest.clients()
+    sources = [client for client in clients if client.attached_switch == src_leaf]
+    return {destination.name for source in sources for destination in clients if destination.name != source.name}
 
 
 def _client_for_prefix(topo, prefix: str) -> dict:
@@ -538,6 +538,7 @@ def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_pat
         persist_results=False,
     )
     runner.results_dir = tmp_path
+
     def setup_traffic(scale, profile):
         events.append("traffic_ready")
         return {"scale": scale, "profile": profile}

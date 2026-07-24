@@ -20,8 +20,8 @@ BASE_SWITCH_PPS_LIMIT = 1000
 DEFAULT_LINK_MTU_BYTES = DEFAULT_LINK_MTU
 UDP_PAYLOAD_LEN_BYTES = 1400
 TCP_MSS_BYTES = 1360
-IPERF_SERVER_PORT_BASE = 5201
-IPERF_SERVER_PORT_POOL_SIZE = 4
+TRAFFIC_LISTENER_PORT_BASE = 5201
+TRAFFIC_LISTENER_PORT_POOL_SIZE = 4
 FLOWS_PER_CLIENT = 4
 
 
@@ -71,7 +71,7 @@ def generate_traffic_config_from_topology(
         raise ValueError(f"Only the standard traffic profile is supported, got: {profile_type}")
     get_scale_profile(scale, scale_registry)
     projected = coerce_topology_manifest(topology).to_agent_topology()
-    settings = settings or TrafficSettings.from_env()
+    settings = settings or TrafficSettings()
     max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     bandwidths = _standard_bandwidths(max_pps_per_client)
     link_mtu_bytes = infer_topology_link_mtu(projected, DEFAULT_LINK_MTU_BYTES)
@@ -89,8 +89,8 @@ def generate_traffic_config_from_topology(
         bandwidth_by_protocol=bandwidths,
         link_mtu_bytes=link_mtu_bytes,
         switch_pps_limit=settings.switch_pps_limit,
-        iperf_server_port_base=IPERF_SERVER_PORT_BASE,
-        iperf_server_port_pool_size=IPERF_SERVER_PORT_POOL_SIZE,
+        listener_port_base=TRAFFIC_LISTENER_PORT_BASE,
+        listener_port_pool_size=TRAFFIC_LISTENER_PORT_POOL_SIZE,
         build_candidate_flow_fn=build_flow,
         estimate_flow_pps_fn=estimate_flow_pps,
         estimate_client_pps_fn=estimate_client_pps,
@@ -130,7 +130,7 @@ def validate_traffic_config(
     settings: TrafficSettings | None = None,
     scale_registry: ScaleRegistry | None = None,
 ) -> bool:
-    settings = settings or TrafficSettings.from_env()
+    settings = settings or TrafficSettings()
     max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     stats = config.get("stats", {})
     estimated_clients = stats.get("estimated_pps_per_client") or stats.get("estimated_udp_pps_per_client", {})
@@ -156,8 +156,8 @@ def validate_traffic_config(
 __all__ = [
     "BASE_SWITCH_PPS_LIMIT",
     "FLOWS_PER_CLIENT",
-    "IPERF_SERVER_PORT_BASE",
-    "IPERF_SERVER_PORT_POOL_SIZE",
+    "TRAFFIC_LISTENER_PORT_BASE",
+    "TRAFFIC_LISTENER_PORT_POOL_SIZE",
     "estimate_client_pps",
     "estimate_flow_pps",
     "estimate_switch_pps",

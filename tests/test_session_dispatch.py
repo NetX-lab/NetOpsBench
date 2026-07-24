@@ -14,6 +14,8 @@ from netopsbench.platform.session.types import WorkerExecutionContext
 
 
 class _FakeRunner:
+    closed = 0
+
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.results_dir = Path(".")
@@ -26,6 +28,9 @@ class _FakeRunner:
             "episode": {},
             "persist_results": self.kwargs.get("persist_results"),
         }
+
+    def close(self):
+        type(self).closed += 1
 
 
 class _FakeEvaluator:
@@ -107,6 +112,7 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
     import netopsbench.platform.session.dispatch as dispatch
 
     _FakeEvaluator._next_id = 0
+    _FakeRunner.closed = 0
     runtime = RuntimePool(
         id="runtime-1",
         name="runtime-1",
@@ -147,6 +153,7 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
     assert [Path(summary["raw_result_path"]).exists() for summary in summaries] == [True, True]
     assert {item.evaluator_id for item in result.evaluations} == {1, 2}
     assert [summary["worker_id"] for summary in result.workers] == ["worker-1", "worker-2"]
+    assert _FakeRunner.closed == 2
 
 
 def test_execute_on_runtime_pool_rejects_scenario_scale_mismatch(tmp_path):
@@ -194,9 +201,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
     monkeypatch.setattr(
         dispatch,
         "score_scenario_episode",
-        lambda _scenario, _result, evaluator, **_kwargs: [
-            SimpleNamespace(score=1.0, evaluator_id=evaluator.id)
-        ],
+        lambda _scenario, _result, evaluator, **_kwargs: [SimpleNamespace(score=1.0, evaluator_id=evaluator.id)],
     )
     monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args: lambda _payload: {})
     monkeypatch.setattr(

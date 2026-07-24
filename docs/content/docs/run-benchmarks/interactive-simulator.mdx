@@ -57,7 +57,8 @@ tool and diagnosis actions. Install `netopsbench[simulator]` and run
 from accepting additional tool or submit actions after its deadline; it does
 not attempt to terminate arbitrary user threads while an action is running.
 
-When using a large topology, keep only that topology's Pingmesh, BGP collector,
-and Telegraf processes active on the host. Other labs may remain deployed and
-warm. See the observation-validity guidance in
+Large warm topologies may keep their native Pingmesh, BGP collector, and
+Telegraf processes active together. The simulator still rejects an incident
+when the active topology does not meet readiness or complete-coverage gates.
+See the observation-validity guidance in
 [Benchmark Methodology](/docs/run-benchmarks/methodology).

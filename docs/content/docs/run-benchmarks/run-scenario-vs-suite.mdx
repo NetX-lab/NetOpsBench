@@ -103,7 +103,6 @@ Useful environment overrides:
 | `BENCH_SCALES` | Space-separated scale list such as `xs small`. |
 | `BENCH_WORKERS_<SCALE>` | Worker count override for one scale, for example `BENCH_WORKERS_LARGE=2`. |
 | `BENCH_CLEAN_RUNS=1` | Explicitly remove previous `.netopsbench/runs/` artifacts before the batch. By default, previous reports and traces are preserved. |
-| `NETOPSBENCH_TRAFFIC_PARALLELISM` | Bounded client traffic start/stop concurrency; defaults to 32. |
 
 The script writes logs under `scenario_results/benchmark_logs_<timestamp>/`, records the run ids for the batch in `benchmark_runs_<timestamp>.jsonl`, and writes a CSV summary under `scenario_results/benchmark_summary_<timestamp>.csv`. Run artifacts use timestamp ids such as `run-20260605T124040Z`; use `netopsbench trace view` to sync trace-enabled runs into the local Harbor viewer cache and inspect saved traces.
 

@@ -15,8 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from netopsbench.config import config
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
+from netopsbench.platform.client_agent.deploy import deploy_client_agents
 from netopsbench.platform.observability.lifecycle import ensure_worker_observability
-from netopsbench.platform.pingmesh.deploy import deploy_pingmesh
 from netopsbench.platform.runtime.deployment import (
     allocate_management_subnets,
     deploy_worker_lab,
@@ -120,14 +120,12 @@ def deploy_workers(
         raise error
 
 
-def ensure_worker_pingmesh(worker: RuntimeIdentity) -> None:
-    deploy_pingmesh(
+def ensure_worker_client_agent(worker: RuntimeIdentity) -> None:
+    deploy_client_agents(
         topology_dir=str(worker.topology_dir),
-        pinglist_file=str(Path(worker.topology_dir) / "configs" / "pingmesh" / "pinglist.json"),
         influxdb_token=config.influxdb_token,
         influxdb_org=config.influxdb_org,
         influxdb_bucket=worker.bucket,
-        topology_id=worker.topology_id,
     )
 
 
@@ -217,7 +215,7 @@ class RuntimeLifecycle:
     @staticmethod
     def _ensure_pingmesh(runtime: RuntimePoolLike) -> dict[str, Any]:
         for worker in runtime.workers:
-            ensure_worker_pingmesh(worker)
+            ensure_worker_client_agent(worker)
         return {"workers": runtime.size}
 
     def _warm(self, runtime: RuntimePoolLike) -> dict[str, Any]:
@@ -236,7 +234,7 @@ __all__ = [
     "RuntimeLifecycleError",
     "deploy_workers",
     "ensure_worker_observability",
-    "ensure_worker_pingmesh",
+    "ensure_worker_client_agent",
     "teardown_workers",
     "validate_worker_health",
 ]

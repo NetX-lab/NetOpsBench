@@ -84,8 +84,6 @@ def client_commands(client_ip: str, gateway: str) -> tuple[str, ...]:
         "ip link set dev eth1 mtu 9232",
         f"ip addr add {client_ip}/30 dev eth1",
         f"ip route add 192.168.0.0/16 via {gateway}",
-        "mkdir -p /var/log/pingmesh",
-        "iperf3 -s -D",
         "ethtool -K eth1 rx off tx off tso off gso off gro off sg off tx-udp-segmentation off",
     )
 

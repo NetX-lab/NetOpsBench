@@ -150,6 +150,9 @@ def _install_real_runtime_mocks(monkeypatch):
                 },
             }
 
+        def close(self):
+            return None
+
     monkeypatch.setattr(dispatch_mod, "ScenarioExecutor", FakeScenarioExecutor)
     monkeypatch.setattr(dispatch_mod, "load_topology_metadata", lambda _topology_dir: None)
     monkeypatch.setattr(dispatch_mod, "_create_evaluator", _FakeEvaluator)
@@ -370,12 +373,12 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert set(canonical["symptoms"]["observations"]) <= set(agent.context.symptoms["observations"])
     assert canonical["topology_summary"] == {
         "family": "unknown",
-            "spines": 0,
-            "leafs": 0,
-            "cores": 0,
-            "aggs": 0,
-            "edges": 0,
-            "clients": 0,
+        "spines": 0,
+        "leafs": 0,
+        "cores": 0,
+        "aggs": 0,
+        "edges": 0,
+        "clients": 0,
         "links": 0,
     }
 

@@ -59,20 +59,28 @@ Scenarios are generated from the packaged canonical campaign spec. Running `neto
 
 ## Observation validity
 
-Pingmesh compares an explicit healthy baseline with the fault observation window. A path is reported as a latency spike only when the median `rtt_avg` for that source/destination path increases by at least 20 ms; an isolated RTT peak does not qualify. This rule is shared by built-in and custom topologies and intentionally does not detect smaller latency changes.
+Pingmesh compares an explicit healthy baseline with the fault observation
+window. A path is reported as a latency spike when its median `rtt_avg`
+increases by at least 20 ms, or when the median increases by at least 20 ms in
+two independent ECMP port batches. A peak or a single elevated port batch does
+not qualify. Packet-loss evidence likewise combines a strong per-path count
+with source/destination leaf concentration, so uniformly distributed
+background loss is not presented as a localized fault. These rules are shared
+by built-in and custom topologies.
 
 Background traffic must start its complete topology-derived flow matrix before the baseline is captured. A partial matrix is an infrastructure-invalid case, rather than a degraded observation presented to the agent.
 
-On one host, run observability for only one large topology at a time. Other
-Containerlab topologies may remain deployed and warm, but pause their Pingmesh,
-BGP collector, and Telegraf processes while measuring the active large
-topology. Co-running multiple large telemetry pipelines causes host scheduling
-pressure that can appear as network latency. This is an operational constraint,
-not part of scenario or detector semantics.
+Each topology sends native Pingmesh batches through its topology-local
+Telegraf listener. Multiple warm topologies may therefore keep observability
+active together; readiness and complete coverage remain mandatory for every
+case. Host capacity is not hidden by a longer timeout or a topology-specific
+detector threshold.
 
-The 0.2 collector retains complete BGP snapshots. On xlarge topologies this
-file-to-Telegraf path may fall behind its 10-second polling interval, so use
-the tool's reported data freshness when interpreting BGP event evidence.
+The 0.2 collector polls BGP every 10 seconds. On topologies with more than 128
+routing devices, every poll writes the collection index, state transitions,
+and all non-Established neighbors; stable complete-neighbor snapshots are
+written every 60 seconds. Use the tool's reported data freshness when
+interpreting BGP evidence.
 
 ## Scoring dimensions
 

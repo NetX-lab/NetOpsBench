@@ -33,7 +33,7 @@ def _record_lifecycle_operations(monkeypatch, calls, *, fail_stage=None):
     )
     monkeypatch.setattr(
         lifecycle,
-        "ensure_worker_pingmesh",
+        "ensure_worker_client_agent",
         lambda worker: record("pingmesh", worker.runtime_id),
     )
     monkeypatch.setattr(
@@ -218,11 +218,7 @@ def test_worker_telegraf_exposes_pingmesh_ingest_before_returning(tmp_path, monk
 
     lifecycle.ensure_worker_telegraf(worker)
 
-    run_command = next(
-        command
-        for kind, command, _kwargs in calls
-        if kind == "command" and "run" in command
-    )
+    run_command = next(command for kind, command, _kwargs in calls if kind == "command" and "run" in command)
     alias_index = run_command.index("--network-alias")
     assert run_command[alias_index + 1] == "telegraf"
     assert calls[-1] == ("ready", Path(worker.topology_dir) / "topology.json")
@@ -426,8 +422,18 @@ def test_runtime_pool_exposes_required_lifecycle_surface(tmp_path, monkeypatch):
     assert callable(runtime.status)
     assert callable(runtime.teardown)
     assert runtime.status()["state"] == "warm"
-    assert [stage for stage, _ in calls] == ["deploy", "observability", "pingmesh", "warm"]
-    assert set(runtime.stage_results) == {"deploy", "observability", "pingmesh", "warm"}
+    assert [stage for stage, _ in calls] == [
+        "deploy",
+        "observability",
+        "pingmesh",
+        "warm",
+    ]
+    assert set(runtime.stage_results) == {
+        "deploy",
+        "observability",
+        "pingmesh",
+        "warm",
+    }
 
     torn_down = runtime.teardown()
 
@@ -499,7 +505,12 @@ def test_runtime_manager_provision_composes_lifecycle_stages(tmp_path, monkeypat
 
     assert runtime.state == "warm"
     assert runtime.metadata["provisioning_mode"] == "worker_pool"
-    assert [stage for stage, _ in calls] == ["deploy", "observability", "pingmesh", "warm"]
+    assert [stage for stage, _ in calls] == [
+        "deploy",
+        "observability",
+        "pingmesh",
+        "warm",
+    ]
     assert runtime.workers[0].topology_id == "runtime-xs"
     assert runtime.workers[0].topology_dir == runtime.root_dir / "worker-1"
 

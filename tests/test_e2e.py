@@ -24,10 +24,10 @@ from netopsbench.evaluator.scorer import AgentOutput, EvaluationResult, Evaluato
 from netopsbench.models.profiles import supported_scales
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
+from netopsbench.platform.client_agent.config import build_client_agent_config
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.services.topology_runtime import TopologyRuntime
 from netopsbench.platform.faults.specs import create_fault_registry
-from netopsbench.platform.pingmesh.generator import PinglistGenerator, generate_pinglist_from_topology
 from netopsbench.platform.scenario.generator import parse_bgp_config, parse_network_interfaces
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
@@ -92,11 +92,13 @@ class TestTopologyGeneration:
             ) in binds
             assert "configs/sonic/start.sh:/usr/bin/start.sh:ro" in binds
             assert "configs/frr/__clabNodeName__.conf:/etc/frr/frr.conf:rw" in binds
-            assert "configs/pingmesh:/tmp/pingmesh:ro" in linux_binds
+            assert "configs/client-agent:/etc/netopsbench:ro" in linux_binds
 
             assert not list(Path(tmpdir, "configs").glob("*.sh"))
             assert not list(Path(tmpdir, "configs").glob("*.configdb.json"))
-            assert Path(tmpdir, "configs", "pingmesh").is_dir()
+            client_agent_dir = Path(tmpdir, "configs", "client-agent")
+            assert client_agent_dir.is_dir()
+            assert (client_agent_dir / "client-agent.json").is_file()
 
             manifest = TopologyManifest.model_validate(result["metadata"])
             first_routing = manifest.routing_devices()[0].name
@@ -265,49 +267,32 @@ class TestAgentToolkit:
             assert "client1" in toolkit.container_names
 
 
-class TestPingmeshGenerator:
-    """Tests for Pingmesh pinglist generation across topology scales."""
+class TestClientAgentConfig:
+    """Tests for the compact native client-agent configuration."""
 
     @pytest.mark.parametrize("scale", supported_scales())
-    def test_pinglist_scales_with_topology(self, scale):
-        """Pinglist should be N*(N-1) for N clients across all scales."""
+    def test_config_scales_linearly_with_topology(self, scale):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = generate_topology(scale, tmpdir)
-            metadata = result["metadata"]
+            manifest = TopologyManifest.model_validate(result["metadata"])
+            payload = build_client_agent_config(manifest)
 
-            generator = PinglistGenerator()
-            tasks = generator.generate(metadata)
+            assert len(payload["clients"]) == manifest.facts.total_clients
+            assert len({client["name"] for client in payload["clients"]}) == len(payload["clients"])
+            assert "probes" not in payload
 
-            total_clients = TopologyManifest.model_validate(metadata).facts.total_clients
-            assert len(tasks) == total_clients * (total_clients - 1)
-            assert all(t.src_name != t.dst_name for t in tasks)
-            assert {t.path_type for t in tasks}.issubset({"same_rack", "cross_rack"})
-
-    def test_xlarge_pinglist_uses_full_universe_with_bounded_runtime_policy(self):
+    def test_xlarge_config_is_deterministic_and_bounded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = generate_topology("xlarge", tmpdir)
-            output_file = Path(tmpdir) / "pinglist.json"
+            manifest = TopologyManifest.model_validate(result["metadata"])
+            first = build_client_agent_config(manifest)
+            second = build_client_agent_config(manifest)
 
-            first = generate_pinglist_from_topology(result["metadata_file"], str(output_file))
-            second = generate_pinglist_from_topology(result["metadata_file"], str(output_file))
-
-            assert [(task.src_name, task.dst_name) for task in first] == [
-                (task.src_name, task.dst_name) for task in second
-            ]
-            assert len(first) == 128 * 127
-            per_src: dict[str, int] = {}
-            per_dst: dict[str, int] = {}
-            for task in first:
-                per_src[task.src_name] = per_src.get(task.src_name, 0) + 1
-                per_dst[task.dst_name] = per_dst.get(task.dst_name, 0) + 1
-                assert task.src_name != task.dst_name
-            assert set(per_src.values()) == {127}
-            assert set(per_dst.values()) == {127}
-
-            payload = json.loads(output_file.read_text(encoding="utf-8"))
-            assert payload["total_probes"] == 128 * 127
-            assert payload["pingmesh_policy"]["destination_batch_size"] == 16
-            assert payload["pingmesh_policy"]["coverage_epoch_cycles"] == 32
+            assert first == second
+            assert len(first["clients"]) == 128
+            assert len(json.dumps(first).encode()) < 100_000
+            assert first["pingmesh_policy"]["destination_batch_size"] == 16
+            assert first["pingmesh_policy"]["coverage_epoch_cycles"] == 32
 
 
 class TestFastMCPServer:
@@ -355,11 +340,7 @@ class TestFastMCPServer:
 
         assert schemas.keys() == specs.keys()
         for name, spec in specs.items():
-            parameters = {
-                parameter
-                for parameter in inspect.signature(spec.handler).parameters
-                if parameter != "self"
-            }
+            parameters = {parameter for parameter in inspect.signature(spec.handler).parameters if parameter != "self"}
             assert set(schemas[name]["input_schema"]["properties"]) == parameters
             assert schemas[name]["input_schema"]["additionalProperties"] is False
 

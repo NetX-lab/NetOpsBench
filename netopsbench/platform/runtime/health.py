@@ -22,6 +22,11 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.topology import DeviceRole, TopologyManifest
+from netopsbench.platform.client_agent.contract import (
+    HEARTBEAT_MAX_AGE_SECONDS,
+    PINGMESH_CONTROL_PORT,
+)
+from netopsbench.platform.client_agent.control import request_agent
 from netopsbench.platform.topology.topology_utils import (
     clab_container_name,
     coerce_topology_manifest,
@@ -287,8 +292,8 @@ def check_worker_health(
             errors.append(coverage_error)
             return errors
 
-    # [4/5] Client connectivity + Pingmesh agent
-    logger.info("[4/5] Checking client connectivity and Pingmesh agent...")
+    # [4/5] Client connectivity + native Pingmesh process
+    logger.info("[4/5] Checking client connectivity and native Pingmesh process...")
     src_client = clients[0]
     src_name = str(src_client.get("name", ""))
     src_leaf = str(src_client.get("leaf", ""))
@@ -318,15 +323,26 @@ def check_worker_health(
         errors.append(f"client connectivity failed from {src_container} to {dst_ip}")
         return errors
 
-    agent_running = False
+    management_ip = str(src_client.get("mgmt_ip", "")).strip()
+    agent_ready = False
     for _ in range(retries):
-        ret = _docker_exec(src_container, "ps", "aux")
-        if "netopsbench.platform.pingmesh.cli" in (ret.stdout or ""):
-            agent_running = True
+        try:
+            response = request_agent(management_ip, PINGMESH_CONTROL_PORT, "status")
+        except (OSError, RuntimeError, ValueError):
+            response = {}
+        status = response.get("status") or {}
+        heartbeat_ns = int(status.get("heartbeat_unix_ns", 0) or 0)
+        heartbeat_age = time.time() - heartbeat_ns / 1_000_000_000
+        if (
+            response.get("ok") is True
+            and status.get("ready") is True
+            and 0 <= heartbeat_age <= HEARTBEAT_MAX_AGE_SECONDS
+        ):
+            agent_ready = True
             break
         time.sleep(delay)
-    if not agent_running:
-        errors.append(f"Pingmesh agent is not running in {src_container}")
+    if not agent_ready:
+        errors.append(f"Native Pingmesh process is not ready in {src_container}")
         return errors
 
     # [5/5] InfluxDB observability path

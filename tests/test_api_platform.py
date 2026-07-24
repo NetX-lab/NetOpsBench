@@ -136,12 +136,12 @@ def test_session_orchestrator_is_available_under_platform_session_package():
     assert SessionOrchestrator.__module__ == "netopsbench.platform.session.orchestrator"
 
 
-def test_worker_health_check_tracks_the_deployed_pingmesh_agent_path():
+def test_worker_health_check_tracks_the_native_client_agent_contract():
     repo = Path(__file__).resolve().parents[1]
-    deploy_py = (repo / "netopsbench" / "platform" / "pingmesh" / "deploy.py").read_text(encoding="utf-8")
+    deploy_py = (repo / "netopsbench" / "platform" / "client_agent" / "deploy.py").read_text(encoding="utf-8")
+    contract_py = (repo / "netopsbench" / "platform" / "client_agent" / "contract.py").read_text(encoding="utf-8")
     health_py = (repo / "netopsbench" / "platform" / "runtime" / "health.py").read_text(encoding="utf-8")
 
-    expected_path = "/tmp/pingmesh/netopsbench/platform/pingmesh/cli.py"
-
-    assert expected_path in deploy_py
-    assert "netopsbench.platform.pingmesh.cli" in health_py
+    assert "/usr/local/bin/netopsbench-client-agent" in deploy_py
+    assert "PINGMESH_CONTROL_PORT = 9910" in contract_py
+    assert "request_agent" in health_py
