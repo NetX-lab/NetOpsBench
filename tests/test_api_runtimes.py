@@ -653,6 +653,49 @@ def test_worker_teardown_without_generated_manifest_uses_exact_lab_name(monkeypa
     assert ["containerlab", "destroy", "--name", "runtime-xs", "--cleanup"] in commands
 
 
+def test_worker_teardown_uses_scale_profile_timeout(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from netopsbench.models.runtime import RuntimeIdentity
+    from netopsbench.platform.runtime import deployment
+
+    topology_dir = tmp_path / "worker-1"
+    topology_dir.mkdir()
+    (topology_dir / "topology.json").write_text("{}", encoding="utf-8")
+    (topology_dir / "runtime-k12.clab.yaml").write_text("name: runtime-k12\n", encoding="utf-8")
+    worker = RuntimeIdentity.create(
+        runtime_id="runtime-k12",
+        worker_id="worker-1",
+        worker_index=1,
+        lab_name="runtime-k12",
+        topology_dir=topology_dir,
+        mgmt_subnet="172.31.1.0/24",
+        mgmt_network="clab-mgmt-runtime-k12",
+    )
+    calls = []
+
+    def fake_safe_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(deployment, "safe_run", fake_safe_run)
+    monkeypatch.setattr(deployment, "_stop_collector", lambda _path: None)
+    monkeypatch.setattr(deployment, "_lab_container_names", lambda *_args: [])
+    monkeypatch.setattr(deployment, "_wait_for_lab_removal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deployment, "docker_prefix", lambda: [])
+    monkeypatch.setattr(deployment, "sudo_prefix", lambda: [])
+    monkeypatch.setattr(
+        deployment,
+        "load_topology_manifest",
+        lambda _path: SimpleNamespace(scale="fat-tree-k12"),
+    )
+
+    deployment.teardown_worker_lab(worker)
+
+    destroy_call = next(call for call in calls if "containerlab" in call[0])
+    assert destroy_call[1]["timeout"] == 5400
+
+
 def test_provision_cleans_up_metadata_on_deploy_failure(tmp_path, monkeypatch):
     import netopsbench.platform.runtime.manager as runtimes_mod
 

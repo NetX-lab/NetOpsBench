@@ -176,7 +176,8 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
     )
     if profile is not None and profile.containerlab_max_workers is not None:
         command.extend(["--max-workers", str(profile.containerlab_max_workers)])
-    safe_run(command, cwd=topology_dir, check=False, timeout=600)
+    teardown_timeout = profile.deploy_timeout_seconds if profile is not None else 600
+    safe_run(command, cwd=topology_dir, check=False, timeout=teardown_timeout)
 
     names = _lab_container_names(docker, worker.lab_name)
     if names:
