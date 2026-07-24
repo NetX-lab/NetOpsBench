@@ -309,7 +309,7 @@ def test_native_client_image_has_no_python_or_iperf_runtime():
     assert "python" not in runtime_stage.lower()
     assert "iperf" not in runtime_stage.lower()
     assert "/usr/local/bin/netopsbench-client-agent" in runtime_stage
-    assert DEFAULT_CLIENT_IMAGE.startswith("ghcr.io/netx-lab/netopsbench-client@sha256:")
+    assert DEFAULT_CLIENT_IMAGE.startswith("docker.io/yyyyyt123/netopsbench-client@sha256:")
     assert ":latest" not in DEFAULT_CLIENT_IMAGE
     assert DEFAULT_SONIC_VS_IMAGE.startswith("yyyyyt123/netopsbench-sonic-vs-202505-telemetry@sha256:")
 
