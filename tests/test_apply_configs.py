@@ -213,6 +213,87 @@ def test_apply_single_device_preseed_activates_without_shell_copy(monkeypatch, t
     assert "pkill -x telemetry" in joined
 
 
+def test_expected_interface_addresses_ignores_marker_keys(tmp_path):
+    config = tmp_path / "config_db.json"
+    config.write_text(
+        (
+            '{"INTERFACE": {'
+            '"Ethernet0": {}, '
+            '"Ethernet0|10.1.1.2/30": {}, '
+            '"Ethernet4|10.2.1.2/30": {}'
+            "}}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert apply_configs._expected_interface_addresses(str(config)) == {
+        "Ethernet0": {"10.1.1.2/30"},
+        "Ethernet4": {"10.2.1.2/30"},
+    }
+
+
+def test_reconcile_preseed_interfaces_repairs_only_missing_kernel_address(monkeypatch, tmp_path):
+    config = tmp_path / "config_db.json"
+    config.write_text(
+        (
+            '{"INTERFACE": {'
+            '"Ethernet0|10.1.1.2/30": {}, '
+            '"Ethernet4|10.2.1.2/30": {}'
+            "}}\n"
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    inspection_count = 0
+
+    def fake_safe_run(cmd, **kwargs):
+        nonlocal inspection_count
+        calls.append(cmd)
+        if cmd[-4:] == ["ip", "-j", "address", "show"]:
+            inspection_count += 1
+            addresses = [
+                {
+                    "ifname": "Ethernet4",
+                    "addr_info": [{"local": "10.2.1.2", "prefixlen": 30}],
+                }
+            ]
+            if inspection_count > 1:
+                addresses.append(
+                    {
+                        "ifname": "Ethernet0",
+                        "addr_info": [{"local": "10.1.1.2", "prefixlen": 30}],
+                    }
+                )
+            return _completed(cmd, stdout=__import__("json").dumps(addresses))
+        return _completed(cmd)
+
+    monkeypatch.setattr(apply_configs, "safe_run", fake_safe_run)
+
+    assert apply_configs._reconcile_preseed_interfaces([], "clab-demo-leaf1", str(config)) == []
+    assert any(cmd[-6:] == ["ip", "link", "set", "dev", "Ethernet0", "up"] for cmd in calls)
+    assert any(
+        cmd[-6:] == ["ip", "address", "replace", "10.1.1.2/30", "dev", "Ethernet0"]
+        for cmd in calls
+    )
+    assert not any("Ethernet4" in cmd and "replace" in cmd for cmd in calls)
+
+
+def test_reconcile_preseed_interfaces_reports_persistent_drift(monkeypatch, tmp_path):
+    config = tmp_path / "config_db.json"
+    config.write_text('{"INTERFACE": {"Ethernet0|10.1.1.2/30": {}}}\n', encoding="utf-8")
+
+    def fake_safe_run(cmd, **kwargs):
+        if cmd[-4:] == ["ip", "-j", "address", "show"]:
+            return _completed(cmd, stdout="[]")
+        return _completed(cmd)
+
+    monkeypatch.setattr(apply_configs, "safe_run", fake_safe_run)
+
+    assert apply_configs._reconcile_preseed_interfaces([], "clab-demo-leaf1", str(config)) == [
+        "Ethernet0|10.1.1.2/30"
+    ]
+
+
 def test_apply_single_device_requires_preseed_config(monkeypatch, tmp_path):
     wait_called = False
 
