@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,12 +13,13 @@ from netopsbench.agents.base import DiagnosticContext
 from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.logging_utils import get_logger
-from netopsbench.platform.session.context import (
+from netopsbench.platform.incident.context import (
     _extract_episode_pingmesh_query_window,
 )
+from netopsbench.platform.incident.engine import DiagnosticSession, SessionToolGateway
 from netopsbench.platform.session.trace_store import TraceWriter
 from netopsbench.platform.session.types import WorkerExecutionContext
-from netopsbench.platform.simulator.engine import DiagnosticSession, SessionToolGateway
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -70,15 +70,8 @@ def build_runtime_diagnosis_callback(
         pingmesh_query_window = _extract_episode_pingmesh_query_window(episode_result)
         window_start = pingmesh_query_window.get("start_time")
         window_end = pingmesh_query_window.get("end_time")
-        if window_start and window_end:
-            try:
-                context_dir.mkdir(parents=True, exist_ok=True)
-                context_file.write_text(
-                    json.dumps({"start_time": window_start, "end_time": window_end}),
-                    encoding="utf-8",
-                )
-            except OSError:
-                logger.debug("failed to write pingmesh context file", exc_info=True)
+        context_payload = {"start_time": window_start, "end_time": window_end} if window_start and window_end else {}
+        atomic_write_json(context_file, context_payload)
 
         case_id = str(diagnostic_payload["case_id"])
         topology = diagnostic_payload["topology"]

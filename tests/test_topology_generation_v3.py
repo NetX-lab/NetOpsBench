@@ -51,6 +51,19 @@ def test_renderer_persists_only_canonical_schema_v3_devices(tmp_path, scale, rol
         assert "edge" not in client
 
 
+def test_renderer_atomically_removes_stale_device_artifacts(tmp_path):
+    output = tmp_path / "topology"
+    generate_topology("small", str(output))
+    assert (output / "configs" / "sonic" / "leaf4").is_dir()
+
+    generate_topology("xs", str(output))
+
+    assert not (output / "configs" / "sonic" / "leaf4").exists()
+    assert not (output / "configs" / "frr" / "leaf4.conf").exists()
+    assert not list(tmp_path.glob(".topology.staging-*"))
+    assert not (tmp_path / ".topology.backup").exists()
+
+
 def test_clos_builder_returns_complete_fabric_plan_without_writing(tmp_path):
     output_dir = tmp_path / "not-rendered"
     plan = build_clos_plan(TopologyConfig(scale_name="xs"))

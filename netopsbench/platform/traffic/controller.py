@@ -111,21 +111,27 @@ class TrafficController:
             raise RuntimeError(f"Traffic plan references unknown clients: {', '.join(unknown)}")
 
         started = time.monotonic()
-        self.generation = time.time_ns() & 0xFFFF_FFFF_FFFF_FFFF or 1
+        generation = time.time_ns() & 0xFFFF_FFFF_FFFF_FFFF or 1
         plans = _client_plans(self.management_ips, flows)
-        self.plan_digests = {client: _plan_digest(plan) for client, plan in plans.items()}
+        plan_digests = {client: _plan_digest(plan) for client, plan in plans.items()}
         load_requests = {
             client: (
                 "load_plan",
                 {
-                    "generation": self.generation,
-                    "plan_digest": self.plan_digests[client],
+                    "generation": generation,
+                    "plan_digest": plan_digests[client],
                     "plan": plan,
                 },
             )
             for client, plan in plans.items()
         }
         try:
+            # A topology switches generations as one unit. Clear every client
+            # first so a partial load can never leave old and new plans active
+            # at the same time.
+            self._reset_all()
+            self.generation = generation
+            self.plan_digests = plan_digests
             self._parallel_requests(load_requests)
             listeners_ready_at = time.monotonic()
             enable_requests = {
@@ -154,9 +160,10 @@ class TrafficController:
                     raise RuntimeError(f"Native traffic did not become ready within 15s: {details}")
                 time.sleep(0.2)
         except Exception:
-            self._disable_best_effort()
+            self._reset_all_best_effort()
             self.generation = 0
             self.plan_digests.clear()
+            self.active_flows.clear()
             raise
 
         self.active_flows = {flow.flow_id: flow for flow in flows}
@@ -216,6 +223,16 @@ class TrafficController:
         }
         try:
             self._parallel_requests(requests)
+        except RuntimeError as exc:
+            return [str(exc)]
+        return []
+
+    def _reset_all(self) -> None:
+        self._parallel_requests({client: ("reset", {}) for client in self.management_ips})
+
+    def _reset_all_best_effort(self) -> list[str]:
+        try:
+            self._reset_all()
         except RuntimeError as exc:
             return [str(exc)]
         return []

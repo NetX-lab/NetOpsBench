@@ -1,7 +1,7 @@
 version: '3'
 services:
   influxdb:
-    image: influxdb:2.7
+    image: influxdb@sha256:b8d940ca8ee2f1baee2d7400f1abcafef65a70c1a03846111280e4b9662e631b
     container_name: influxdb
     ports:
       - "8086:8086"
@@ -17,7 +17,7 @@ services:
       - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${NETOPSBENCH_INFLUXDB_TOKEN:-replace-me}
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana@sha256:5dad0df6f3d33b103cb1f0161bd850ed8d684710cac99cb072494061ccd4e9ee
     container_name: grafana
     ports:
       - "3000:3000"

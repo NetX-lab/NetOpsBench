@@ -296,13 +296,13 @@ def check_worker_health(
     logger.info("[4/5] Checking client connectivity and native Pingmesh process...")
     src_client = clients[0]
     src_name = str(src_client.get("name", ""))
-    src_leaf = str(src_client.get("leaf", ""))
+    src_attached_switch = str(src_client.get("attached_switch", ""))
     dst_ip = ""
     # Prefer cross-rack destination
     for other in clients[1:]:
         other_ip = str(other.get("data_ip", "")).strip()
-        other_leaf = str(other.get("leaf", "")).strip()
-        if other_leaf != src_leaf and other_ip:
+        other_attached_switch = str(other.get("attached_switch", "")).strip()
+        if other_attached_switch != src_attached_switch and other_ip:
             dst_ip = other_ip
             break
         if not dst_ip and other_ip:

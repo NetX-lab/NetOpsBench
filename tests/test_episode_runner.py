@@ -48,6 +48,7 @@ class StubExecutor:
         self.baseline_windows.append(baseline_window)
         return {"windows": list(windows), "total": total_duration_seconds}
 
+
 def _episode(**overrides) -> EpisodeSpec:
     values = {
         "episode_id": "diagnosis",
@@ -96,6 +97,8 @@ def test_observation_keeps_fault_active_for_incident_engine():
 
     assert active["state"] == "active"
     assert executor.calls == ["inject", "capture:steady:2", "merge"]
+
+
 def test_interactive_kernel_uses_explicit_cached_baseline_window():
     executor = StubExecutor()
     baseline = {"start_time": "2026-07-15T00:00:00Z", "end_time": "2026-07-15T00:01:00Z"}

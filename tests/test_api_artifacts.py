@@ -78,7 +78,7 @@ def test_artifact_manager_lists_and_exports_run_traces(tmp_path):
     trace_dir.mkdir(parents=True)
     (run_dir / "traces" / "index.jsonl").write_text(
         '{"trace_id":"t1","run_id":"run-123","case_id":"case-1","scenario_id":"scenario-1","worker":"worker-1","agent":"agent","model":"model","provider":"provider","atif_path":"'
-        + str(trace_dir / "trajectory.atif.json")
+        + str(trace_dir / "trajectory-t1.atif.json")
         + '"}\n',
         encoding="utf-8",
     )
@@ -86,7 +86,7 @@ def test_artifact_manager_lists_and_exports_run_traces(tmp_path):
         '{"trace_id":"t1","score":1.0}\n',
         encoding="utf-8",
     )
-    (trace_dir / "trajectory.atif.json").write_text(
+    (trace_dir / "trajectory-t1.atif.json").write_text(
         '{"schema_version":"ATIF-v1.7","session_id":"run-123","trajectory_id":"t1","agent":{},"steps":[],"final_metrics":{},"extra":{"case_id":"case-1","scenario_id":"scenario-1"}}',
         encoding="utf-8",
     )
@@ -98,7 +98,7 @@ def test_artifact_manager_lists_and_exports_run_traces(tmp_path):
     assert rows[0]["trace_id"] == "t1"
     assert rows[0]["case_id"] == "case-1"
     assert result_rows == [{"trace_id": "t1", "score": 1.0}]
-    assert (output / "netopsbench-run-123" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (output / "netopsbench-run-123" / "scenario-1__case-1__t1" / "agent" / "trajectory.json").exists()
 
 
 def test_benchmark_report_save_and_load_roundtrip(tmp_path):

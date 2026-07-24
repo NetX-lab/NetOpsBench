@@ -152,6 +152,10 @@ async fn handle_request(
                 Err(error) => Err(error),
             }
         }
+        "reset" => {
+            runtime.reset().await;
+            Ok(())
+        }
         "status" => Ok(()),
         other => Err(format!("unsupported operation {other}")),
     };
@@ -179,11 +183,26 @@ impl TrafficRuntime {
         self.stop_listeners().await;
         let mut handles = Vec::with_capacity(payload.plan.listeners.len());
         for listener in &payload.plan.listeners {
-            let handle = match listener.protocol {
-                Transport::Tcp => spawn_tcp_listener(self.local_ip, listener.port).await?,
-                Transport::Udp => spawn_udp_listener(self.local_ip, listener.port).await?,
+            let result = match listener.protocol {
+                Transport::Tcp => spawn_tcp_listener(self.local_ip, listener.port).await,
+                Transport::Udp => spawn_udp_listener(self.local_ip, listener.port).await,
             };
-            handles.push(handle);
+            match result {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    for handle in &handles {
+                        handle.abort();
+                    }
+                    for handle in handles {
+                        let _ = handle.await;
+                    }
+                    self.plan = None;
+                    let mut status = self.status.lock().await;
+                    *status = AgentStatus::default();
+                    status.refresh_heartbeat();
+                    return Err(error);
+                }
+            }
         }
         self.listener_tasks = handles;
         self.plan = Some(payload.plan);
@@ -198,6 +217,15 @@ impl TrafficRuntime {
         status.ready = status.active_listeners == status.expected_listeners;
         status.last_error = None;
         Ok(())
+    }
+
+    async fn reset(&mut self) {
+        self.disable().await;
+        self.stop_listeners().await;
+        self.plan = None;
+        let mut status = self.status.lock().await;
+        *status = AgentStatus::default();
+        status.refresh_heartbeat();
     }
 
     async fn enable(&mut self, payload: GenerationPayload) -> Result<()> {
@@ -272,7 +300,9 @@ async fn spawn_tcp_listener(local_ip: Ipv4Addr, port: u16) -> Result<JoinHandle<
                         }
                     });
                 }
-                Err(error) => eprintln!("TCP traffic accept failed on {port}: {error}"),
+                Err(error) => {
+                    crate::logging::error(format!("TCP traffic accept failed on {port}: {error}"))
+                }
             }
         }
     }))
@@ -286,7 +316,7 @@ async fn spawn_udp_listener(local_ip: Ipv4Addr, port: u16) -> Result<JoinHandle<
         let mut buffer = vec![0_u8; 65_535];
         loop {
             if let Err(error) = socket.recv_from(&mut buffer).await {
-                eprintln!("UDP traffic receive failed on {port}: {error}");
+                crate::logging::error(format!("UDP traffic receive failed on {port}: {error}"));
                 sleep(Duration::from_millis(100)).await;
             }
         }
@@ -553,7 +583,7 @@ fn spawn_tcp_connect(local_ip: Ipv4Addr, flow: FlowPlan) -> JoinHandle<Result<Tc
             .bind(SocketAddr::V4(SocketAddrV4::new(local_ip, 0)))
             .context("bind TCP socket")?;
         if flow.tcp_mss > 0 {
-            set_tcp_mss(socket.as_raw_fd(), flow.tcp_mss);
+            set_tcp_mss(socket.as_raw_fd(), flow.tcp_mss).context("set TCP_MAXSEG")?;
         }
         let destination = SocketAddr::V4(SocketAddrV4::new(flow.dst_ip, flow.dst_port));
         timeout(CONNECT_TIMEOUT, socket.connect(destination))
@@ -592,17 +622,22 @@ fn reconnect_delay_for(flow_id: &str, base: Duration) -> Duration {
     base.mul_f64(0.9 + bucket * 0.2).min(MAX_RECONNECT)
 }
 
-fn set_tcp_mss(fd: i32, value: u32) {
+fn set_tcp_mss(fd: i32, value: u32) -> io::Result<()> {
     let value = value as libc::c_int;
     // SAFETY: fd is a live TCP socket and value is correctly sized.
-    unsafe {
+    let result = unsafe {
         libc::setsockopt(
             fd,
             libc::IPPROTO_TCP,
             libc::TCP_MAXSEG,
             std::ptr::addr_of!(value).cast(),
             std::mem::size_of_val(&value) as libc::socklen_t,
-        );
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -798,6 +833,50 @@ mod tests {
             .unwrap();
         assert_eq!(runtime.listener_tasks.len(), 2);
         runtime.stop_listeners().await;
+    }
+
+    #[tokio::test]
+    async fn partial_listener_bind_failure_releases_earlier_sockets() {
+        let udp = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let udp_port = udp.local_addr().unwrap().port();
+        drop(udp);
+        let occupied_tcp = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let tcp_port = occupied_tcp.local_addr().unwrap().port();
+        let plan = ClientTrafficPlan {
+            listeners: vec![
+                ListenerPlan {
+                    protocol: Transport::Udp,
+                    port: udp_port,
+                },
+                ListenerPlan {
+                    protocol: Transport::Tcp,
+                    port: tcp_port,
+                },
+            ],
+            flows: Vec::new(),
+        };
+        let status = Arc::new(Mutex::new(AgentStatus::default()));
+        let mut runtime = TrafficRuntime {
+            local_ip: Ipv4Addr::LOCALHOST,
+            status: Arc::clone(&status),
+            plan: None,
+            listener_tasks: Vec::new(),
+            sender_task: None,
+        };
+        let error = runtime
+            .load(LoadPayload {
+                generation: 1,
+                plan_digest: plan_digest(&plan).unwrap(),
+                plan,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("bind TCP traffic listener"));
+        assert!(runtime.listener_tasks.is_empty());
+        assert!(runtime.plan.is_none());
+        assert!(!status.lock().await.ready);
+        std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, udp_port)).unwrap();
     }
 
     #[test]

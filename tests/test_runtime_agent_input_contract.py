@@ -1,4 +1,4 @@
-from netopsbench.platform.session.context import (
+from netopsbench.platform.incident.context import (
     build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
@@ -175,10 +175,7 @@ def test_canonical_observation_compacts_without_changing_public_symptoms():
         "episode": {"episode_id": "ep", "duration_seconds": 30},
         "observations": {
             "pingmesh_metrics": {
-                "anomalies": [
-                    {"type": "packet_loss", "severity": "high", "value": index}
-                    for index in range(20)
-                ],
+                "anomalies": [{"type": "packet_loss", "severity": "high", "value": index} for index in range(20)],
                 "aggregated_anomalies": {"by_src_leaf": {}},
             }
         },

@@ -123,7 +123,9 @@ class _WrappedPublicEvaluator:
                 scenario=scenario, diagnosis_results=[diagnosis], evaluator=evaluator
             )
             results.extend(_extract_report_results(scenario_report))
-        return _report_from_result_items(identifier=f"suite:{len(scenarios)}", evaluator_name=evaluator, results=results)
+        return _report_from_result_items(
+            identifier=f"suite:{len(scenarios)}", evaluator_name=evaluator, results=results
+        )
 
 
 class EvaluatorManager:
@@ -205,7 +207,9 @@ def _coerce_report(report: Any, *, identifier: str, evaluator_name: str) -> Benc
     raise TypeError("evaluator output must be a BenchmarkReport or mapping")
 
 
-def _report_from_result_items(*, identifier: str, evaluator_name: str, results: list[dict[str, Any]]) -> BenchmarkReport:
+def _report_from_result_items(
+    *, identifier: str, evaluator_name: str, results: list[dict[str, Any]]
+) -> BenchmarkReport:
     scores = [float(item.get("score", 0.0)) for item in results]
     average_score = round(sum(scores) / len(scores), 3) if scores else 0.0
     return BenchmarkReport(

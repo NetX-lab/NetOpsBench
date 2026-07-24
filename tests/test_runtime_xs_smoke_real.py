@@ -96,9 +96,9 @@ def test_runtime_xs_link_down_smoke_observable():
         environment = bench.simulators.create(scenario=scenario)
         reset = environment.reset()
         assert reset.valid is True
-        assert reset.observation["topology_summary"] == agent.context.metadata["canonical_observation"][
-            "topology_summary"
-        ]
+        assert (
+            reset.observation["topology_summary"] == agent.context.metadata["canonical_observation"]["topology_summary"]
+        )
         assert reset.tools == simulator_tool_schemas()
         simulator_result = environment.step(
             SubmitDiagnosisAction(

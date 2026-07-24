@@ -103,6 +103,19 @@ class _NativeControl:
             state["enabled"] = False
             state["active_flows"] = 0
             state["ready"] = True
+        elif operation == "reset":
+            state.update(
+                {
+                    "ready": False,
+                    "enabled": False,
+                    "generation": 0,
+                    "plan_digest": "",
+                    "expected_flows": 0,
+                    "active_flows": 0,
+                    "expected_listeners": 0,
+                    "active_listeners": 0,
+                }
+            )
         state["heartbeat_unix_ns"] = time.time_ns()
         return {"protocol_version": 1, "ok": True, "status": dict(state)}
 
@@ -172,6 +185,7 @@ def test_start_matrix_loads_enables_and_checks_native_status(monkeypatch):
     assert controller.verify_active_flows() is True
     assert len([call for call in native.calls if call[1] == "load_plan"]) == 2
     assert len([call for call in native.calls if call[1] == "enable"]) == 2
+    assert len([call for call in native.calls if call[1] == "reset"]) == 2
     assert all(call[0].startswith("client") for call in native.calls)
 
 
@@ -240,7 +254,31 @@ def test_failed_start_disables_loaded_agents_and_keeps_no_active_flows(monkeypat
 
     assert controller.active_flows == {}
     assert controller.generation == 0
-    assert any(operation == "disable" for _, operation, _ in native.calls)
+    assert len([call for call in native.calls if call[1] == "reset"]) == 4
+
+
+def test_invalid_replacement_plan_does_not_change_active_generation(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
+    controller.start_matrix(_flows())
+    original_generation = controller.generation
+    original_digests = dict(controller.plan_digests)
+    invalid = [
+        TrafficFlow(
+            src="client1",
+            dst="client2",
+            dst_ip="192.168.102.2",
+            protocol="sctp",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Unsupported traffic protocol"):
+        controller.start_matrix(invalid)
+
+    assert controller.generation == original_generation
+    assert controller.plan_digests == original_digests
+    assert controller.verify_active_flows() is True
 
 
 def test_stop_all_disables_every_agent(monkeypatch):

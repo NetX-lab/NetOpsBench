@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -182,9 +185,7 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
     return topology
 
 
-def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, Any]:
-    """Write every topology artifact from one canonical fabric plan."""
-    root = Path(output_dir)
+def _render_into(plan: FabricPlan, root: Path) -> dict[str, Any]:
     sonic_root = root / "configs" / "sonic"
     frr_root = root / "configs" / "frr"
     client_agent_root = root / "configs" / "client-agent"
@@ -247,6 +248,43 @@ def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, An
         "manifest": plan.manifest,
         "plan": plan,
     }
+
+
+def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, Any]:
+    """Atomically replace every artifact for one canonical fabric plan."""
+    root = Path(output_dir)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=f".{root.name}.staging-", dir=root.parent))
+    backup = root.with_name(f".{root.name}.backup")
+    try:
+        result = _render_into(plan, staged)
+        if backup.exists():
+            shutil.rmtree(backup)
+        if root.exists():
+            os.replace(root, backup)
+        try:
+            os.replace(staged, root)
+        except Exception:
+            if backup.exists() and not root.exists():
+                os.replace(backup, root)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+
+    staged_prefix = str(staged)
+    for key in (
+        "yaml_file",
+        "metadata_file",
+        "client_agent_config_file",
+        "sonic_start_wrapper_file",
+    ):
+        result[key] = str(root) + str(result[key])[len(staged_prefix) :]
+    for key in ("config_files", "startup_config_files", "frr_config_files"):
+        result[key] = [str(root) + str(path)[len(staged_prefix) :] for path in result[key]]
+    return result
 
 
 __all__ = ["render_fabric_plan"]

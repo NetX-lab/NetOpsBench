@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -25,7 +25,7 @@ class LocalArtifactStore:
     def save_metadata(self, artifact_dir: Path, payload: dict[str, Any]) -> None:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         metadata_path = artifact_dir / "metadata.json"
-        metadata_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        atomic_write_json(metadata_path, payload, default=str)
 
 
 def load_topology_metadata(topology_dir: Path) -> dict[str, Any]:
@@ -36,15 +36,20 @@ def artifacts_root(artifact_manager: Any, artifacts_dir: str | Path | None) -> P
     return Path(artifacts_dir) if artifacts_dir is not None else (artifact_manager.root_dir / "runs")
 
 
-def next_run_id(artifact_root: Path, *, started_at: datetime | None = None) -> str:
+def reserve_run_id(artifact_root: Path, *, started_at: datetime | None = None) -> str:
+    """Atomically reserve a unique run directory and return its id."""
+    artifact_root.mkdir(parents=True, exist_ok=True)
     timestamp = (started_at or datetime.now(UTC)).astimezone(UTC)
     base = f"run-{timestamp.strftime('%Y%m%dT%H%M%SZ')}"
-    if not artifact_root.exists() or not (artifact_root / base).exists():
-        return base
-    suffix = 2
-    while (artifact_root / f"{base}-{suffix:02d}").exists():
-        suffix += 1
-    return f"{base}-{suffix:02d}"
+    suffix = 1
+    while True:
+        candidate = base if suffix == 1 else f"{base}-{suffix:02d}"
+        try:
+            (artifact_root / candidate).mkdir()
+        except FileExistsError:
+            suffix += 1
+            continue
+        return candidate
 
 
 def resolve_scale(scenarios: Iterable[ScenarioSpec]) -> str:
@@ -148,7 +153,7 @@ def create_run_report(
 
 def save_run_report(report_payload: dict[str, Any], report_path: Path) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(report_payload, indent=2, default=str), encoding="utf-8")
+    atomic_write_json(report_path, report_payload, default=str)
 
 
 def save_run_metadata(

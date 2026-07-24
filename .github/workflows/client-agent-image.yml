@@ -3,6 +3,7 @@ name: client-agent-image
 on:
   push:
     branches:
+      - main
       - "codex/**"
     tags:
       - "v*"
@@ -57,3 +58,16 @@ jobs:
 
       - name: Publish manifest digest
         run: echo "digest=${{ steps.build.outputs.digest }}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify anonymous digest pull
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker logout ghcr.io
+          for attempt in $(seq 1 12); do
+            if docker manifest inspect "ghcr.io/netx-lab/netopsbench-client@${IMAGE_DIGEST}" >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1

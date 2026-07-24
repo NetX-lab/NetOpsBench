@@ -285,9 +285,7 @@ def _builtin_document() -> ScaleProfileDocument:
 
 
 _DEFAULT_REGISTRY = ScaleRegistry.with_builtins()
-SCALE_PROFILES: dict[str, ScaleProfile] = {
-    profile.name: profile for profile in _DEFAULT_REGISTRY.values()
-}
+SCALE_PROFILES: dict[str, ScaleProfile] = {profile.name: profile for profile in _DEFAULT_REGISTRY.values()}
 
 
 def default_scale_registry() -> ScaleRegistry:

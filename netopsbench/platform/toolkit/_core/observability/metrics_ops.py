@@ -47,9 +47,9 @@ class MetricsOpsMixin:
 
             type_fields = {
                 "throughput": ["in_octets", "out_octets"],
-                "errors": ["in_errors", "out_errors", "in_error_packets", "out_error_packets"],
+                "errors": ["in_errors", "out_errors"],
                 "discards": ["in_discarded_packets", "out_discarded_packets"],
-                "phy": ["in_fcs_error_packets", "in_error_packets", "out_error_packets"],
+                "phy": ["in_errors", "out_errors"],
             }
             if safe_metric_type == "all":
                 fields = sorted({f for vals in type_fields.values() for f in vals})

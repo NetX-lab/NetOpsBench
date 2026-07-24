@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,6 +24,7 @@ from netopsbench.platform.topology.topology_utils import coerce_topology_manifes
 from netopsbench.platform.traffic.controller import TrafficController
 from netopsbench.platform.traffic.scenario_execution import setup_traffic as _setup_traffic_impl
 from netopsbench.platform.traffic.scenario_execution import stop_traffic as _stop_traffic_impl
+from netopsbench.platform.utils.files import atomic_write_json
 
 from .incident_backend import ExecutorIncidentBackend
 from .observation import analyze_observation_windows as _analyze_observation_windows_impl
@@ -35,7 +35,7 @@ from .observation import wait_and_observe as _wait_and_observe_impl
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from netopsbench.platform.simulator.engine import DiagnosticSession
+    from netopsbench.platform.incident.engine import DiagnosticSession
 
 
 class DiagnosisCallback(Protocol):
@@ -170,8 +170,7 @@ class ScenarioExecutor:
                     recovery_complete = self._recovery_results_succeeded(recovery_results) and not active_faults
                     if not recovery_complete:
                         errors.append(
-                            f"fault_recovery: remaining_faults={len(active_faults)} "
-                            f"results={recovery_results!r}"
+                            f"fault_recovery: remaining_faults={len(active_faults)} " f"results={recovery_results!r}"
                         )
                 except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
                     recovery_complete = False
@@ -254,16 +253,16 @@ class ScenarioExecutor:
         incident = None
         backend = ExecutorIncidentBackend(self)
         try:
-            from netopsbench.platform.simulator.engine import (
+            from netopsbench.platform.incident.contracts import (
+                AgentUsage,
+                DiagnosisSubmission,
+                SimulatorConfig,
+            )
+            from netopsbench.platform.incident.engine import (
                 FailureDomain,
                 IncidentEngine,
                 IncidentState,
                 TerminationReason,
-            )
-            from netopsbench.platform.simulator.environment import (
-                AgentUsage,
-                DiagnosisSubmission,
-                SimulatorConfig,
             )
 
             incident = IncidentEngine(lambda: backend, evaluator=self.evaluator).prepare(scenario)
@@ -383,6 +382,5 @@ class ScenarioExecutor:
     def _persist_scenario_result(self, scenario: ScenarioSpec, scenario_result: dict) -> Path:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         result_file = self.results_dir / f"{scenario.scenario_id}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
-        with open(result_file, "w", encoding="utf-8") as f:
-            json.dump(scenario_result, f, indent=2)
+        atomic_write_json(result_file, scenario_result)
         return result_file

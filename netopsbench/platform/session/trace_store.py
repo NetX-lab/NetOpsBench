@@ -12,6 +12,7 @@ from typing import Any
 
 from netopsbench.agents._trace_utils import jsonable as _jsonable
 from netopsbench.agents.tracing import AgentTraceRecorder
+from netopsbench.platform.utils.files import atomic_write_text
 
 from .atif import build_atif_payload, build_trace_payload
 from .trace_utils import (
@@ -95,8 +96,9 @@ class TraceWriter:
             diagnostic_context=diagnostic_context,
             trace_recorder=trace_recorder,
         )
-        atif_path = case_dir / "trajectory.atif.json"
-        atif_path.write_text(_to_json(build_atif_payload(trace)), encoding="utf-8")
+        trace_suffix = trace_id.rsplit(":", 1)[-1]
+        atif_path = case_dir / f"trajectory-{trace_suffix}.atif.json"
+        atomic_write_text(atif_path, _to_json(build_atif_payload(trace)))
 
         result = TraceWriteResult(trace_id=trace_id, case_id=str(case_id), worker=str(worker), atif_path=str(atif_path))
         self._append_index(result, trace)
@@ -240,7 +242,7 @@ def _trace_refs_by_scenario(index_path: Path) -> dict[str, dict[str, Any]]:
     for row in _load_jsonl(index_path):
         scenario_id = row.get("scenario_id")
         if scenario_id:
-            refs.setdefault(str(scenario_id), row)
+            refs[str(scenario_id)] = row
     return refs
 
 

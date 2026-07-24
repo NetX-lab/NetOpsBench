@@ -11,6 +11,7 @@ from netopsbench.platform.topology.topology_utils import coerce_topology_manifes
 
 logger = get_logger(__name__)
 
+
 def _utc_iso(dt: datetime) -> str:
     value = dt.isoformat()
     if value.endswith("+00:00"):

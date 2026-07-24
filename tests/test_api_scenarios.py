@@ -8,6 +8,7 @@ from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.faults.specs import FaultSpec
 from netopsbench.platform.scenario.parser import scenario_from_dict
 from netopsbench.platform.scenario.validator import validate_scenario
+from netopsbench.sdk.exceptions import ScenarioValidationError
 from netopsbench.sdk.scenarios import ScenarioManager
 
 
@@ -37,6 +38,26 @@ def test_scenario_manager_can_create_and_roundtrip_yaml(tmp_path):
     assert scenario_from_dict(scenario.to_dict()) == scenario
 
 
+def test_scenario_save_atomically_preserves_existing_file_on_replace_failure(tmp_path, monkeypatch):
+    from netopsbench.platform.utils import files
+
+    manager = ScenarioManager(workspace=tmp_path)
+    scenario = manager.create(
+        id="atomic",
+        name="Atomic",
+        episode={"episode_id": "diagnosis", "fault_type": "none"},
+    )
+    target = tmp_path / "atomic.yaml"
+    target.write_text("original\n", encoding="utf-8")
+    monkeypatch.setattr(files.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("replace failed")))
+
+    with pytest.raises(OSError, match="replace failed"):
+        manager.save(scenario, target)
+
+    assert target.read_text(encoding="utf-8") == "original\n"
+    assert list(tmp_path.glob(".atomic.yaml.*.tmp")) == []
+
+
 def test_legacy_multi_episode_input_has_explicit_migration_error():
     with pytest.raises(ValueError, match="single 'episode'"):
         scenario_from_dict(
@@ -53,7 +74,7 @@ def test_legacy_multi_episode_input_has_explicit_migration_error():
 def test_scenario_manager_rejects_nonstandard_traffic_profile(tmp_path, profile):
     manager = ScenarioManager(workspace=tmp_path)
 
-    with pytest.raises(ValueError, match="Only the standard traffic profile is supported"):
+    with pytest.raises(ScenarioValidationError, match="Only the standard traffic profile is supported"):
         manager.create(
             id="legacy_profile",
             name="Legacy Profile",

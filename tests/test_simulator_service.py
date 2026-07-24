@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
+from netopsbench.platform.simulator import service as service_module
 from netopsbench.platform.simulator.service import SimulatorService, create_app, scenario_case_id
 
 
@@ -197,3 +198,69 @@ def test_http_service_returns_conflict_after_terminal_action():
     assert first.status_code == 200
     assert repeated.status_code == 409
     assert repeated.json()["detail"] == "Simulator environment is terminal"
+
+
+def test_terminal_tombstone_expires_from_conflict_to_not_found(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(service_module.time, "monotonic", lambda: clock[0])
+    service = SimulatorService(FakeManager(), [_scenario()])
+    with TestClient(create_app(service)) as client:
+        created = client.post(
+            "/v1/environments",
+            json={"case_id": scenario_case_id(_scenario())},
+        ).json()
+        path = f"/v1/environments/{created['environment_id']}/actions"
+        client.post(
+            path,
+            json={
+                "action": {
+                    "type": "submit_diagnosis",
+                    "diagnosis": {"verdict": "network_healthy"},
+                }
+            },
+        )
+        assert (
+            client.post(
+                path,
+                json={"action": {"type": "tool", "name": "get_topology", "arguments": {}}},
+            ).status_code
+            == 409
+        )
+        clock[0] += 3_600.0
+        assert (
+            client.post(
+                path,
+                json={"action": {"type": "tool", "name": "get_topology", "arguments": {}}},
+            ).status_code
+            == 404
+        )
+
+
+def test_terminal_tombstones_are_bounded(monkeypatch):
+    monkeypatch.setattr(service_module, "_MAX_TERMINAL_TOMBSTONES", 2)
+    service = SimulatorService(FakeManager(), [_scenario()])
+    case_id = scenario_case_id(_scenario())
+    for _ in range(3):
+        created = service.create(case_id)
+        service.step(
+            created["environment_id"],
+            {
+                "type": "submit_diagnosis",
+                "diagnosis": {"verdict": "network_healthy"},
+            },
+        )
+
+    assert len(service.environments) == 2
+
+
+def test_event_log_rotates_and_omits_full_observation(monkeypatch, tmp_path):
+    monkeypatch.setattr(service_module, "_EVENT_LOG_MAX_BYTES", 300)
+    event_log = tmp_path / "events.jsonl"
+    service = SimulatorService(FakeManager(), [_scenario()], event_log=event_log)
+    result = {"state": "active", "observation": {"large": "x" * 1_000}}
+
+    for _ in range(5):
+        service._record_event({"event": "step", "result": service._summarize_result(result)})
+
+    assert event_log.with_name("events.jsonl.1").exists()
+    assert "observation" not in event_log.read_text(encoding="utf-8")

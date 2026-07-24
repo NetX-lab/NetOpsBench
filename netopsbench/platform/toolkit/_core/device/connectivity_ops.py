@@ -19,8 +19,7 @@ class ConnectivityOpsMixin:
                 raise ValueError(f"Unknown source: {safe_src}")
             if source_device.role is not DeviceRole.CLIENT:
                 raise ValueError(
-                    "Traceroute source must be a client device, "
-                    f"got {safe_src} ({source_device.role.value})"
+                    "Traceroute source must be a client device, " f"got {safe_src} ({source_device.role.value})"
                 )
             container = self._resolve_container(safe_src, field_name="source")
             result = self._docker_exec(

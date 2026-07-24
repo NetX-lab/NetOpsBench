@@ -89,7 +89,7 @@ def test_worker_context_uses_lab_name_for_observability_topology_id(tmp_path):
     context = build_worker_execution_context(worker, Path(worker.topology_dir))
 
     assert context.topology_id == "lab-1"
-    assert context.as_env()["NETOPSBENCH_TOPOLOGY_ID"] == "lab-1"
+    assert "NETOPSBENCH_TOPOLOGY_ID" not in context.as_env()
 
 
 def test_worker_context_uses_explicit_identity_topology_id(tmp_path):

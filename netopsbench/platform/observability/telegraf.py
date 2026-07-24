@@ -22,8 +22,19 @@ GNMI_USERNAME = "admin"
 GNMI_PASSWORD = ""
 GNMI_ENCODING = "json_ietf"
 GNMI_TARGET = "COUNTERS_DB"
-GNMI_SUBSCRIPTION_MODE = "on_change"
+GNMI_SUBSCRIPTION_MODE = "sample"
+GNMI_SAMPLE_INTERVAL = "10s"
 INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
+GNMI_INTERFACE_COUNTER_FIELDS = (
+    "SAI_PORT_STAT_IF_IN_OCTETS",
+    "SAI_PORT_STAT_IF_OUT_OCTETS",
+    "SAI_PORT_STAT_IF_IN_UCAST_PKTS",
+    "SAI_PORT_STAT_IF_OUT_UCAST_PKTS",
+    "SAI_PORT_STAT_IF_IN_DISCARDS",
+    "SAI_PORT_STAT_IF_OUT_DISCARDS",
+    "SAI_PORT_STAT_IF_IN_ERRORS",
+    "SAI_PORT_STAT_IF_OUT_ERRORS",
+)
 
 
 def _port_key(name: str) -> int:
@@ -88,6 +99,7 @@ def _render_gnmi_subscriptions(port_names: list[str]) -> str:
             '    name = "interfaces"',
             f'    path = "COUNTERS/{port}"',
             f'    subscription_mode = "{GNMI_SUBSCRIPTION_MODE}"',
+            f'    sample_interval = "{GNMI_SAMPLE_INTERVAL}"',
         ]
         subscriptions.append("\n".join(subscription_lines) + "\n")
     return "\n".join(subscriptions)
@@ -101,6 +113,7 @@ def _render_gnmi_input(
     if not devices or not port_names:
         return ""
     addresses = ",\n       ".join(_gnmi_addresses(devices))
+    fieldpass = ", ".join(f'"{field}"' for field in GNMI_INTERFACE_COUNTER_FIELDS)
     subscriptions = _render_gnmi_subscriptions(port_names)
     return f"""# gNMI role: {role}
 [[inputs.gnmi]]
@@ -115,6 +128,7 @@ def _render_gnmi_input(
   tls_enable = false
   insecure_skip_verify = true
   target = "{GNMI_TARGET}"
+  fieldpass = [{fieldpass}]
 
 {subscriptions}"""
 

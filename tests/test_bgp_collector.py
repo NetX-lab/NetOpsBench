@@ -1,14 +1,23 @@
 from pathlib import Path
 
+import pytest
+
 from netopsbench.models import topology as topology_models
 from netopsbench.models.topology import Collector, Device, DeviceRole, Management, TopologyManifest
 from netopsbench.platform.observability.bgp_collector import (
+    DEFAULT_BGP_LOG_BACKUP_COUNT,
+    DEFAULT_BGP_LOG_MAX_BYTES,
     BgpTransitionTracker,
     _collect_bgp_lines_paced,
+    _delete_ingested_segments,
+    _query_ingested_segments,
+    _sealed_segments,
     _write_lines,
+    _write_segmented_lines,
     build_bgp_collection_line,
     build_bgp_lines,
     collect_bgp_lines,
+    configure_rotating_log,
     normalize_bgp_state,
     run_loop,
     run_once,
@@ -82,6 +91,7 @@ def test_build_bgp_lines_normalizes_states_and_fields():
     assert 'session_state="ESTABLISHED"' in lines[0]
     assert "asn=65011i" in lines[0]
     assert "prefixes_received=2i" in lines[0]
+    assert all(field not in lines[0] for field in ("msg_rcvd=", "msg_sent=", "in_q=", "out_q=", "up_down="))
     assert lines[0].endswith(" 123456789")
 
 
@@ -91,14 +101,14 @@ def test_normalize_bgp_state_defaults_to_unknown():
 
 
 def test_build_bgp_collection_line_records_success_and_failure():
-    success = build_bgp_collection_line("leaf1", 7, "runtime-xs", True, 2, 41, "")
-    failure = build_bgp_collection_line("leaf1", 8, "runtime-xs", False, 0, 30000, "timeout")
+    success = build_bgp_collection_line("leaf1", 7, "runtime-xs", True, "")
+    failure = build_bgp_collection_line("leaf1", 8, "runtime-xs", False, "timeout")
 
     assert success.startswith("bgp_collection,source=leaf1,topology_id=runtime-xs ")
     assert "collection_ok=true" in success
-    assert "neighbor_count=2i" in success
     assert 'error_type="timeout"' in failure
     assert "collection_ok=false" in failure
+    assert all(field not in success for field in ("neighbor_count=", "duration_ms="))
 
 
 def test_bgp_transition_tracker_baselines_then_emits_down_and_recovery():
@@ -416,10 +426,109 @@ def test_run_once_writes_snapshot_and_exits(monkeypatch, tmp_path):
     assert output_file.read_text(encoding="utf-8") == "bgp_neighbors,source=spine1 value=1i 7\n"
 
 
-def test_write_lines_truncates_existing_bgp_file_when_size_limit_would_be_exceeded(tmp_path):
+def test_write_lines_refuses_to_overwrite_unconsumed_bgp_file(tmp_path):
     output_file = tmp_path / "bgp.lp"
     output_file.write_text("old_snapshot value=1i 1\n" * 4, encoding="utf-8")
 
-    _write_lines(output_file, ["new_snapshot value=2i 2"], max_bytes=32)
+    with pytest.raises(BufferError, match="refusing to overwrite"):
+        _write_lines(output_file, ["new_snapshot value=2i 2"], max_bytes=32)
 
-    assert output_file.read_text(encoding="utf-8") == "new_snapshot value=2i 2\n"
+    assert output_file.read_text(encoding="utf-8") == "old_snapshot value=1i 1\n" * 4
+
+
+def test_segmented_spool_rotates_atomically_and_preserves_all_lines(tmp_path):
+    output_file = tmp_path / "bgp_neighbors.lp"
+    first = "bgp_event_index,source=leaf1 schema_version=1i 100"
+    second = "bgp_event_index,source=leaf1 schema_version=1i 200"
+
+    _write_segmented_lines(output_file, [first], max_bytes=1024, segment_bytes=64, topology_id="runtime-xs")
+    _write_segmented_lines(output_file, [second], max_bytes=1024, segment_bytes=64, topology_id="runtime-xs")
+
+    segments = _sealed_segments(output_file)
+    assert len(segments) == 1
+    assert segments[0].read_text(encoding="utf-8") == (
+        f"{first}\n"
+        "bgp_event_index,source=__spool__,spool_segment=100-0,topology_id=runtime-xs "
+        "schema_version=1i 100\n"
+    )
+    assert output_file.read_text(encoding="utf-8") == f"{second}\n"
+
+
+def test_segment_marker_is_included_in_bounded_spool_limit(tmp_path):
+    output_file = tmp_path / "bgp_neighbors.lp"
+    first = "bgp_event_index,source=leaf1 schema_version=1i 100"
+    second = "bgp_event_index,source=leaf1 schema_version=1i 200"
+    _write_segmented_lines(output_file, [first], max_bytes=130, segment_bytes=64, topology_id="runtime-xs")
+
+    with pytest.raises(BufferError, match="while sealing"):
+        _write_segmented_lines(output_file, [second], max_bytes=130, segment_bytes=64, topology_id="runtime-xs")
+
+    assert _sealed_segments(output_file) == []
+    assert output_file.read_text(encoding="utf-8") == f"{first}\n"
+
+
+def test_segment_cleanup_requires_ingested_watermark_and_is_restart_safe(tmp_path):
+    output_file = tmp_path / "bgp_neighbors.lp"
+    old = tmp_path / "bgp_neighbors.sealed.100-0.lp"
+    latest = tmp_path / "bgp_neighbors.sealed.200-0.lp"
+    old.write_text("old\n", encoding="utf-8")
+    latest.write_text("latest\n", encoding="utf-8")
+
+    assert _delete_ingested_segments(output_file, set()) == []
+    assert old.exists() and latest.exists()
+
+    assert _delete_ingested_segments(output_file, {"100-0"}) == [old]
+    assert not old.exists()
+    assert latest.exists()
+
+
+def test_segment_cleanup_uses_only_matching_ingested_marker(monkeypatch):
+    from netopsbench.platform.observability import bgp_collector
+    from netopsbench.platform.observability.influxdb import FluxQueryResult
+
+    captured = {}
+
+    def fake_query(url, token, org, query):
+        captured["query"] = query
+        return FluxQueryResult(
+            status="ok",
+            text=(
+                "#datatype,string,long,dateTime:RFC3339\n"
+                ",result,table,_time,spool_segment\n"
+                ",,0,2026-07-24T01:02:03.123456789Z,1784854923123456789-0\n"
+            ),
+        )
+
+    monkeypatch.setattr(bgp_collector, "query_flux", fake_query)
+
+    ingested = _query_ingested_segments('bucket"name', 'topology"name')
+
+    assert ingested == {"1784854923123456789-0"}
+    assert 'from(bucket: "bucket\\"name")' in captured["query"]
+    assert 'topology_id == "topology\\"name"' in captured["query"]
+    assert "exists r.spool_segment" in captured["query"]
+
+
+def test_bgp_collector_process_log_keeps_three_files_total(tmp_path):
+    import logging
+    import sys
+
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    try:
+        log_file = tmp_path / "bgp_collector.log"
+        configure_rotating_log(log_file, max_bytes=64)
+        for index in range(20):
+            print(f"collector line {index:02d} with enough bytes")
+        sys.stdout.flush()
+        handler = logging.getLogger("netopsbench.bgp_collector.process").handlers[0]
+        handler.flush()
+    finally:
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+    assert DEFAULT_BGP_LOG_MAX_BYTES == 10 * 1024 * 1024
+    assert DEFAULT_BGP_LOG_BACKUP_COUNT == 2
+    assert log_file.exists()
+    assert sorted(path.name for path in tmp_path.glob("bgp_collector.log.*")) == [
+        "bgp_collector.log.1",
+        "bgp_collector.log.2",
+    ]

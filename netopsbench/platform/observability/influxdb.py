@@ -14,6 +14,8 @@ from netopsbench.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
 
 @dataclass(frozen=True)
 class FluxQueryResult:
@@ -74,7 +76,24 @@ def _request(url: str, token: str, method: str = "GET", payload: dict | None = N
         return json.loads(raw) if raw else {}
 
 
-def ensure_bucket(base_url: str, token: str, org: str, bucket: str, retries: int = 20, delay: float = 2.0) -> None:
+def ensure_bucket(
+    base_url: str,
+    token: str,
+    org: str,
+    bucket: str,
+    retries: int = 20,
+    delay: float = 2.0,
+    *,
+    retention_seconds: int | None = None,
+) -> bool:
+    """Create a bucket if absent.
+
+    ``retention_seconds`` is intentionally opt-in so callers attaching to a
+    user-owned bucket never mutate its retention policy.
+    """
+    if retention_seconds is not None and retention_seconds <= 0:
+        raise ValueError("retention_seconds must be positive")
+
     base = base_url.rstrip("/")
     bucket_q = urllib.parse.quote(bucket, safe="")
     org_q = urllib.parse.quote(org, safe="")
@@ -86,7 +105,7 @@ def ensure_bucket(base_url: str, token: str, org: str, bucket: str, retries: int
             for item in existing.get("buckets", []) or []:
                 if item.get("name") == bucket:
                     logger.info("InfluxDB bucket already exists: %s", bucket)
-                    return
+                    return False
 
             orgs = _request(f"{base}/api/v2/orgs?org={org_q}", token)
             matches = orgs.get("orgs", []) or []
@@ -96,14 +115,17 @@ def ensure_bucket(base_url: str, token: str, org: str, bucket: str, retries: int
             if not org_id:
                 raise RuntimeError(f"InfluxDB organization has no id: {org}")
 
+            payload: dict[str, object] = {"orgID": org_id, "name": bucket}
+            if retention_seconds is not None:
+                payload["retentionRules"] = [{"type": "expire", "everySeconds": int(retention_seconds)}]
             _request(
                 f"{base}/api/v2/buckets",
                 token,
                 method="POST",
-                payload={"orgID": org_id, "name": bucket},
+                payload=payload,
             )
             logger.info("Created InfluxDB bucket: %s", bucket)
-            return
+            return True
         except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, ValueError) as exc:
             last_error = exc
             time.sleep(delay)
@@ -111,8 +133,25 @@ def ensure_bucket(base_url: str, token: str, org: str, bucket: str, retries: int
     raise RuntimeError(f"Failed to ensure InfluxDB bucket '{bucket}': {last_error}")
 
 
+def delete_bucket(base_url: str, token: str, bucket: str) -> bool:
+    """Delete one exact bucket name, returning false when it does not exist."""
+    base = base_url.rstrip("/")
+    bucket_q = urllib.parse.quote(bucket, safe="")
+    existing = _request(f"{base}/api/v2/buckets?name={bucket_q}", token)
+    match = next((item for item in existing.get("buckets", []) or [] if item.get("name") == bucket), None)
+    if match is None:
+        return False
+    bucket_id = match.get("id")
+    if not bucket_id:
+        raise RuntimeError(f"InfluxDB bucket has no id: {bucket}")
+    _request(f"{base}/api/v2/buckets/{urllib.parse.quote(str(bucket_id), safe='')}", token, method="DELETE")
+    return True
+
+
 __all__ = [
     "FluxQueryResult",
+    "DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS",
+    "delete_bucket",
     "ensure_bucket",
     "query_flux",
 ]

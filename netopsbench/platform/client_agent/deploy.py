@@ -14,6 +14,7 @@ import yaml
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.topology.topology_utils import clab_container_name, load_topology_manifest
+from netopsbench.platform.utils.files import atomic_write_text
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
 from .config import CLIENT_AGENT_CONFIG_NAME, write_client_agent_config
@@ -29,6 +30,8 @@ logger = get_logger(__name__)
 CLIENT_AGENT_BINARY = "/usr/local/bin/netopsbench-client-agent"
 CLIENT_AGENT_CONFIG = f"/etc/netopsbench/{CLIENT_AGENT_CONFIG_NAME}"
 CLIENT_AGENT_BIND = "configs/client-agent:/etc/netopsbench:ro"
+CLIENT_AGENT_ENV_NAME = "client-agent.env"
+CLIENT_AGENT_ENV = f"/etc/netopsbench/{CLIENT_AGENT_ENV_NAME}"
 PINGMESH_INGEST_URL = "http://telegraf:8186"
 DEFAULT_DEPLOY_PARALLELISM = 32
 READINESS_TIMEOUT_SECONDS = 15.0
@@ -77,8 +80,18 @@ def _validate_bind(topology_dir: Path, lab_name: str) -> None:
         )
 
 
-def _env_assignment(name: str, value: str) -> str:
-    return f"{name}={shlex.quote(value)}"
+def _write_agent_env(path: Path, *, token: str, org: str, bucket: str) -> None:
+    values = {
+        "NETOPSBENCH_INFLUXDB_URL": PINGMESH_INGEST_URL,
+        "NETOPSBENCH_INFLUXDB_TOKEN": token,
+        "NETOPSBENCH_INFLUXDB_ORG": org,
+        "NETOPSBENCH_INFLUXDB_BUCKET": bucket,
+    }
+    atomic_write_text(
+        path,
+        "".join(f"export {name}={shlex.quote(value)}\n" for name, value in values.items()),
+    )
+    path.chmod(0o600)
 
 
 def _stop_processes_command(*, exit_with_status: bool = True) -> str:
@@ -168,29 +181,21 @@ def _start_client(
     client_name: str,
     container: str,
     management_ip: str,
-    influxdb_token: str,
-    influxdb_org: str,
-    influxdb_bucket: str,
 ) -> tuple[str, bool, str]:
-    env_values = {
-        "NETOPSBENCH_INFLUXDB_URL": PINGMESH_INGEST_URL,
-        "NETOPSBENCH_INFLUXDB_TOKEN": influxdb_token,
-        "NETOPSBENCH_INFLUXDB_ORG": influxdb_org,
-        "NETOPSBENCH_INFLUXDB_BUCKET": influxdb_bucket,
-    }
-    environment = " ".join(_env_assignment(name, value) for name, value in env_values.items())
     command = (
         "set -e; "
         f"test -x {CLIENT_AGENT_BINARY}; "
         f"test -r {CLIENT_AGENT_CONFIG}; "
+        f"test -r {CLIENT_AGENT_ENV}; "
+        f". {CLIENT_AGENT_ENV}; "
         "mkdir -p /run/netopsbench /var/log/netopsbench; "
         f"{_stop_processes_command(exit_with_status=False)} "
         '[ "$status" -eq 0 ]; '
-        f"{environment} nohup {CLIENT_AGENT_BINARY} pingmesh --config {CLIENT_AGENT_CONFIG} "
-        "> /var/log/netopsbench/pingmesh.log 2>&1 </dev/null & "
+        f"nohup {CLIENT_AGENT_BINARY} pingmesh --config {CLIENT_AGENT_CONFIG} "
+        "> /dev/null 2>&1 </dev/null & "
         'printf "%s\\n" "$!" > /run/netopsbench/pingmesh.pid; '
         f"nohup {CLIENT_AGENT_BINARY} traffic --config {CLIENT_AGENT_CONFIG} "
-        "> /var/log/netopsbench/traffic.log 2>&1 </dev/null & "
+        "> /dev/null 2>&1 </dev/null & "
         'printf "%s\\n" "$!" > /run/netopsbench/traffic.pid; '
         "sleep 0.2; "
         'kill -0 "$(cat /run/netopsbench/pingmesh.pid)"; '
@@ -225,6 +230,12 @@ def deploy_client_agents(
     _validate_bind(root, manifest.name)
     config_path = root / "configs" / "client-agent" / CLIENT_AGENT_CONFIG_NAME
     write_client_agent_config(manifest, config_path)
+    _write_agent_env(
+        config_path.parent / CLIENT_AGENT_ENV_NAME,
+        token=influxdb_token or config.influxdb_token,
+        org=influxdb_org or config.influxdb_org,
+        bucket=influxdb_bucket or config.influxdb_bucket,
+    )
 
     running = _running_containers()
     result = DeployResult()
@@ -243,9 +254,6 @@ def deploy_client_agents(
                 client_name=client_name,
                 container=container,
                 management_ip=str(client.mgmt_ip),
-                influxdb_token=influxdb_token or config.influxdb_token,
-                influxdb_org=influxdb_org or config.influxdb_org,
-                influxdb_bucket=influxdb_bucket or config.influxdb_bucket,
             )
             futures[future] = client_name
             scheduled_containers.append(container)

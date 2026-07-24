@@ -10,13 +10,12 @@ from typing import Any
 
 from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.scenario import ScenarioSpec
-from netopsbench.platform.scenario.parser import parse_scenario_file
-from netopsbench.platform.session.context import (
+from netopsbench.platform.incident.context import (
     build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
 )
-from netopsbench.platform.simulator.engine import (
+from netopsbench.platform.incident.engine import (
     CleanupStatus,
     DiagnosticSession,
     ExecutionFailure,
@@ -27,6 +26,7 @@ from netopsbench.platform.simulator.engine import (
     SessionState,
     TerminationReason,
 )
+from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.simulator.environment import (
     AgentUsage,
     DiagnosisLocation,

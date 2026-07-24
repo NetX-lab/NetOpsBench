@@ -119,12 +119,14 @@ files = [
     "netopsbench/agents",
     "netopsbench/models",
     "netopsbench/platform/client_agent",
+    "netopsbench/platform/incident",
+    "netopsbench/platform/observability",
     "netopsbench/platform/pingmesh/_detector_analysis.py",
-    "netopsbench/platform/runtime/cli.py",
-    "netopsbench/platform/runtime/health.py",
-    "netopsbench/platform/runtime/lifecycle.py",
+    "netopsbench/platform/runtime",
     "netopsbench/platform/session",
     "netopsbench/platform/simulator",
+    "netopsbench/platform/topology/config.py",
+    "netopsbench/platform/topology/renderer.py",
     "netopsbench/platform/traffic",
 ]
 

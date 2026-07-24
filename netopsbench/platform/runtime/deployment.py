@@ -165,13 +165,16 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
     )
 
     topology_file = topology_dir / f"{worker.lab_name}.clab.yaml"
-    profile = get_scale_profile(load_topology_manifest(topology_dir).scale, registry)
+    manifest_file = topology_dir / "topology.json"
+    profile = (
+        get_scale_profile(load_topology_manifest(topology_dir).scale, registry) if manifest_file.is_file() else None
+    )
     command = (
         [*sudo_prefix(), "containerlab", "destroy", "-t", str(topology_file), "--cleanup"]
         if topology_file.is_file()
         else [*sudo_prefix(), "containerlab", "destroy", "--name", worker.lab_name, "--cleanup"]
     )
-    if profile.containerlab_max_workers is not None:
+    if profile is not None and profile.containerlab_max_workers is not None:
         command.extend(["--max-workers", str(profile.containerlab_max_workers)])
     safe_run(command, cwd=topology_dir, check=False, timeout=600)
 

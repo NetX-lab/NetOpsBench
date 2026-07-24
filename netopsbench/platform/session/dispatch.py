@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +23,7 @@ from netopsbench.platform.session.reporting import load_topology_metadata
 from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.session.trace_store import TraceWriter
 from netopsbench.platform.session.types import WorkerExecutionContext
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +236,7 @@ def _persist_raw_scenario_result(
     safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(scenario_id))
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
     result_path = worker_raw_dir / f"{safe_id}_{timestamp}.json"
-    result_path.write_text(json.dumps(scenario_result, indent=2, default=str), encoding="utf-8")
+    atomic_write_json(result_path, scenario_result, default=str)
     scenario_result["result_file"] = str(result_path)
     return str(result_path)
 

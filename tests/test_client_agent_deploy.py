@@ -137,7 +137,9 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
             assert 'while kill -0 "$pid"' in command
             assert "python" not in command
             assert "iperf3" not in command
-            assert "NETOPSBENCH_INFLUXDB_URL=http://telegraf:8186" in command
+            assert ". /etc/netopsbench/client-agent.env" in command
+            assert "NETOPSBENCH_INFLUXDB_TOKEN=" not in command
+            assert "> /dev/null 2>&1" in command
             return subprocess.CompletedProcess(
                 ["docker", *args],
                 0,
@@ -167,9 +169,12 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
 
     config_path = topology_dir / "configs" / "client-agent" / "client-agent.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    env_path = config_path.with_name("client-agent.env")
     assert config["schema_version"] == 1
     assert len(config["clients"]) == len(clients)
     assert "probes" not in config
+    assert "NETOPSBENCH_INFLUXDB_URL=http://telegraf:8186" in env_path.read_text()
+    assert env_path.stat().st_mode & 0o777 == 0o600
     assert _RecordingExecutor.max_workers_seen == [7]
     assert len(_RecordingExecutor.submitted) == len(clients)
     assert len([args for args in docker_calls if args[0] == "exec"]) == len(clients)

@@ -6,16 +6,9 @@ import argparse
 from collections.abc import Sequence
 
 from netopsbench.models.profiles import ScaleRegistry
-from netopsbench.platform.runtime.deployment import (
-    deploy_worker_lab,
-    teardown_worker_lab,
-    worker_from_cli,
-    worker_from_topology,
-)
+from netopsbench.platform.runtime.deployment import teardown_worker_lab, worker_from_cli, worker_from_topology
 from netopsbench.platform.runtime.lifecycle import (
-    ensure_worker_client_agent,
-    ensure_worker_observability,
-    validate_worker_health,
+    deploy_worker_transactionally,
 )
 
 
@@ -47,10 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mgmt_network=args.mgmt_network,
         registry=registry,
     )
-    deploy_worker_lab(worker, args.scale, registry)
-    ensure_worker_observability(worker)
-    ensure_worker_client_agent(worker)
-    validate_worker_health(worker, scale_registry=registry)
+    deploy_worker_transactionally(worker, args.scale, registry)
     return 0
 
 

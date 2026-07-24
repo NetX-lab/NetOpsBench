@@ -113,6 +113,17 @@ def test_fat_tree_profiles_are_bounded(tmp_path):
 
     assert k8_config["stats"]["total_flows"] > 0
     assert k12_config["stats"]["total_flows"] > 0
+    for config in (k8_config, k12_config):
+        switch_pps = config["stats"]["estimated_switch_pps"]
+        assert switch_pps["edges"]
+        assert switch_pps["aggs"]
+        assert switch_pps["cores"]
+        assert switch_pps["max_edge_pps"] > 0
+        assert switch_pps["max_agg_pps"] > 0
+        assert switch_pps["max_core_pps"] > 0
+        assert switch_pps["max_switch_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
+        assert switch_pps["leafs"] == {}
+        assert switch_pps["spines"] == {}
     assert (
         get_scale_profile("fat-tree-k12").traffic_max_pps_per_client
         < get_scale_profile("fat-tree-k8").traffic_max_pps_per_client

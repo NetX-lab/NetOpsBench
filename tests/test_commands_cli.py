@@ -16,7 +16,8 @@ def _write_trace_run(tmp_path, run_id, *, completed_at="2026-06-05T12:40:40+00:0
     run_dir = tmp_path / ".netopsbench" / "runs" / run_id
     trace_dir = run_dir / "traces" / "worker-1" / "case-1"
     trace_dir.mkdir(parents=True)
-    (trace_dir / "trajectory.atif.json").write_text(
+    atif_path = trace_dir / "trajectory-t1.atif.json"
+    atif_path.write_text(
         json.dumps(
             {
                 "schema_version": "ATIF-v1.7",
@@ -42,7 +43,7 @@ def _write_trace_run(tmp_path, run_id, *, completed_at="2026-06-05T12:40:40+00:0
                 "model": "model",
                 "provider": "provider",
                 "topology_scale": "xs",
-                "atif_path": str(trace_dir / "trajectory.atif.json"),
+                "atif_path": str(atif_path),
             }
         )
         + "\n",
@@ -220,13 +221,6 @@ def test_cli_topology_generate_uses_default_output_dir(tmp_path, monkeypatch, ca
     assert calls["output_dir"] is None
 
 
-def test_scenario_generator_module_importable():
-    from netopsbench.platform.scenario import generator
-
-    assert hasattr(generator, "TopologyContext")
-    assert hasattr(generator, "generate")
-
-
 def test_cli_runtime_teardown_by_name(tmp_path, monkeypatch, capsys):
     bench = NetOpsBench(workspace=str(tmp_path))
     bench.runtimes.create(scale="xs", workers=1, name="r1")
@@ -256,6 +250,39 @@ def test_cli_runtime_teardown_not_found(tmp_path, monkeypatch, capsys):
     assert main() == 1
     out = capsys.readouterr().out
     assert "runtime not found: ghost" in out
+
+
+def test_cli_runtime_telemetry_prune_is_dry_run_unless_apply(tmp_path, monkeypatch, capsys):
+    from datetime import UTC, datetime
+
+    from netopsbench.platform.observability.ownership import ManagedBucketRegistry
+    from netopsbench.platform.runtime.manager import RuntimeManager
+
+    manager = RuntimeManager(workspace=tmp_path)
+    registry = ManagedBucketRegistry(manager.telemetry_ownership_file)
+    registry.record_created("managed-old", "retired-runtime", now=datetime(2020, 1, 1, tzinfo=UTC))
+    registry.retire(["managed-old"], now=datetime(2020, 1, 2, tzinfo=UTC))
+    deleted = []
+    monkeypatch.setattr(
+        "netopsbench.platform.runtime.manager.delete_bucket",
+        lambda _url, _token, bucket: deleted.append(bucket) or True,
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["netopsbench", "--workspace", str(tmp_path), "runtime", "telemetry-prune"],
+    )
+    assert main() == 0
+    assert "would delete: managed-old" in capsys.readouterr().out
+    assert deleted == []
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["netopsbench", "--workspace", str(tmp_path), "runtime", "telemetry-prune", "--apply"],
+    )
+    assert main() == 0
+    assert "deleted: managed-old" in capsys.readouterr().out
+    assert deleted == ["managed-old"]
 
 
 def test_cli_result_list(tmp_path, monkeypatch, capsys):
@@ -326,7 +353,7 @@ def test_cli_trace_export(tmp_path, monkeypatch, capsys):
         tmp_path
         / "harbor-jobs"
         / "netopsbench-run-20260605T124040Z"
-        / "scenario-1__case-1"
+        / "scenario-1__case-1__t1"
         / "agent"
         / "trajectory.json"
     ).exists()
@@ -360,7 +387,9 @@ def test_cli_trace_view_exports_and_launches_harbor_viewer(tmp_path, monkeypatch
     assert "synced traces:" in out
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "55668"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_trace_list_shows_trace_runs(tmp_path, monkeypatch, capsys):
@@ -407,8 +436,12 @@ def test_cli_trace_view_latest_uses_newest_trace_run(tmp_path, monkeypatch, caps
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
-    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
+    assert (
+        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatch, capsys):
@@ -438,8 +471,12 @@ def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatc
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
-    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
+    assert (
+        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_benchmark_prepare_runs_topology_then_scenario_generation(tmp_path, monkeypatch, capsys):

@@ -136,6 +136,7 @@ def test_removed_environment_controls_do_not_return():
         "NETOPSBENCH_SWITCH_PPS_LIMIT",
         "NETOPSBENCH_SYSLOG_COLLECTOR",
         "NETOPSBENCH_TELEGRAF_INFLUXDB_URL",
+        "NETOPSBENCH_TOPOLOGY_ID",
         "NETOPSBENCH_TRACE",
         "NETOPSBENCH_WORKER_AGENT_TIMEOUT_SECONDS",
         "NETOPSBENCH_WORKER_DEPLOY_JOBS",
@@ -147,15 +148,22 @@ def test_removed_environment_controls_do_not_return():
         "PINGMESH_CYCLE_INTERVAL",
         "SONIC_GNMI_",
     }
-    roots = [
-        PACKAGE_ROOT,
-        PROJECT_ROOT / "docs",
-        PROJECT_ROOT / "examples",
-        PROJECT_ROOT / "scenarios",
-        PROJECT_ROOT / "scripts",
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .split("\0")
+    )
+    source_roots = ("netopsbench/", "docs/", "examples/", "scenarios/", "scripts/")
+    files = [
+        PROJECT_ROOT / name
+        for name in tracked
+        if (name == ".env.example" or name.startswith(source_roots)) and (PROJECT_ROOT / name).is_file()
     ]
-    files = [path for root in roots for path in root.rglob("*") if path.is_file()]
-    files.append(PROJECT_ROOT / ".env.example")
     offenders: dict[str, list[str]] = {}
     for path in files:
         try:

@@ -136,19 +136,15 @@ def validate_traffic_config(
     estimated_clients = stats.get("estimated_pps_per_client") or stats.get("estimated_udp_pps_per_client", {})
     max_client_pps = stats.get("estimated_max_pps_per_client") or stats.get("estimated_max_udp_pps_per_client", 0.0)
     switch_pps = stats.get("estimated_switch_pps", {})
-    max_leaf_pps = switch_pps.get("max_leaf_pps", 0.0)
-    max_spine_pps = switch_pps.get("max_spine_pps", 0.0)
+    max_switch_pps = switch_pps.get("max_switch_pps", 0.0)
     if max_client_pps > max_allowed_client_pps:
         raise ValueError(
             f"Estimated PPS per client too high ({max_client_pps:.2f} > {max_allowed_client_pps}). "
             f"Details: {estimated_clients}"
         )
-    if settings.switch_pps_limit is not None and (
-        max_leaf_pps > settings.switch_pps_limit or max_spine_pps > settings.switch_pps_limit
-    ):
+    if settings.switch_pps_limit is not None and max_switch_pps > settings.switch_pps_limit:
         raise ValueError(
-            f"Estimated switch PPS too high (leaf max={max_leaf_pps:.2f}, spine max={max_spine_pps:.2f}, "
-            f"limit={settings.switch_pps_limit})."
+            f"Estimated switch PPS too high (switch max={max_switch_pps:.2f}, " f"limit={settings.switch_pps_limit})."
         )
     return True
 

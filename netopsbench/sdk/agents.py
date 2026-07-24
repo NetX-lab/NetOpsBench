@@ -38,10 +38,32 @@ class AgentManager:
         return handle
 
     def close(self) -> None:
-        """Close every wrapped agent. Safe to call multiple times."""
+        """Close every wrapped agent, retaining failed handles for retry."""
+        failures: list[BaseException] = []
+        remaining: list[AgentHandle] = []
         for handle in list(self._handles):
-            handle.close()
-        self._handles.clear()
+            try:
+                handle.close()
+            except BaseException as exc:
+                failures.append(exc)
+                remaining.append(handle)
+        self._handles = remaining
+        if failures:
+            raise failures[0]
+
+    async def aclose(self) -> None:
+        """Asynchronously close every wrapped agent, retaining failures."""
+        failures: list[BaseException] = []
+        remaining: list[AgentHandle] = []
+        for handle in list(self._handles):
+            try:
+                await handle.aclose()
+            except BaseException as exc:
+                failures.append(exc)
+                remaining.append(handle)
+        self._handles = remaining
+        if failures:
+            raise failures[0]
 
 
 __all__ = [

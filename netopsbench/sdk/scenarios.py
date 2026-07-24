@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from netopsbench.exceptions import ScenarioValidationError
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, supported_scales
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.scenario.parser import parse_scenario_file, save_scenario_file
@@ -30,26 +31,35 @@ class ScenarioManager:
         metadata: dict[str, Any] | None = None,
         parameters: dict[str, Any] | None = None,
     ) -> ScenarioSpec:
-        self.scale_registry.get(scale)
+        try:
+            self.scale_registry.get(scale)
+        except (KeyError, ValueError) as exc:
+            raise ScenarioValidationError(str(exc)) from exc
         if traffic_profile != "standard":
-            raise ValueError(f"Only the standard traffic profile is supported, got: {traffic_profile}")
-        episode_spec = episode if isinstance(episode, EpisodeSpec) else EpisodeSpec.model_validate(episode)
-        return ScenarioSpec(
-            scenario_id=id,
-            name=name,
-            description=description,
-            topology_scale=scale,
-            traffic_profile="standard",
-            episode=episode_spec,
-            metadata=dict(metadata or {}),
-            parameters=dict(parameters or {}),
-        )
+            raise ScenarioValidationError(f"Only the standard traffic profile is supported, got: {traffic_profile}")
+        try:
+            episode_spec = episode if isinstance(episode, EpisodeSpec) else EpisodeSpec.model_validate(episode)
+            return ScenarioSpec(
+                scenario_id=id,
+                name=name,
+                description=description,
+                topology_scale=scale,
+                traffic_profile="standard",
+                episode=episode_spec,
+                metadata=dict(metadata or {}),
+                parameters=dict(parameters or {}),
+            )
+        except ValueError as exc:
+            raise ScenarioValidationError(str(exc)) from exc
 
     def load(self, path: str | Path) -> ScenarioSpec:
-        scenario = parse_scenario_file(path)
+        try:
+            scenario = parse_scenario_file(path)
+        except (OSError, ValueError) as exc:
+            raise ScenarioValidationError(f"Unable to load scenario {path}: {exc}") from exc
         errors = self.validate(scenario)
         if errors:
-            raise ValueError("Invalid scenario: " + "; ".join(errors))
+            raise ScenarioValidationError("Invalid scenario: " + "; ".join(errors))
         return scenario
 
     def save(self, scenario: ScenarioSpec, path: str | Path) -> Path:
@@ -63,5 +73,6 @@ class ScenarioManager:
             fault_registry=registry,
             scale_registry=self.scale_registry,
         )
+
 
 __all__ = ["EpisodeSpec", "ScenarioManager", "ScenarioSpec", "supported_scales"]

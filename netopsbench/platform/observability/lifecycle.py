@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 
@@ -14,7 +15,10 @@ from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.observability.bgp_collector import DEFAULT_BGP_POLL_INTERVAL_SECONDS
-from netopsbench.platform.observability.influxdb import ensure_bucket
+from netopsbench.platform.observability.influxdb import (
+    DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
+    ensure_bucket,
+)
 from netopsbench.platform.observability.telegraf import update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
@@ -54,15 +58,22 @@ def ensure_observability_core() -> None:
     )
 
 
-def ensure_worker_observability(worker: RuntimeIdentity) -> None:
+def ensure_worker_observability(
+    worker: RuntimeIdentity,
+    *,
+    on_bucket_created: Callable[[str], None] | None = None,
+) -> None:
     """Reconcile the shared core, worker collector, and Telegraf sidecar."""
     ensure_observability_core()
-    ensure_bucket(
+    created = ensure_bucket(
         config.influxdb_url,
         config.influxdb_token,
         config.influxdb_org,
         worker.bucket,
+        retention_seconds=DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
     )
+    if created and on_bucket_created is not None:
+        on_bucket_created(worker.bucket)
     docker = [*docker_prefix(), "docker"]
     safe_run([*docker, "inspect", "influxdb"], check=True, timeout=30)
     safe_run(
@@ -118,7 +129,7 @@ def ensure_worker_telegraf(worker: RuntimeIdentity) -> None:
             f"{config_path}:/etc/telegraf/telegraf.conf:ro",
             "-v",
             f"{topology_dir}:/var/lib/netopsbench:ro",
-            "telegraf:latest",
+            "telegraf@sha256:9768f82bde9e68722a58732f9da2d57677703875db2ca9274a2f8625eb0eaf78",
         ],
         check=True,
         timeout=600,
@@ -153,15 +164,18 @@ def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
         str(BGP_COLLECTOR_PARALLELISM),
         "--topology-id",
         worker.topology_id,
+        "--influxdb-bucket",
+        worker.bucket,
+        "--log-file",
+        str(log_file),
     ]
-    with log_file.open("a", encoding="utf-8") as log_handle:
-        process = subprocess.Popen(
-            command,
-            cwd=topology_dir,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    process = subprocess.Popen(
+        command,
+        cwd=topology_dir,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
 
 

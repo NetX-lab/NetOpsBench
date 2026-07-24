@@ -1,4 +1,4 @@
-"""Deterministic size bounds for simulator observations."""
+"""Deterministic size bounds for diagnostic observations."""
 
 from __future__ import annotations
 

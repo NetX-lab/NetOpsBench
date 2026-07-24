@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from netopsbench.models.scenario import ScenarioSpec
-from netopsbench.platform.scenario.episode_runner import observe_episode
-from netopsbench.platform.session.context import (
+from netopsbench.platform.incident.context import (
     _extract_episode_pingmesh_query_window,
     build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
     build_topology_snapshot,
 )
-from netopsbench.platform.simulator.contracts import ToolAction
+from netopsbench.platform.incident.contracts import ToolAction
+from netopsbench.platform.scenario.episode_runner import observe_episode
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 

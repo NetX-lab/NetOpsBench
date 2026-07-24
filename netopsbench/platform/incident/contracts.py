@@ -1,4 +1,4 @@
-"""Dependency-neutral public simulator configuration and action models."""
+"""Dependency-neutral diagnostic incident configuration and action models."""
 
 from __future__ import annotations
 
@@ -20,9 +20,7 @@ class SimulatorConfig(BaseModel):
     def validate_lease_deadline(self) -> SimulatorConfig:
         minimum = self.max_agent_seconds + 300
         if self.orphan_lease_ttl_seconds < minimum:
-            raise ValueError(
-                "orphan_lease_ttl_seconds must cover max_agent_seconds plus 300 seconds of cleanup grace"
-            )
+            raise ValueError("orphan_lease_ttl_seconds must cover max_agent_seconds plus 300 seconds of cleanup grace")
         return self
 
 

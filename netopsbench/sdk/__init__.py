@@ -61,7 +61,6 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "EvaluatorManager": ("netopsbench.sdk.evaluators", "EvaluatorManager"),
     # -- Exceptions ----------------------------------------------------------
     "NetOpsBenchError": ("netopsbench.sdk.exceptions", "NetOpsBenchError"),
-    "ConfigurationError": ("netopsbench.sdk.exceptions", "ConfigurationError"),
     "ScenarioError": ("netopsbench.sdk.exceptions", "ScenarioError"),
     "ScenarioValidationError": ("netopsbench.sdk.exceptions", "ScenarioValidationError"),
     "FaultRegistryError": ("netopsbench.sdk.exceptions", "FaultRegistryError"),

@@ -96,7 +96,7 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
 
     for leaf_idx in range(1, config.num_leafs + 1):
         leaf_name = f"leaf{leaf_idx}"
-        router_id = f"10.0.0.{10 + leaf_idx}"
+        router_id = f"10.0.1.{leaf_idx}"
         leaf_asn = config.leaf_asn_start + leaf_idx - 1
         subnet_octet = 100 + leaf_idx
         leaf = Device(

@@ -11,9 +11,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
 from netopsbench.models.runtime import RuntimeIdentity
+from netopsbench.platform.observability.influxdb import delete_bucket
+from netopsbench.platform.observability.ownership import ManagedBucketRegistry
 from netopsbench.platform.runtime.deployment import management_subnet
 from netopsbench.platform.runtime.lifecycle import (
     LifecycleStageResult,
@@ -21,6 +24,7 @@ from netopsbench.platform.runtime.lifecycle import (
     RuntimeLifecycleError,
     teardown_workers,
 )
+from netopsbench.platform.utils.files import atomic_write_json
 from netopsbench.platform.utils.proc import safe_run
 
 logger = get_logger(__name__)
@@ -41,12 +45,14 @@ class RuntimePool:
     metadata: dict[str, object] = field(default_factory=dict)
     stage_results: dict[str, LifecycleStageResult] = field(default_factory=dict)
     scale_registry: ScaleRegistry = field(default_factory=default_scale_registry, repr=False)
+    telemetry_ownership_file: Path = field(repr=False, default=Path(".netopsbench/telemetry-buckets.json"))
 
     @property
     def size(self) -> int:
         return len(self.workers)
 
-    def _payload(self) -> dict[str, object]:
+    def describe(self) -> dict[str, object]:
+        """Return the canonical serializable runtime description."""
         profile = self.scale_registry.get(self.scale)
         return {
             "schema_version": "3",
@@ -64,7 +70,7 @@ class RuntimePool:
 
     def _write_metadata(self) -> None:
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        (self.root_dir / "runtime.json").write_text(json.dumps(self._payload(), indent=2), encoding="utf-8")
+        atomic_write_json(self.root_dir / "runtime.json", self.describe())
 
     def _run_stage(self, stage: str, next_state: str) -> RuntimePool:
         previous = self.stage_results.get(stage)
@@ -99,12 +105,17 @@ class RuntimePool:
     def teardown(self) -> RuntimePool:
         if self.state == "torn_down":
             return self
-        try:
-            RuntimeLifecycle(scale_registry=self.scale_registry).run("teardown", self)
-        except RuntimeLifecycleError as exc:
-            self.stage_results["teardown"] = exc.result
-            self._write_metadata()
-            raise
+        # ``create()`` only reserves metadata; it has no physical lab to
+        # teardown. A failed deploy does have a stage result and must still
+        # attempt precise cleanup of any partially-created resources.
+        if self.state != "created" or "deploy" in self.stage_results:
+            try:
+                RuntimeLifecycle(scale_registry=self.scale_registry).run("teardown", self)
+            except RuntimeLifecycleError as exc:
+                self.stage_results["teardown"] = exc.result
+                self._write_metadata()
+                raise
+            ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in self.workers])
         self.state = "torn_down"
         metadata_path = self.root_dir / "runtime.json"
         if metadata_path.exists():
@@ -119,6 +130,7 @@ class RuntimeManager:
         self.workspace = Path(workspace).expanduser().resolve()
         self.scale_registry = scale_registry or default_scale_registry()
         self.runtime_root_dir = self.workspace / ".netopsbench" / "runtimes"
+        self.telemetry_ownership_file = self.workspace / ".netopsbench" / "telemetry-buckets.json"
         self.runtime_root_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_runtime(
@@ -155,6 +167,7 @@ class RuntimeManager:
             root_dir=runtime_root,
             workers=worker_items,
             scale_registry=self.scale_registry,
+            telemetry_ownership_file=self.telemetry_ownership_file,
         )
         runtime._write_metadata()
         return runtime
@@ -165,15 +178,23 @@ class RuntimeManager:
         runtime = self._build_runtime(scale=scale, workers=workers, name=name, root_dir=root_dir)
         try:
             runtime.deploy().ensure_observability().ensure_pingmesh().warm()
-        except Exception:
+        except Exception as provision_error:
             logger.warning("Worker deployment failed; tearing down partial state", exc_info=True)
-            # Best-effort teardown of partially-deployed workers (Docker
-            # networks, containers, telegraf instances, etc.) before
-            # cleaning up metadata on disk.
             try:
                 teardown_workers(runtime.workers, self.scale_registry)
-            except Exception:
+            except Exception as cleanup_error:
                 logger.warning("Best-effort teardown_workers failed during cleanup", exc_info=True)
+                runtime.state = "cleanup_failed"
+                runtime.metadata["quarantined"] = True
+                runtime.metadata["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                runtime._write_metadata()
+                raise RuntimeError(
+                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
+                    f"{provision_error}) and cleanup failed "
+                    f"({type(cleanup_error).__name__}: {cleanup_error})"
+                ) from cleanup_error
+
+            ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in runtime.workers])
             # Use sudo rm to handle root-owned files left by containerlab.
             try:
                 safe_run(
@@ -247,6 +268,7 @@ class RuntimeManager:
             metadata=dict(payload.get("metadata", {})),
             stage_results=stage_results,
             scale_registry=self.scale_registry,
+            telemetry_ownership_file=self.telemetry_ownership_file,
         )
 
     def list(self) -> builtins.list[RuntimePool]:
@@ -265,6 +287,16 @@ class RuntimeManager:
             if runtime.name == name:
                 return runtime
         return None
+
+    def telemetry_prune(self, *, apply: bool = False) -> builtins.list[dict[str, str]]:
+        registry = ManagedBucketRegistry(self.telemetry_ownership_file)
+        eligible = registry.eligible()
+        if not apply:
+            return eligible
+        for item in eligible:
+            delete_bucket(config.influxdb_url, config.influxdb_token, item["bucket"])
+            registry.mark_deleted(item["bucket"])
+        return eligible
 
 
 __all__ = ["RuntimeManager", "RuntimeMetadataError", "RuntimePool"]

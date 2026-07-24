@@ -96,6 +96,16 @@ def test_topology_manifest_requires_clients_to_attach_to_known_non_clients():
         )
 
 
+@pytest.mark.parametrize("field", ["mgmt_ip", "data_ip", "router_id"])
+def test_topology_manifest_rejects_duplicate_device_addresses(field):
+    devices = [
+        Device(name="leaf1", role=DeviceRole.LEAF, **{field: "192.0.2.1"}),
+        Device(name="leaf2", role=DeviceRole.LEAF, **{field: "192.0.2.1"}),
+    ]
+    with pytest.raises(ValidationError, match=rf"{field} values must be unique"):
+        _manifest(devices=devices, links=[])
+
+
 def test_topology_manifest_requires_exact_ecmp_policy_for_switch_roles():
     spine = Device(name="spine1", role=DeviceRole.SPINE)
     leaf = Device(name="leaf1", role=DeviceRole.LEAF)
@@ -126,7 +136,7 @@ def test_topology_manifest_requires_exact_ecmp_policy_for_switch_roles():
         )
 
 
-def test_agent_projection_keeps_grouped_fields_and_adapts_fat_tree_roles():
+def test_agent_projection_preserves_canonical_fat_tree_roles():
     core = Device(name="core1", role="core", mgmt_ip="172.20.20.11", asn=65001)
     agg = Device(name="agg1", role="agg", mgmt_ip="172.20.20.12", asn=65101)
     edge = Device(name="edge1", role="edge", mgmt_ip="172.20.20.13", asn=65201)
@@ -163,8 +173,8 @@ def test_agent_projection_keeps_grouped_fields_and_adapts_fat_tree_roles():
 
     projected = manifest.to_agent_topology()
 
-    assert [device["name"] for device in projected["devices"]["spines"]] == ["core1"]
-    assert [device["name"] for device in projected["devices"]["leafs"]] == ["edge1"]
+    assert "spines" not in projected["devices"]
+    assert "leafs" not in projected["devices"]
     assert [device["name"] for device in projected["devices"]["cores"]] == ["core1"]
     assert [device["name"] for device in projected["devices"]["aggs"]] == ["agg1"]
     assert [device["name"] for device in projected["devices"]["edges"]] == ["edge1"]
@@ -173,7 +183,7 @@ def test_agent_projection_keeps_grouped_fields_and_adapts_fat_tree_roles():
     assert projected_client["data_ip"] == "192.168.1.2"
     assert projected_client["attached_switch"] == "edge1"
     assert projected_client["edge"] == "edge1"
-    assert projected_client["leaf"] == "edge1"
+    assert "leaf" not in projected_client
     assert projected["defaults"] == {"link_mtu": 9232, "sonic_port_mtu": 9100}
     assert projected["fat_tree_k"] == 2
     assert projected["scale"] == {
@@ -187,8 +197,6 @@ def test_agent_projection_keeps_grouped_fields_and_adapts_fat_tree_roles():
         "host_density": "standard",
         "total_clients": 1,
         "total_devices": 3,
-        "num_spines": 1,
-        "num_leafs": 1,
     }
     assert projected["routing"]["core_asn_range"] == "65001-65001"
     assert projected["routing"]["ecmp_hash_policy_by_role"] == {"core": 1, "agg": 0, "edge": 1}

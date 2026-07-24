@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from netopsbench.sdk.exceptions import RunFailedError
+from netopsbench.exceptions import RunFailedError
+from netopsbench.platform.utils.files import atomic_write_text
 
 
 class BenchmarkReport:
@@ -27,9 +28,7 @@ class BenchmarkReport:
         self.summary = dict(summary or {})
         self.scenario_summaries = [dict(item) for item in (scenario_summaries or [])]
         self.detailed_results = [dict(item) for item in (detailed_results or [])]
-        self.artifact_paths = {
-            str(key): str(value) for key, value in dict(artifact_paths or {}).items()
-        }
+        self.artifact_paths = {str(key): str(value) for key, value in dict(artifact_paths or {}).items()}
         self.raw = dict(raw or {})
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,7 +47,7 @@ class BenchmarkReport:
     def save(self, path: Path) -> None:
         report_path = Path(path)
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(self.to_json(), encoding="utf-8")
+        atomic_write_text(report_path, self.to_json())
 
     @classmethod
     def load(cls, path: Path) -> BenchmarkReport:
@@ -460,15 +459,13 @@ class RunHandle:
             return None
         return BenchmarkReport.load(self.report_path)
 
-    def wait(self, timeout: float | None = None, *, raise_on_failure: bool = False) -> BenchmarkReport:
+    def wait(self, *, raise_on_failure: bool = False) -> BenchmarkReport:
         """Return the persisted :class:`BenchmarkReport` for this run.
 
         Because runs execute synchronously, ``wait()`` simply loads the report
-        file written by the orchestrator. ``timeout`` is reserved for future
-        use with async runs and currently ignored.
+        file written by the orchestrator.
 
         Args:
-            timeout: Reserved. Currently ignored.
             raise_on_failure: When True, raise :class:`RunFailedError` if the
                 report indicates the run did not complete successfully
                 (status != "completed", or any scenario marked failed).
@@ -501,11 +498,6 @@ class RunHandle:
         elif self.status in {"completed", "cancelled", "failed"} and self.completed_at is None:
             self.completed_at = self.started_at
         return self
-
-    def cancel(self) -> None:
-        if self.status not in {"completed", "failed", "cancelled"}:
-            self.status = "cancelled"
-            self.completed_at = self.completed_at or datetime.now(UTC)
 
 
 def _coerce_datetime(value: Any) -> datetime:

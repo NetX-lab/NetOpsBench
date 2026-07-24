@@ -11,14 +11,14 @@ import pytest
 
 from netopsbench.models.profiles import default_scale_registry
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
-from netopsbench.platform.simulator import runtime as simulator_runtime_module
-from netopsbench.platform.simulator.engine import (
+from netopsbench.platform.incident.engine import (
     CleanupStatus,
     FailureDomain,
     IncidentEngine,
     IncidentState,
     SessionState,
 )
+from netopsbench.platform.simulator import runtime as simulator_runtime_module
 from netopsbench.platform.simulator.environment import (
     DiagnosisSubmission,
     DiagnosticEnvironment,
@@ -151,6 +151,7 @@ def test_prepare_failure_is_invalid_and_cleanup_failure_is_separate():
     assert invalid.state is IncidentState.BROKEN
     assert invalid.failure is not None
     assert invalid.failure.domain is FailureDomain.INFRASTRUCTURE
+    assert invalid.cleanup_failure is None
 
     cleanup_backend = FakeBackend(cleanup_error=RuntimeError("recovery failed"))
     incident = IncidentEngine(lambda: cleanup_backend).prepare(_scenario(healthy=True))
@@ -159,8 +160,9 @@ def test_prepare_failure_is_invalid_and_cleanup_failure_is_separate():
     assert result.reward == 1.0
     assert incident.close() is CleanupStatus.FAILED
     assert result.reward == 1.0
-    assert incident.failure is not None
-    assert incident.failure.domain is FailureDomain.CLEANUP
+    assert incident.failure is None
+    assert incident.cleanup_failure is not None
+    assert incident.cleanup_failure.domain is FailureDomain.CLEANUP
 
 
 def test_environment_preserves_outcome_when_cleanup_fails():
@@ -176,8 +178,27 @@ def test_environment_preserves_outcome_when_cleanup_fails():
 
     assert result.reward == 1.0
     assert result.cleanup_status is CleanupStatus.FAILED
+    assert result.failure is None
+    assert result.cleanup_failure is not None
+    assert result.cleanup_failure.domain is FailureDomain.CLEANUP
+
+
+def test_environment_preserves_execution_and_cleanup_failures_independently():
+    backend = FakeBackend(cleanup_error=RuntimeError("recovery failed"))
+    environment = DiagnosticEnvironment(
+        IncidentEngine(lambda: backend),
+        _scenario(healthy=True),
+        SimulatorConfig(),
+    )
+    assert environment.reset().valid is True
+
+    result = environment.terminate_protocol("bad envelope")
+
     assert result.failure is not None
-    assert result.failure.domain is FailureDomain.CLEANUP
+    assert result.failure.domain is FailureDomain.PROTOCOL
+    assert result.error == "bad envelope"
+    assert result.cleanup_failure is not None
+    assert result.cleanup_failure.domain is FailureDomain.CLEANUP
 
 
 def test_environment_illegal_diagnosis_terminates_as_protocol_outcome_zero():
@@ -230,12 +251,15 @@ class FakeRunner:
 
 
 class FakeRuntime:
-    def __init__(self, scale: str):
+    def __init__(self, scale: str, *, teardown_failures: int = 0):
         self.scale = scale
         self.teardowns = 0
+        self.teardown_failures = teardown_failures
 
     def teardown(self):
         self.teardowns += 1
+        if self.teardowns <= self.teardown_failures:
+            raise RuntimeError("teardown failed")
 
 
 def _pool(monkeypatch) -> tuple[RuntimeLeasePool, list[WarmRuntime]]:
@@ -280,6 +304,28 @@ def test_runtime_capacity_switch_has_no_training_phase_state(monkeypatch):
     assert xs.runtime.teardowns == 1
     assert large.runtime.teardowns == 1
     assert returned.runtime.scale == "xs"
+
+
+def test_failed_quarantine_remains_at_capacity_until_explicit_retry(monkeypatch):
+    pool, _ = _pool(monkeypatch)
+    record = WarmRuntime(
+        runtime=FakeRuntime("xs", teardown_failures=1),
+        runner=FakeRunner(),
+        in_use=True,
+    )
+    pool._runtimes["xs"] = [record]
+
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        pool.quarantine(record)
+
+    assert record.quarantined is True
+    assert record.in_use is False
+    assert pool._runtime_count() == 1
+
+    pool.retry_quarantined(record)
+
+    assert record.runtime.teardowns == 2
+    assert pool._runtime_count() == 0
 
 
 def test_runtime_lease_wait_is_bounded(monkeypatch):

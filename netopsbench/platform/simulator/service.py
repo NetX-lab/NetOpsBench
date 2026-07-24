@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -15,8 +17,8 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from netopsbench.models.scenario import ScenarioSpec
-from netopsbench.platform.session.context import build_public_case_id
-from netopsbench.platform.simulator.contracts import (
+from netopsbench.platform.incident.context import build_public_case_id
+from netopsbench.platform.incident.contracts import (
     SimulatorConfig,
     SubmitDiagnosisAction,
     ToolAction,
@@ -25,6 +27,10 @@ from netopsbench.platform.simulator.contracts import (
 Action = Annotated[ToolAction | SubmitDiagnosisAction, Field(discriminator="type")]
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 logger = logging.getLogger(__name__)
+_TERMINAL_TOMBSTONE_TTL_SECONDS = 3_600.0
+_MAX_TERMINAL_TOMBSTONES = 1_024
+_EVENT_LOG_MAX_BYTES = 10 * 1024 * 1024
+_EVENT_LOG_BACKUP_COUNT = 2
 
 
 def scenario_case_id(scenario: ScenarioSpec) -> str:
@@ -49,6 +55,7 @@ class _EnvironmentSlot:
     environment: Any | None
     case_id: str
     terminal: bool = False
+    terminal_at: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -91,11 +98,14 @@ class SimulatorService:
         if terminal:
             environment.close()
         with self._lock:
+            self._prune_terminal_environments()
             self.environments[environment_id] = _EnvironmentSlot(
                 None if terminal else environment,
                 case_id,
                 terminal=terminal,
+                terminal_at=time.monotonic() if terminal else None,
             )
+            self._prune_terminal_environments()
         self._record_event(
             {
                 "event": "create",
@@ -110,6 +120,7 @@ class SimulatorService:
 
     def step(self, environment_id: str, action: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            self._prune_terminal_environments()
             slot = self.environments.get(environment_id)
         if slot is None:
             raise KeyError(environment_id)
@@ -129,13 +140,16 @@ class SimulatorService:
             if slot.terminal:
                 environment.close()
                 slot.environment = None
+                slot.terminal_at = time.monotonic()
+                with self._lock:
+                    self._prune_terminal_environments()
         self._record_event(
             {
                 "event": "step",
                 "environment_id": environment_id,
                 "case_id": slot.case_id,
                 "action_type": action.get("type"),
-                "result": result,
+                "result": self._summarize_result(result),
             }
         )
         return result
@@ -149,9 +163,7 @@ class SimulatorService:
             if slot.environment is not None:
                 slot.environment.close()
                 slot.environment = None
-        self._record_event(
-            {"event": "delete", "environment_id": environment_id, "case_id": slot.case_id}
-        )
+        self._record_event({"event": "delete", "environment_id": environment_id, "case_id": slot.case_id})
 
     def close(self) -> None:
         with self._lock:
@@ -171,8 +183,64 @@ class SimulatorService:
         if self._event_log is None:
             return
         payload = {"timestamp": datetime.now(UTC).isoformat(), **event}
-        with self._event_lock, self._event_log.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        with self._event_lock:
+            self._rotate_event_log(len(serialized.encode("utf-8")))
+            with self._event_log.open("a", encoding="utf-8") as stream:
+                stream.write(serialized)
+
+    def _prune_terminal_environments(self) -> None:
+        """Keep lightweight terminal tombstones briefly for stable HTTP semantics."""
+        now = time.monotonic()
+        terminal = [
+            (environment_id, slot)
+            for environment_id, slot in self.environments.items()
+            if slot.terminal and slot.environment is None and slot.terminal_at is not None
+        ]
+        for environment_id, slot in terminal:
+            terminal_at = slot.terminal_at
+            if terminal_at is not None and now - terminal_at >= _TERMINAL_TOMBSTONE_TTL_SECONDS:
+                self.environments.pop(environment_id, None)
+        terminal_ids = [
+            environment_id
+            for environment_id, slot in sorted(
+                self.environments.items(),
+                key=lambda item: item[1].terminal_at or float("inf"),
+            )
+            if slot.terminal and slot.environment is None
+        ]
+        for environment_id in terminal_ids[:-_MAX_TERMINAL_TOMBSTONES]:
+            self.environments.pop(environment_id, None)
+
+    @staticmethod
+    def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "valid",
+            "case_valid",
+            "state",
+            "reward",
+            "reward_components",
+            "metrics",
+            "termination_reason",
+            "failure",
+            "cleanup_failure",
+            "cleanup_status",
+            "error",
+        )
+        return {key: result[key] for key in keys if key in result}
+
+    def _rotate_event_log(self, incoming_bytes: int) -> None:
+        if self._event_log is None or not self._event_log.exists():
+            return
+        if self._event_log.stat().st_size + incoming_bytes <= _EVENT_LOG_MAX_BYTES:
+            return
+        oldest = self._event_log.with_name(f"{self._event_log.name}.{_EVENT_LOG_BACKUP_COUNT}")
+        oldest.unlink(missing_ok=True)
+        for index in range(_EVENT_LOG_BACKUP_COUNT - 1, 0, -1):
+            source = self._event_log.with_name(f"{self._event_log.name}.{index}")
+            if source.exists():
+                os.replace(source, self._event_log.with_name(f"{self._event_log.name}.{index + 1}"))
+        os.replace(self._event_log, self._event_log.with_name(f"{self._event_log.name}.1"))
 
 
 def create_app(service: SimulatorService):

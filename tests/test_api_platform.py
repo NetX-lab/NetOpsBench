@@ -1,7 +1,7 @@
 """Tests for the public NetOpsBench SDK root scaffold."""
 
+import asyncio
 import importlib
-from pathlib import Path
 
 import pytest
 
@@ -136,12 +136,66 @@ def test_session_orchestrator_is_available_under_platform_session_package():
     assert SessionOrchestrator.__module__ == "netopsbench.platform.session.orchestrator"
 
 
-def test_worker_health_check_tracks_the_native_client_agent_contract():
-    repo = Path(__file__).resolve().parents[1]
-    deploy_py = (repo / "netopsbench" / "platform" / "client_agent" / "deploy.py").read_text(encoding="utf-8")
-    contract_py = (repo / "netopsbench" / "platform" / "client_agent" / "contract.py").read_text(encoding="utf-8")
-    health_py = (repo / "netopsbench" / "platform" / "runtime" / "health.py").read_text(encoding="utf-8")
+def test_netopsbench_async_context_closes_wrapped_agents(tmp_path):
+    from netopsbench.sdk import NetOpsBench
 
-    assert "/usr/local/bin/netopsbench-client-agent" in deploy_py
-    assert "PINGMESH_CONTROL_PORT = 9910" in contract_py
-    assert "request_agent" in health_py
+    class Agent:
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    agent = Agent()
+
+    async def use_bench():
+        async with NetOpsBench(workspace=str(tmp_path)) as bench:
+            bench.agents.wrap(agent)
+            assert bench._closed is False
+        assert bench._closed is True
+
+    asyncio.run(use_bench())
+    assert agent.closed == 1
+
+
+def test_netopsbench_sync_close_rejects_running_event_loop(tmp_path):
+    from netopsbench.sdk import NetOpsBench
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+
+    async def close_in_loop():
+        with pytest.raises(RuntimeError, match=r"await bench\.aclose"):
+            bench.close()
+        assert bench._closed is False
+        await bench.aclose()
+
+    asyncio.run(close_in_loop())
+    assert bench._closed is True
+
+
+def test_netopsbench_aclose_is_retryable_after_agent_failure(tmp_path):
+    from netopsbench.sdk import NetOpsBench
+
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        async def aclose(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("cleanup failed")
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+    agent = Flaky()
+    bench.agents.wrap(agent)
+
+    async def close_twice():
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await bench.aclose()
+        assert bench._closed is False
+        assert len(bench.agents._handles) == 1
+        await bench.aclose()
+
+    asyncio.run(close_twice())
+    assert bench._closed is True
+    assert agent.calls == 2

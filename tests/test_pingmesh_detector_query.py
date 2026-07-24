@@ -16,6 +16,27 @@ class _Detector(DetectorQueryMixin):
         self.org = "org"
         self.topology_id = "runtime-topology"
         self._pingmesh_clients = clients
+        self.client_to_leaf: dict[str, str] = {}
+
+
+def test_topology_mapping_uses_canonical_attached_switch_for_fat_tree():
+    detector = _Detector(["client1"])
+
+    detector._load_topology_metadata(
+        {
+            "devices": {
+                "clients": [
+                    {
+                        "name": "client1",
+                        "attached_switch": "edge1",
+                        "edge": "edge1",
+                    }
+                ]
+            }
+        }
+    )
+
+    assert detector.client_to_leaf == {"client1": "edge1"}
 
 
 def test_snapshot_query_uses_bounded_pushdown_source_shards(monkeypatch):

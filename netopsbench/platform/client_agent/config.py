@@ -18,8 +18,7 @@ def build_client_agent_config(manifest: TopologyManifest) -> dict:
     for client in manifest.clients():
         if not client.data_ip or not client.mgmt_ip or not client.attached_switch:
             raise ValueError(
-                f"Client {client.name} requires data_ip, mgmt_ip, and attached_switch "
-                "for the native client agent"
+                f"Client {client.name} requires data_ip, mgmt_ip, and attached_switch " "for the native client agent"
             )
         rack = str(client.metadata.get("rack") or client.attached_switch)
         clients.append(

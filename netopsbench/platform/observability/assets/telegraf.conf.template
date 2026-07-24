@@ -21,9 +21,6 @@
   bucket = "{{INFLUXDB_BUCKET}}"
   content_encoding = "gzip"
 
-  # Removed tagdrop as we are filtering in Starlark
-
-
 # --- INPUTS ---
 
 # 1. Syslog (UDP 514)
@@ -49,15 +46,6 @@ def apply(metric):
     return metric
 '''
 
-
-# --- PROCESSORS ---
-# Filter out noisy debug logs
-[[processors.regex]]
-  namepass = ["syslog"]
-
-  # Drop logs tagged as drop_me
-[[processors.regex]]
-  namepass = ["syslog"]
 
 # Syslog filtering using Starlark
 [[processors.starlark]]
@@ -177,7 +165,7 @@ def apply(metric):
 
 # BGP neighbor snapshots collected by the worker host-side poller
 [[inputs.tail]]
-  files = ["/var/lib/netopsbench/bgp_neighbors.lp"]
+  files = ["/var/lib/netopsbench/bgp_neighbors*.lp"]
   from_beginning = true
   watch_method = "poll"
   data_format = "influx"

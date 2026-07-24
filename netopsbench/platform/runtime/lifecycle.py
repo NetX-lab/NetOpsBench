@@ -17,6 +17,7 @@ from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, g
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.client_agent.deploy import deploy_client_agents
 from netopsbench.platform.observability.lifecycle import ensure_worker_observability
+from netopsbench.platform.observability.ownership import ManagedBucketRegistry
 from netopsbench.platform.runtime.deployment import (
     allocate_management_subnets,
     deploy_worker_lab,
@@ -29,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimePoolLike(Protocol):
+    id: str
     scale: str
     root_dir: Path
+    telemetry_ownership_file: Path
     workers: list[RuntimeIdentity]
 
     @property
@@ -144,12 +147,39 @@ def validate_worker_health(
         raise RuntimeError(f"Worker health check failed: {message}")
 
 
+def deploy_worker_transactionally(
+    worker: RuntimeIdentity,
+    scale: str,
+    scale_registry: ScaleRegistry | None = None,
+) -> None:
+    """Deploy one standalone worker with the same compensated lifecycle as pools."""
+    registry = scale_registry or default_scale_registry()
+    try:
+        deploy_worker_lab(worker, scale, registry)
+        ensure_worker_observability(worker)
+        ensure_worker_client_agent(worker)
+        validate_worker_health(worker, scale_registry=registry)
+    except Exception as provision_error:
+        try:
+            teardown_worker_lab(worker, registry)
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                f"Worker provisioning failed ({type(provision_error).__name__}: {provision_error}) "
+                f"and cleanup failed ({type(cleanup_error).__name__}: {cleanup_error})"
+            ) from provision_error
+        raise
+
+
 def teardown_workers(workers: Sequence[RuntimeIdentity], scale_registry: ScaleRegistry | None = None) -> None:
+    failures: list[str] = []
     for worker in workers:
         try:
             teardown_worker_lab(worker, scale_registry)
-        except Exception:
+        except Exception as exc:
             logger.warning("worker teardown failed for %s", worker.lab_name, exc_info=True)
+            failures.append(f"{worker.lab_name}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise RuntimeError("Worker teardown failed: " + "; ".join(failures))
 
 
 class RuntimeLifecycle:
@@ -208,9 +238,19 @@ class RuntimeLifecycle:
 
     @staticmethod
     def _ensure_observability(runtime: RuntimePoolLike) -> dict[str, Any]:
+        registry = ManagedBucketRegistry(runtime.telemetry_ownership_file)
+        created: list[str] = []
+
+        def record_created(bucket: str) -> None:
+            registry.record_created(bucket, runtime.id)
+            created.append(bucket)
+
         for worker in runtime.workers:
-            ensure_worker_observability(worker)
-        return {"workers": runtime.size}
+            ensure_worker_observability(
+                worker,
+                on_bucket_created=record_created,
+            )
+        return {"workers": runtime.size, "created_buckets": created}
 
     @staticmethod
     def _ensure_pingmesh(runtime: RuntimePoolLike) -> dict[str, Any]:
@@ -232,6 +272,7 @@ __all__ = [
     "LifecycleStageResult",
     "RuntimeLifecycle",
     "RuntimeLifecycleError",
+    "deploy_worker_transactionally",
     "deploy_workers",
     "ensure_worker_observability",
     "ensure_worker_client_agent",

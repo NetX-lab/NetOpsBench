@@ -109,11 +109,16 @@ def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path):
     assert '"172.20.20.11:50051"' not in leaf_block
     assert 'path = "COUNTERS/Ethernet64"' in leaf_block
     assert 'path = "COUNTERS/Ethernet68"' not in leaf_block
-    assert 'subscription_mode = "on_change"' in rendered
+    assert 'subscription_mode = "sample"' in rendered
+    assert 'sample_interval = "10s"' in rendered
     assert 'username = "admin"' in rendered
     assert 'password = ""' in rendered
     assert 'encoding = "json_ietf"' in rendered
     assert 'target = "COUNTERS_DB"' in rendered
+    assert rendered.count("fieldpass = [") == 2
+    assert '"SAI_PORT_STAT_IF_IN_OCTETS"' in rendered
+    assert '"SAI_PORT_STAT_IF_OUT_ERRORS"' in rendered
+    assert "SAI_PORT_STAT_IF_IN_DROPPED_PKTS" not in rendered
 
 
 def test_update_telegraf_config_scopes_native_fat_tree_roles_from_artifacts(tmp_path):
@@ -190,7 +195,7 @@ def test_packaged_observability_assets_enable_bgp_tail_input():
 
     assert "CPU Usage (optional)" not in dashboard_text
     assert "Memory Utilization (optional)" not in dashboard_text
-    assert "/var/lib/netopsbench/bgp_neighbors.lp" in telegraf_text
+    assert "/var/lib/netopsbench/bgp_neighbors*.lp" in telegraf_text
     assert "from_beginning = true" in telegraf_text
     assert 'watch_method = "poll"' in telegraf_text
     assert "metric_batch_size = 5000" in telegraf_text
@@ -293,7 +298,10 @@ def test_env_example_does_not_expose_internal_runtime_parallelism():
 
 
 def test_native_client_image_has_no_python_or_iperf_runtime():
-    from netopsbench.platform.topology.config import DEFAULT_CLIENT_IMAGE
+    from netopsbench.platform.topology.config import (
+        DEFAULT_CLIENT_IMAGE,
+        DEFAULT_SONIC_VS_IMAGE,
+    )
 
     dockerfile = Path("containers/client/Dockerfile").read_text(encoding="utf-8")
 
@@ -303,6 +311,7 @@ def test_native_client_image_has_no_python_or_iperf_runtime():
     assert "/usr/local/bin/netopsbench-client-agent" in runtime_stage
     assert DEFAULT_CLIENT_IMAGE.startswith("ghcr.io/netx-lab/netopsbench-client@sha256:")
     assert ":latest" not in DEFAULT_CLIENT_IMAGE
+    assert DEFAULT_SONIC_VS_IMAGE.startswith("yyyyyt123/netopsbench-sonic-vs-202505-telemetry@sha256:")
 
 
 def test_native_management_contract_matches_rust_constants():

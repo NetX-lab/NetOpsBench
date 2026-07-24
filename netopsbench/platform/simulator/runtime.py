@@ -12,12 +12,12 @@ from typing import Any
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.scenario import ScenarioSpec
+from netopsbench.platform.incident.contracts import SimulatorConfig, ToolAction
 from netopsbench.platform.runtime.health import check_worker_health
 from netopsbench.platform.runtime.lifecycle import ensure_worker_client_agent, ensure_worker_observability
 from netopsbench.platform.runtime.manager import RuntimeManager, RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
-from netopsbench.platform.simulator.contracts import SimulatorConfig, ToolAction
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
 logger = get_logger(__name__)
@@ -104,6 +104,7 @@ class RuntimeLeasePool:
         with self._condition:
             record.quarantined = True
             record.in_use = False
+            record.lease_deadline = 0.0
             try:
                 record.runner._stop_traffic()
             except Exception:
@@ -112,10 +113,18 @@ class RuntimeLeasePool:
                 record.runtime.teardown()
             except Exception:
                 logger.warning("Failed to tear down quarantined runtime", exc_info=True)
-            records = self._runtimes.get(record.runtime.scale, [])
-            if record in records:
-                records.remove(record)
+                self._condition.notify_all()
+                raise
+            self._remove(record)
             self._condition.notify_all()
+
+    def retry_quarantined(self, record: WarmRuntime) -> None:
+        """Retry teardown for a quarantined runtime without releasing capacity."""
+        with self._condition:
+            records = self._runtimes.get(record.runtime.scale, [])
+            if record not in records or not record.quarantined:
+                raise ValueError("Runtime is not quarantined in this lease pool")
+        self.quarantine(record)
 
     def drain(self, scales: set[str] | None = None) -> None:
         with self._lock:
@@ -126,12 +135,10 @@ class RuntimeLeasePool:
                 for record in records
             ]
             for record in selected:
-                self.quarantine(record)
-            if scales is None:
-                self._runtimes.clear()
-            else:
-                for scale in scales:
-                    self._runtimes.pop(scale, None)
+                try:
+                    self.quarantine(record)
+                except Exception:
+                    logger.warning("Failed to drain quarantined runtime", exc_info=True)
 
     def reap_orphans(self) -> None:
         now = time.monotonic()
@@ -142,7 +149,10 @@ class RuntimeLeasePool:
             if record.in_use and record.lease_deadline and now > record.lease_deadline
         ]
         for record in stale:
-            self.quarantine(record)
+            try:
+                self.quarantine(record)
+            except Exception:
+                logger.warning("Failed to reap quarantined runtime", exc_info=True)
 
     def _runtime_count(self) -> int:
         return sum(len(records) for records in self._runtimes.values())
@@ -167,12 +177,20 @@ class RuntimeLeasePool:
             for candidate_scale, records in self._runtimes.items()
             if candidate_scale != scale
             for record in records
-            if not record.in_use
+            if not record.in_use and not record.quarantined
         ]
         for record in candidates:
-            self.quarantine(record)
+            try:
+                self.quarantine(record)
+            except Exception:
+                continue
             if self._runtime_count() < self.config.max_active_runtimes:
                 return
+
+    def _remove(self, record: WarmRuntime) -> None:
+        records = self._runtimes.get(record.runtime.scale, [])
+        if record in records:
+            records.remove(record)
 
     def _provision(self, scale: str) -> WarmRuntime:
         with _PROVISION_LOCK:

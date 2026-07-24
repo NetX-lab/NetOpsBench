@@ -17,7 +17,6 @@ class WorkerExecutionContext:
     def as_env(self) -> dict[str, str]:
         return {
             "NETOPSBENCH_TOPOLOGY_DIR": str(self.topology_dir),
-            "NETOPSBENCH_TOPOLOGY_ID": self.topology_id,
             "NETOPSBENCH_INFLUXDB_BUCKET": self.influxdb_bucket,
         }
 

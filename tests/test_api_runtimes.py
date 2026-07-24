@@ -29,7 +29,7 @@ def _record_lifecycle_operations(monkeypatch, calls, *, fail_stage=None):
     monkeypatch.setattr(
         lifecycle,
         "ensure_worker_observability",
-        lambda worker: record("observability", worker.runtime_id),
+        lambda worker, **_kwargs: record("observability", worker.runtime_id),
     )
     monkeypatch.setattr(
         lifecycle,
@@ -112,8 +112,7 @@ def test_runtime_manager_attach_list_get_roundtrip(tmp_path):
 
 
 def test_runtime_attach_rejects_tampered_resolved_scale_profile(tmp_path):
-    from netopsbench.platform.runtime.manager import RuntimeMetadataError
-    from netopsbench.sdk.runtimes import RuntimeManager
+    from netopsbench.sdk.runtimes import RuntimeManager, RuntimeProvisionError
 
     manager = RuntimeManager(workspace=tmp_path)
     runtime = manager.create(scale="xs", workers=1, name="runtime-xs")
@@ -122,7 +121,7 @@ def test_runtime_attach_rejects_tampered_resolved_scale_profile(tmp_path):
     payload["resolved_scale_profile"]["traffic"]["max_pps_per_client"] = 999
     metadata_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(RuntimeMetadataError, match="does not match"):
+    with pytest.raises(RuntimeProvisionError, match="does not match"):
         manager.attach(runtime.root_dir)
 
 
@@ -188,6 +187,8 @@ def test_worker_observability_restarts_stale_bgp_collector(tmp_path, monkeypatch
     assert str(topology_dir / "topology.json") in started[0][0]
     interval_index = started[0][0].index("--interval")
     assert started[0][0][interval_index + 1] == "10.0"
+    bucket_index = started[0][0].index("--influxdb-bucket")
+    assert started[0][0][bucket_index + 1] == worker.bucket
 
 
 def test_worker_telegraf_exposes_pingmesh_ingest_before_returning(tmp_path, monkeypatch):
@@ -444,8 +445,7 @@ def test_runtime_pool_exposes_required_lifecycle_surface(tmp_path, monkeypatch):
 
 
 def test_runtime_stage_failure_is_persisted_without_advancing_state(tmp_path, monkeypatch):
-    from netopsbench.platform.runtime.lifecycle import RuntimeLifecycleError
-    from netopsbench.sdk.runtimes import RuntimeManager
+    from netopsbench.sdk.runtimes import RuntimeManager, RuntimeProvisionError
 
     calls = []
     _record_lifecycle_operations(monkeypatch, calls, fail_stage="observability")
@@ -453,7 +453,7 @@ def test_runtime_stage_failure_is_persisted_without_advancing_state(tmp_path, mo
     runtime = manager.create(scale="xs", workers=1, name="runtime-failure")
     runtime.deploy()
 
-    with pytest.raises(RuntimeLifecycleError, match="observability"):
+    with pytest.raises(RuntimeProvisionError, match="observability"):
         runtime.ensure_observability()
 
     assert runtime.state == "deployed"
@@ -463,7 +463,7 @@ def test_runtime_stage_failure_is_persisted_without_advancing_state(tmp_path, mo
 
 
 def test_runtime_manager_attach_rejects_missing_runtime_metadata(tmp_path):
-    from netopsbench.sdk.runtimes import RuntimeManager
+    from netopsbench.sdk.runtimes import RuntimeManager, RuntimeProvisionError
 
     runtime_dir = tmp_path / ".netopsbench" / "runtimes" / "broken-runtime"
     runtime_dir.mkdir(parents=True)
@@ -472,14 +472,14 @@ def test_runtime_manager_attach_rejects_missing_runtime_metadata(tmp_path):
 
     try:
         manager.attach(runtime_dir)
-    except FileNotFoundError as exc:
+    except RuntimeProvisionError as exc:
         assert "runtime.json" in str(exc)
     else:
-        raise AssertionError("expected FileNotFoundError for missing runtime metadata")
+        raise AssertionError("expected RuntimeProvisionError for missing runtime metadata")
 
 
 def test_runtime_manager_attach_rejects_malformed_runtime_metadata(tmp_path):
-    from netopsbench.sdk.runtimes import RuntimeManager
+    from netopsbench.sdk.runtimes import RuntimeManager, RuntimeProvisionError
 
     runtime_dir = tmp_path / ".netopsbench" / "runtimes" / "broken-runtime"
     runtime_dir.mkdir(parents=True)
@@ -489,10 +489,10 @@ def test_runtime_manager_attach_rejects_malformed_runtime_metadata(tmp_path):
 
     try:
         manager.attach(runtime_dir)
-    except ValueError as exc:
+    except RuntimeProvisionError as exc:
         assert "Unsupported runtime.json schema" in str(exc)
     else:
-        raise AssertionError("expected ValueError for malformed runtime metadata")
+        raise AssertionError("expected RuntimeProvisionError for malformed runtime metadata")
 
 
 def test_runtime_manager_provision_composes_lifecycle_stages(tmp_path, monkeypatch):
@@ -515,10 +515,31 @@ def test_runtime_manager_provision_composes_lifecycle_stages(tmp_path, monkeypat
     assert runtime.workers[0].topology_dir == runtime.root_dir / "worker-1"
 
 
+def test_observability_stage_records_only_confirmed_created_bucket(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.lifecycle as lifecycle
+    from netopsbench.platform.runtime.manager import RuntimeManager
+
+    manager = RuntimeManager(workspace=tmp_path)
+    runtime = manager.create(scale="xs", workers=1, name="runtime-xs")
+
+    def fake_ensure(worker, *, on_bucket_created):
+        on_bucket_created(worker.bucket)
+
+    monkeypatch.setattr(lifecycle, "ensure_worker_observability", fake_ensure)
+    runtime.ensure_observability()
+
+    payload = json.loads(manager.telemetry_ownership_file.read_text())
+    assert set(payload["buckets"]) == {runtime.workers[0].bucket}
+
+
 def test_runtime_pool_teardown_uses_worker_pool_teardown_hook(tmp_path, monkeypatch):
     import netopsbench.platform.runtime.manager as runtimes_mod
+    from netopsbench.platform.observability.ownership import ManagedBucketRegistry
 
-    runtime = runtimes_mod.RuntimeManager(workspace=tmp_path).create(scale="xs", workers=1, name="runtime-xs")
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    runtime = manager.create(scale="xs", workers=1, name="runtime-xs")
+    registry = ManagedBucketRegistry(manager.telemetry_ownership_file)
+    registry.record_created(runtime.workers[0].bucket, runtime.id)
     runtime.metadata["provisioning_mode"] = "worker_pool"
     runtime.state = "deployed"
     runtime._write_metadata()
@@ -532,6 +553,104 @@ def test_runtime_pool_teardown_uses_worker_pool_teardown_hook(tmp_path, monkeypa
     assert calls == [("teardown", "runtime-xs")]
     assert runtime.state == "torn_down"
     assert not runtime.root_dir.exists()
+    assert json.loads(manager.telemetry_ownership_file.read_text())["buckets"][runtime.workers[0].bucket]["retired_at"]
+
+
+def test_failed_physical_teardown_does_not_retire_owned_bucket(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+    from netopsbench.platform.observability.ownership import ManagedBucketRegistry
+
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    runtime = manager.create(scale="xs", workers=1, name="runtime-xs")
+    runtime.state = "deployed"
+    runtime._write_metadata()
+    registry = ManagedBucketRegistry(manager.telemetry_ownership_file)
+    registry.record_created(runtime.workers[0].bucket, runtime.id)
+    calls = []
+    _record_lifecycle_operations(monkeypatch, calls, fail_stage="teardown")
+
+    with pytest.raises(Exception, match="teardown"):
+        runtime.teardown()
+
+    entry = json.loads(manager.telemetry_ownership_file.read_text())["buckets"][runtime.workers[0].bucket]
+    assert entry["retired_at"] is None
+    assert runtime.root_dir.exists()
+
+
+def test_created_runtime_teardown_is_metadata_only(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+    from netopsbench.platform.runtime import lifecycle
+
+    runtime = runtimes_mod.RuntimeManager(workspace=tmp_path).create(scale="xs", workers=1, name="runtime-xs")
+    monkeypatch.setattr(
+        lifecycle,
+        "teardown_workers",
+        lambda *_args, **_kwargs: pytest.fail("created runtime has no physical workers"),
+    )
+
+    runtime.teardown()
+
+    assert runtime.state == "torn_down"
+    assert not runtime.root_dir.exists()
+
+
+def test_teardown_workers_attempts_all_workers_and_aggregates_failures(monkeypatch, tmp_path):
+    from netopsbench.models.runtime import RuntimeIdentity
+    from netopsbench.platform.runtime import lifecycle
+
+    workers = [
+        RuntimeIdentity.create(
+            runtime_id="runtime-xs",
+            worker_id=f"worker-{index}",
+            worker_index=index,
+            lab_name=f"lab-{index}",
+            topology_dir=tmp_path / f"worker-{index}",
+            mgmt_subnet=f"172.31.{index}.0/24",
+            mgmt_network=f"network-{index}",
+        )
+        for index in range(1, 4)
+    ]
+    attempted = []
+
+    def fake_teardown(worker, _registry):
+        attempted.append(worker.lab_name)
+        if worker.worker_index != 2:
+            raise RuntimeError(f"failure-{worker.worker_index}")
+
+    monkeypatch.setattr(lifecycle, "teardown_worker_lab", fake_teardown)
+
+    with pytest.raises(RuntimeError, match=r"lab-1.*failure-1.*lab-3.*failure-3"):
+        lifecycle.teardown_workers(workers)
+
+    assert attempted == ["lab-1", "lab-2", "lab-3"]
+
+
+def test_worker_teardown_without_generated_manifest_uses_exact_lab_name(monkeypatch, tmp_path):
+    from netopsbench.models.runtime import RuntimeIdentity
+    from netopsbench.platform.runtime import deployment
+
+    topology_dir = tmp_path / "worker-1"
+    topology_dir.mkdir()
+    worker = RuntimeIdentity.create(
+        runtime_id="runtime-xs",
+        worker_id="worker-1",
+        worker_index=1,
+        lab_name="runtime-xs",
+        topology_dir=topology_dir,
+        mgmt_subnet="172.31.1.0/24",
+        mgmt_network="clab-mgmt-runtime-xs",
+    )
+    commands = []
+    monkeypatch.setattr(deployment, "safe_run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(deployment, "_stop_collector", lambda _path: None)
+    monkeypatch.setattr(deployment, "_lab_container_names", lambda *_args: [])
+    monkeypatch.setattr(deployment, "_wait_for_lab_removal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deployment, "docker_prefix", lambda: [])
+    monkeypatch.setattr(deployment, "sudo_prefix", lambda: [])
+
+    deployment.teardown_worker_lab(worker)
+
+    assert ["containerlab", "destroy", "--name", "runtime-xs", "--cleanup"] in commands
 
 
 def test_provision_cleans_up_metadata_on_deploy_failure(tmp_path, monkeypatch):
@@ -539,6 +658,7 @@ def test_provision_cleans_up_metadata_on_deploy_failure(tmp_path, monkeypatch):
 
     calls = []
     _record_lifecycle_operations(monkeypatch, calls, fail_stage="deploy")
+    monkeypatch.setattr(runtimes_mod, "teardown_workers", lambda *_args, **_kwargs: None)
     manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
     runtime_dir = tmp_path / ".netopsbench" / "runtimes" / "will-fail"
 
@@ -551,3 +671,27 @@ def test_provision_cleans_up_metadata_on_deploy_failure(tmp_path, monkeypatch):
 
     assert not runtime_dir.exists(), "stale runtime directory should be cleaned up on provision failure"
     assert manager.list() == [], "no stale runtimes should remain after provision failure"
+
+
+def test_provision_preserves_quarantined_metadata_when_cleanup_fails(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+
+    calls = []
+    _record_lifecycle_operations(monkeypatch, calls, fail_stage="deploy")
+
+    def fail_cleanup(*_args, **_kwargs):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(runtimes_mod, "teardown_workers", fail_cleanup)
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    runtime_dir = tmp_path / ".netopsbench" / "runtimes" / "will-quarantine"
+
+    with pytest.raises(RuntimeError, match="provisioning failed.*cleanup failed"):
+        manager.provision(scale="xs", workers=1, name="will-quarantine")
+
+    assert runtime_dir.exists()
+    runtime = manager.get("will-quarantine")
+    assert runtime is not None
+    assert runtime.state == "cleanup_failed"
+    assert runtime.metadata["quarantined"] is True
+    assert "cleanup failed" in str(runtime.metadata["cleanup_error"])

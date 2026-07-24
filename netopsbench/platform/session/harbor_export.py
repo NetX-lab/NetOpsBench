@@ -81,7 +81,8 @@ def _write_harbor_trial(
 ) -> TrialResult:
     case_id = str(index_row.get("case_id") or (atif.get("extra") or {}).get("case_id") or "case")
     scenario_id = str(index_row.get("scenario_id") or (atif.get("extra") or {}).get("scenario_id") or "scenario")
-    trial_name = _safe_path_part(f"{scenario_id}__{case_id}")
+    trace_part = _safe_path_part(str(index_row.get("trace_id") or "trace").rsplit(":", 1)[-1])
+    trial_name = _safe_path_part(f"{scenario_id}__{case_id}__{trace_part}")
     trial_dir = job_dir / trial_name
     agent_dir = trial_dir / "agent"
     verifier_dir = trial_dir / "verifier"
@@ -207,18 +208,35 @@ def _harbor_job_result(job_id: str, run_times: dict[str, str], trial_results: li
 
 
 def _resolve_atif_path(run_path: Path, row: dict[str, Any]) -> Path:
+    trace_id = str(row.get("trace_id") or "")
+    if not trace_id:
+        raise FileNotFoundError("ATIF trajectory cannot be resolved without trace_id")
     raw_path = row.get("atif_path")
-    if raw_path and Path(raw_path).exists():
-        return Path(raw_path)
+    if raw_path:
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = run_path / candidate
+        if candidate.exists() and _atif_matches_trace(candidate, trace_id):
+            return candidate
     case_id = _safe_path_part(row.get("case_id") or "case")
-    matches = sorted((run_path / "traces").glob(f"*/{case_id}/trajectory.atif.json"))
-    if matches:
-        return matches[0]
     worker = _safe_path_part(row.get("worker") or "worker")
-    candidate = run_path / "traces" / worker / case_id / "trajectory.atif.json"
-    if candidate.exists():
+    case_dir = run_path / "traces" / worker / case_id
+    trace_suffix = _safe_path_part(trace_id.rsplit(":", 1)[-1])
+    candidate = case_dir / f"trajectory-{trace_suffix}.atif.json"
+    if candidate.exists() and _atif_matches_trace(candidate, trace_id):
         return candidate
-    raise FileNotFoundError(f"ATIF trajectory not found for trace {row.get('trace_id')}")
+    matches = [path for path in case_dir.glob("trajectory-*.atif.json") if _atif_matches_trace(path, trace_id)]
+    if len(matches) == 1:
+        return matches[0]
+    raise FileNotFoundError(f"ATIF trajectory not found for trace {trace_id}")
+
+
+def _atif_matches_trace(path: Path, trace_id: str) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload.get("trajectory_id") == trace_id
 
 
 def _matching_result_row(result_rows: list[dict[str, Any]], index_row: dict[str, Any]) -> dict[str, Any] | None:

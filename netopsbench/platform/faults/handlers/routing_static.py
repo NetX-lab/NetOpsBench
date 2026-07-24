@@ -48,11 +48,11 @@ class StaticRouteHandler:
         if not candidates:
             return None
 
-        remote = [c for c in candidates if c.get("leaf") != target_device]
+        remote = [c for c in candidates if c.get("attached_switch") != target_device]
         if remote:
             candidates = remote
 
-        chosen = sorted(candidates, key=lambda c: (c.get("leaf", ""), c.get("name", "")))[0]
+        chosen = sorted(candidates, key=lambda c: (c.get("attached_switch", ""), c.get("name", "")))[0]
         ip_str = str(chosen.get("data_ip") or "").split("/")[0].strip()
         if not ip_str:
             return None

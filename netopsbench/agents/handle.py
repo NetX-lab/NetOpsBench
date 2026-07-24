@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import threading
 from typing import Any
 
 from netopsbench.agents.base import DiagnosisResult, DiagnosticContext
+from netopsbench.exceptions import AgentDiagnosisError, AgentTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +48,25 @@ class AgentHandle:
     def __init__(self, agent: Any, name: str | None = None):
         self.agent = agent
         self.name = _derive_name(agent, name)
+        self._closed = False
+        self._close_lock = threading.Lock()
 
     async def diagnose(self, context: DiagnosticContext) -> DiagnosisResult:
         diagnose_method = getattr(self.agent, "diagnose", None)
         if not callable(diagnose_method):
-            raise AttributeError(f"{self.agent.__class__.__name__} must define diagnose()")
-        result = await _maybe_await(diagnose_method(context))
+            raise AgentDiagnosisError(f"{self.agent.__class__.__name__} must define diagnose()")
+        try:
+            result = await _maybe_await(diagnose_method(context))
+        except AgentTimeoutError:
+            raise
+        except TimeoutError as exc:
+            raise AgentTimeoutError(str(exc)) from exc
+        except AgentDiagnosisError:
+            raise
+        except Exception as exc:
+            raise AgentDiagnosisError(str(exc)) from exc
         if not isinstance(result, DiagnosisResult):
-            raise TypeError(f"Expected a DiagnosisResult, got {type(result).__name__}")
+            raise AgentDiagnosisError(f"Expected a DiagnosisResult, got {type(result).__name__}")
         return result
 
     def get_capabilities(self):
@@ -61,19 +74,25 @@ class AgentHandle:
         return capabilities() if callable(capabilities) else []
 
     async def aclose(self) -> None:
-        aclose_method = getattr(self.agent, "aclose", None)
-        if callable(aclose_method):
-            await _maybe_await(aclose_method())
-            return
-        close_method = getattr(self.agent, "close", None)
-        if callable(close_method):
-            await _maybe_await(close_method())
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            aclose_method = getattr(self.agent, "aclose", None)
+            if callable(aclose_method):
+                await _maybe_await(aclose_method())
+                return
+            close_method = getattr(self.agent, "close", None)
+            if callable(close_method):
+                await _maybe_await(close_method())
+        except BaseException:
+            with self._close_lock:
+                self._closed = False
+            raise
 
     def close(self) -> None:
-        try:
-            _run_async(self.aclose())
-        except Exception:
-            logger.warning("AgentHandle.close() failed for %s", self.name, exc_info=True)
+        _run_async(self.aclose())
 
 
 __all__ = ["AgentHandle"]

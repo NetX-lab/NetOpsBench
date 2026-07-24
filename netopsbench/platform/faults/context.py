@@ -37,7 +37,7 @@ class FaultRuntimeContext:
     def clients_by_leaf(self) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for client in self.clients:
-            attached_switch = str(client.get("leaf") or "").strip()
+            attached_switch = str(client.get("attached_switch") or "").strip()
             if attached_switch:
                 grouped.setdefault(attached_switch, []).append(client)
         return grouped

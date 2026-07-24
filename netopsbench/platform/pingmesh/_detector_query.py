@@ -73,9 +73,7 @@ class DetectorQueryMixin:
         fields = " or ".join(f'r._field == "{field}"' for field in _SNAPSHOT_FIELDS)
         source_filter = ""
         if source_names:
-            predicates = " or ".join(
-                f'r.src_name == "{self._safe_flux_string(source)}"' for source in source_names
-            )
+            predicates = " or ".join(f'r.src_name == "{self._safe_flux_string(source)}"' for source in source_names)
             source_filter = f"  |> filter(fn: (r) => {predicates})\n"
         query = (
             f'from(bucket: "{bucket}")\n'
@@ -119,11 +117,7 @@ class DetectorQueryMixin:
                     )
                 )
 
-        failures = [
-            (index, result)
-            for index, result in enumerate(results, start=1)
-            if result.status != "ok"
-        ]
+        failures = [(index, result) for index, result in enumerate(results, start=1) if result.status != "ok"]
         if failures:
             errors = [
                 f"snapshot shard {index}/{len(shards)} failed: {result.error or 'query_failed'}"
@@ -154,6 +148,6 @@ class DetectorQueryMixin:
         clients = devices.get("clients", []) if isinstance(devices, dict) else []
         for client in clients:
             name = client.get("name")
-            leaf = client.get("leaf")
+            leaf = client.get("attached_switch")
             if isinstance(name, str) and isinstance(leaf, str) and name and leaf:
                 self.client_to_leaf[name] = leaf

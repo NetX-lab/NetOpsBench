@@ -36,12 +36,11 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
     estimated_client_pps = traffic_config["stats"].get("estimated_max_pps_per_client")
     estimated_udp_client_pps = traffic_config["stats"].get("estimated_max_udp_pps_per_client")
     switch_pps = traffic_config["stats"].get("estimated_switch_pps", {})
-    max_leaf_pps = switch_pps.get("max_leaf_pps", 0.0)
-    max_spine_pps = switch_pps.get("max_spine_pps", 0.0)
+    max_switch_pps = switch_pps.get("max_switch_pps", 0.0)
     switch_limit = traffic_config["profile"].get("switch_pps_limit")
-    cross_leaf_flows = traffic_config["stats"].get("cross_leaf_flows", 0)
-    intra_leaf_flows = traffic_config["stats"].get("intra_leaf_flows", 0)
-    cross_leaf_ratio = traffic_config["stats"].get("cross_leaf_flow_ratio", 0.0)
+    cross_switch_flows = traffic_config["stats"].get("cross_switch_flows", 0)
+    same_switch_flows = traffic_config["stats"].get("same_switch_flows", 0)
+    cross_switch_ratio = traffic_config["stats"].get("cross_switch_flow_ratio", 0.0)
 
     if estimated_client_pps is not None:
         logger.info(f"  Estimated max PPS per client (all protocols): {estimated_client_pps}")
@@ -50,18 +49,15 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
 
     limit_label = "unlimited" if switch_limit in (None, "") else switch_limit
     logger.info(f"  Estimated switch PPS limit: {limit_label}")
-    logger.info(f"  Estimated max leaf PPS: {max_leaf_pps}")
-    logger.info(f"  Estimated max spine PPS: {max_spine_pps}")
+    logger.info(f"  Estimated max switch PPS: {max_switch_pps}")
     logger.info(
-        f"  Path mix: cross-leaf={cross_leaf_flows}, intra-leaf={intra_leaf_flows}, cross-leaf-ratio={cross_leaf_ratio}"
+        f"  Path mix: cross-switch={cross_switch_flows}, "
+        f"same-switch={same_switch_flows}, cross-switch-ratio={cross_switch_ratio}"
     )
 
-    leafs = switch_pps.get("leafs", {})
-    spines = switch_pps.get("spines", {})
-    if leafs:
-        logger.debug("Leaf PPS breakdown: %s", leafs)
-    if spines:
-        logger.debug("Spine PPS breakdown: %s", spines)
+    for role in ("leafs", "spines", "edges", "aggs", "cores"):
+        if values := switch_pps.get(role, {}):
+            logger.debug("%s PPS breakdown: %s", role.removesuffix("s").title(), values)
 
     manifest = load_topology_manifest(topology_file)
     management_ips = {client.name: client.mgmt_ip for client in manifest.clients() if client.mgmt_ip}

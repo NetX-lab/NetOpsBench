@@ -9,7 +9,10 @@ from pathlib import Path
 from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.topology import PingmeshPolicy
 
-DEFAULT_SONIC_VS_IMAGE = "yyyyyt123/netopsbench-sonic-vs-202505-telemetry:202505-telemetry"
+DEFAULT_SONIC_VS_IMAGE = (
+    "yyyyyt123/netopsbench-sonic-vs-202505-telemetry"
+    "@sha256:0e039d2fea3f85788f15db8ebad27cf5bd5b2cdaf17e8c31eab852021e23ea73"
+)
 DEFAULT_CLIENT_IMAGE = (
     "ghcr.io/netx-lab/netopsbench-client" "@sha256:065c43e8f1e7833f40d7eb08870760d565eab4fb5703c949754216cfb15f0d2f"
 )

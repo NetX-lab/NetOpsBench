@@ -78,15 +78,8 @@ struct ProbeResult {
     probe_cycle: u64,
     destination_batch_index: usize,
     port_batch_index: usize,
-    coverage_epoch: u64,
-    coverage_epoch_cycles: u64,
-    df_success: i64,
-    df_loss_pct: f64,
-    df_rtt_avg: f64,
     df_packets_sent: u64,
     df_packets_lost: u64,
-    df_ports_active: usize,
-    df_ports_total: usize,
     df_mtu_drops: u64,
 }
 
@@ -325,10 +318,7 @@ async fn probe_loop(
             result.probe_cycle = cycle;
             result.destination_batch_index = destination_batch;
             result.port_batch_index = port_batch;
-            result.coverage_epoch = cycle / policy.coverage_epoch_cycles;
-            result.coverage_epoch_cycles = policy.coverage_epoch_cycles;
             result.rtt_ports_total = sockets.len();
-            result.df_ports_total = sockets.len();
             let timestamp = realtime_ns();
             for line in metric_lines(&config.topology_id, &local, target, &result, timestamp) {
                 if metrics_tx.try_send(line).is_err() {
@@ -692,15 +682,8 @@ fn build_result(rtt: &ProbeStats, df: &ProbeStats, active_ports: usize) -> Probe
         probe_cycle: 0,
         destination_batch_index: 0,
         port_batch_index: 0,
-        coverage_epoch: 0,
-        coverage_epoch_cycles: 1,
-        df_success: i64::from(df.sent > 0 && df.received == df.sent && df.mtu_drops == 0),
-        df_loss_pct: percentage_lost(df),
-        df_rtt_avg: mean(&df.rtts_ms),
         df_packets_sent: df.sent,
         df_packets_lost: df.sent.saturating_sub(df.received),
-        df_ports_active: usize::from(active_ports > 0),
-        df_ports_total: active_ports,
         df_mtu_drops: df.mtu_drops,
     }
 }
@@ -739,20 +722,18 @@ fn metric_lines(
     timestamp: u64,
 ) -> Vec<String> {
     let tags = format!(
-        "src_ip={},dst_ip={},src_name={},dst_name={},src_rack={},dst_rack={},src_leaf={},dst_leaf={},path_type={},topology_id={}",
+        "src_ip={},dst_ip={},src_name={},dst_name={},src_leaf={},dst_leaf={},path_type={},topology_id={}",
         escape_tag(&source.data_ip.to_string()),
         escape_tag(&target.client.data_ip.to_string()),
         escape_tag(&source.name),
         escape_tag(&target.client.name),
-        escape_tag(&source.rack),
-        escape_tag(&target.client.rack),
         escape_tag(&source.leaf),
         escape_tag(&target.client.leaf),
         target.path_type,
         escape_tag(topology_id),
     );
     let fields = format!(
-        "rtt_min={},rtt_avg={},rtt_max={},rtt_p90={},rtt_p99={},packets_sent={}i,packets_lost={}i,packet_loss={},rtt_ports_active={}i,rtt_ports_total={}i,probe_cycle={}i,destination_batch_index={}i,port_batch_index={}i,coverage_epoch={}i,coverage_epoch_cycles={}i,df_success={}i,df_loss_pct={},df_rtt_avg={},df_packets_sent={}i,df_packets_lost={}i,df_ports_active={}i,df_ports_total={}i,df_mtu_drops={}i",
+        "rtt_min={},rtt_avg={},rtt_max={},rtt_p90={},rtt_p99={},packets_sent={}i,packets_lost={}i,packet_loss={},rtt_ports_active={}i,rtt_ports_total={}i,probe_cycle={}i,destination_batch_index={}i,port_batch_index={}i,df_packets_sent={}i,df_packets_lost={}i,df_mtu_drops={}i",
         result.rtt_min,
         result.rtt_avg,
         result.rtt_max,
@@ -766,37 +747,11 @@ fn metric_lines(
         result.probe_cycle,
         result.destination_batch_index,
         result.port_batch_index,
-        result.coverage_epoch,
-        result.coverage_epoch_cycles,
-        result.df_success,
-        result.df_loss_pct,
-        result.df_rtt_avg,
         result.df_packets_sent,
         result.df_packets_lost,
-        result.df_ports_active,
-        result.df_ports_total,
         result.df_mtu_drops,
     );
-    let mut lines = vec![format!("pingmesh,{tags} {fields} {timestamp}")];
-    if result.packets_lost > 0 {
-        let drop_tags = format!(
-            "src_ip={},dst_ip={},src_name={},dst_name={},src_rack={},dst_rack={},src_leaf={},dst_leaf={},topology_id={}",
-            escape_tag(&source.data_ip.to_string()),
-            escape_tag(&target.client.data_ip.to_string()),
-            escape_tag(&source.name),
-            escape_tag(&target.client.name),
-            escape_tag(&source.rack),
-            escape_tag(&target.client.rack),
-            escape_tag(&source.leaf),
-            escape_tag(&target.client.leaf),
-            escape_tag(topology_id),
-        );
-        lines.push(format!(
-            "pingmesh_drops,{drop_tags} packets_lost={}i,loss_pct={} {timestamp}",
-            result.packets_lost, result.packet_loss
-        ));
-    }
-    lines
+    vec![format!("pingmesh,{tags} {fields} {timestamp}")]
 }
 
 fn escape_tag(value: &str) -> String {
@@ -974,12 +929,12 @@ mod tests {
     }
 
     #[test]
-    fn host_seed_matches_the_retired_python_contract() {
+    fn host_seed_is_stable_for_the_same_client() {
         assert_eq!(stable_host_seed("client-17"), 13_881_939_690_399_091_852);
     }
 
     #[test]
-    fn destination_and_port_rotation_matches_the_retired_contract() {
+    fn destination_and_port_rotation_is_deterministic() {
         let clients = (0..8)
             .map(|index| Client {
                 name: format!("client{index}"),
@@ -1120,28 +1075,17 @@ mod tests {
             probe_cycle: 7,
             destination_batch_index: 1,
             port_batch_index: 2,
-            coverage_epoch: 3,
-            coverage_epoch_cycles: 8,
-            df_success: 1,
-            df_loss_pct: 0.0,
-            df_rtt_avg: 2.1,
             df_packets_sent: 1,
             df_packets_lost: 0,
-            df_ports_active: 1,
-            df_ports_total: 16,
             df_mtu_drops: 0,
         };
 
         let lines = metric_lines("topology=1", &source, &target, &result, 123);
 
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 1);
         assert_eq!(
             lines[0],
-            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_rack=rack\\ 1,dst_rack=rack2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,coverage_epoch=3i,coverage_epoch_cycles=8i,df_success=1i,df_loss_pct=0,df_rtt_avg=2.1,df_packets_sent=1i,df_packets_lost=0i,df_ports_active=1i,df_ports_total=16i,df_mtu_drops=0i 123"
-        );
-        assert_eq!(
-            lines[1],
-            "pingmesh_drops,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_rack=rack\\ 1,dst_rack=rack2,src_leaf=leaf1,dst_leaf=leaf2,topology_id=topology\\=1 packets_lost=1i,loss_pct=25 123"
+            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,df_packets_sent=1i,df_packets_lost=0i,df_mtu_drops=0i 123"
         );
     }
 }

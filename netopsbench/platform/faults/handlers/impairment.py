@@ -91,7 +91,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        corruption_pct: int = 20,
+        corruption_pct: float = 20,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:
@@ -119,7 +119,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        loss_pct: int = 10,
+        loss_pct: float = 10,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:
@@ -147,7 +147,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        latency_ms: int = 100,
+        latency_ms: float = 100,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:

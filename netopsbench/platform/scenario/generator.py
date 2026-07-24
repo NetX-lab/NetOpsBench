@@ -132,11 +132,7 @@ def load_topology(scale: str, topology_dir: str | None) -> TopologyContext:
                 continue
             neighbor["interface"] = interface
             neighbor["interface_role"] = next(
-                (
-                    role
-                    for role in ("uplink", "downlink")
-                    if interface in (interface_roles.get(role) or [])
-                ),
+                (role for role in ("uplink", "downlink") if interface in (interface_roles.get(role) or [])),
                 None,
             )
         bgp_neighbors[device] = neighbors
@@ -445,9 +441,7 @@ def _generic_fault_target(
     template: dict[str, Any],
     target_device: str | None = None,
 ) -> FaultBuildTarget:
-    return FaultBuildTarget(
-        device=target_device or pick_device(template.get("device_role", "leaf"), topo, rng)
-    )
+    return FaultBuildTarget(device=target_device or pick_device(template.get("device_role", "leaf"), topo, rng))
 
 
 def _link_down_target(
@@ -804,9 +798,7 @@ def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: i
         else:
             # Static-route faults intentionally remain access/origin scoped to
             # match the current handler's device-local route semantics.
-            role = "leaf" if fault_type == "static_route_misconfig" else str(
-                template.get("device_role") or "leaf"
-            )
+            role = "leaf" if fault_type == "static_route_misconfig" else str(template.get("device_role") or "leaf")
             ordered_devices = _ordered_template_devices(role, topo, rng)
             if count > len(ordered_devices):
                 raise ValueError(

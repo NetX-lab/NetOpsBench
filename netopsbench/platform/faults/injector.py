@@ -97,6 +97,10 @@ class FaultInjector:
     def active_faults(self, value: list):
         self._tracker.active_faults = value
 
+    def track_active_fault(self, fault_info: dict[str, Any]) -> None:
+        """Record a successfully injected registry fault in canonical form."""
+        self._tracker.track(fault_info)
+
     # ------------------------------------------------------------------
     # Link fault delegation
     # ------------------------------------------------------------------
@@ -115,7 +119,7 @@ class FaultInjector:
     # ------------------------------------------------------------------
 
     def inject_mtu_mismatch(self, device: str, interface: str, mtu: int | None = None) -> dict[str, Any]:
-        return self._impairment.inject_mtu_mismatch(device, interface, mtu=mtu)
+        return self._impairment.inject_mtu_mismatch(device, interface, mtu=1400 if mtu is None else mtu)
 
     def recover_mtu_mismatch(self, device: str, interface: str, original_mtu: int | None = None) -> dict[str, Any]:
         return self._impairment.recover_mtu_mismatch(device, interface, original_mtu=original_mtu)

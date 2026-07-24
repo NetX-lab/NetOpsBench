@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from netopsbench.sdk.agents import DiagnosisResult
 from netopsbench.sdk.core import NetOpsBench
 from netopsbench.sdk.reports import BenchmarkReport, RunHandle
@@ -326,6 +328,44 @@ def test_run_on_runtime_suite_does_not_teardown_user_runtime(tmp_path, monkeypat
     assert report.raw["execution"] == "real_runtime_runner"
 
 
+def test_empty_suite_fails_before_runtime_provision(tmp_path, monkeypatch):
+    from netopsbench.sdk import NetOpsBench, ScenarioValidationError
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+    provisioned = []
+    monkeypatch.setattr(
+        bench.sessions._executor,
+        "_provision_runtime",
+        lambda **_kwargs: provisioned.append(True),
+    )
+
+    with pytest.raises(ScenarioValidationError, match="at least one"):
+        bench.sessions.run_suite(scenarios=[], agent=object())
+
+    assert provisioned == []
+
+
+def test_mixed_scale_suite_fails_before_runtime_provision(tmp_path, monkeypatch):
+    from netopsbench.sdk import NetOpsBench, ScenarioValidationError
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+    scenarios = [
+        _make_scenario(scenario_id="xs-case"),
+        _make_scenario(scenario_id="small-case").model_copy(update={"topology_scale": "small"}),
+    ]
+    provisioned = []
+    monkeypatch.setattr(
+        bench.sessions._executor,
+        "_provision_runtime",
+        lambda **_kwargs: provisioned.append(True),
+    )
+
+    with pytest.raises(ScenarioValidationError, match="same topology scale"):
+        bench.sessions.run_suite(scenarios=scenarios, agent=object())
+
+    assert provisioned == []
+
+
 def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, monkeypatch):
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
@@ -559,7 +599,6 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
     scenario = _make_scenario(scenario_id="env-scenario")
 
     monkeypatch.setenv("NETOPSBENCH_TOPOLOGY_DIR", "outer-topology-dir")
-    monkeypatch.setenv("NETOPSBENCH_TOPOLOGY_ID", "outer-topology-id")
     monkeypatch.setenv("NETOPSBENCH_INFLUXDB_BUCKET", "outer-bucket")
 
     class EnvCaptureAgent:
@@ -569,7 +608,6 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
         def diagnose(self, context):
             self.captured = {
                 "topology_dir": os.environ.get("NETOPSBENCH_TOPOLOGY_DIR"),
-                "topology_id": os.environ.get("NETOPSBENCH_TOPOLOGY_ID"),
                 "bucket": os.environ.get("NETOPSBENCH_INFLUXDB_BUCKET"),
             }
             return DiagnosisResult(
@@ -592,7 +630,6 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
     assert run.status == "completed"
     assert agent.captured == {
         "topology_dir": "outer-topology-dir",
-        "topology_id": "outer-topology-id",
         "bucket": "outer-bucket",
     }
 
@@ -647,7 +684,7 @@ def test_session_manager_signatures_match_public_surface_without_provider_or_mod
             assert forbidden not in sig.parameters
 
 
-def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
+def test_run_handle_exposes_synchronous_report_wait_and_refresh_contract(tmp_path):
     report = BenchmarkReport(
         id="run:run-0009",
         summary={"status": "completed", "mode": "scenario"},
@@ -675,7 +712,6 @@ def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
     refreshed = run.refresh()
     assert refreshed.status == "completed"
     assert isinstance(refreshed.completed_at, datetime)
-    assert refreshed.cancel() is None
     assert refreshed.status == "completed"
 
     pending = RunHandle(
@@ -690,10 +726,7 @@ def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
         report_path=tmp_path / "missing" / "report.json",
     )
     assert pending.report() is None
-    assert pending.cancel() is None
-    assert pending.status == "cancelled"
-    assert isinstance(pending.completed_at, datetime)
-    assert pending.completed_at.tzinfo is not None
+    assert pending.report() is None
 
 
 def test_keep_runtime_false_tears_down_runtime_and_true_preserves_it(tmp_path, monkeypatch):

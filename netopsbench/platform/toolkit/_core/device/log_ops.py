@@ -35,8 +35,7 @@ class LogOpsMixin:
                 normalized_start = start_dt.isoformat().replace("+00:00", "Z")
                 normalized_end = end_dt.isoformat().replace("+00:00", "Z")
                 range_clause = (
-                    f'  |> range(start: time(v: "{normalized_start}"), '
-                    f'stop: time(v: "{normalized_end}"))'
+                    f'  |> range(start: time(v: "{normalized_start}"), ' f'stop: time(v: "{normalized_end}"))'
                 )
                 time_scope = {
                     "mode": "absolute",

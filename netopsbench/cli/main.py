@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     teardown_target = runtime_teardown.add_mutually_exclusive_group(required=True)
     teardown_target.add_argument("name", nargs="?", default=None, help="Runtime name")
     teardown_target.add_argument("--all", dest="teardown_all", action="store_true", help="Tear down all runtimes")
+    runtime_prune = runtime_sub.add_parser(
+        "telemetry-prune",
+        help="List expired managed telemetry buckets; delete only with --apply",
+    )
+    runtime_prune.add_argument("--apply", action="store_true", help="Delete eligible managed buckets")
 
     topology_parser = subparsers.add_parser("topology", help="Topology generation operations")
     topology_sub = topology_parser.add_subparsers(dest="topology_action", required=True)
@@ -112,7 +117,7 @@ def _cmd_runtime(bench: NetOpsBench, args: argparse.Namespace) -> int:
         if runtime is None:
             print(f"runtime not found: {args.name}")
             return 1
-        print(json.dumps(runtime._payload(), indent=2))
+        print(json.dumps(runtime.describe(), indent=2))
         return 0
     if args.runtime_action == "teardown":
         if args.teardown_all:
@@ -131,6 +136,17 @@ def _cmd_runtime(bench: NetOpsBench, args: argparse.Namespace) -> int:
             return 1
         runtime.teardown()
         print(f"torn down: {runtime.name}")
+        return 0
+    if args.runtime_action == "telemetry-prune":
+        eligible = bench.runtimes.telemetry_prune(apply=args.apply)
+        if not eligible:
+            print("no expired managed telemetry buckets")
+            return 0
+        action = "deleted" if args.apply else "would delete"
+        for item in eligible:
+            print(f"{action}: {item['bucket']} (runtime={item['runtime_id']}, retired={item['retired_at']})")
+        if not args.apply:
+            print("dry run; pass --apply to delete")
         return 0
     raise AssertionError(f"unhandled runtime action: {args.runtime_action}")
 

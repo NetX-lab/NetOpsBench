@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from netopsbench.platform.simulator.contracts import SimulatorConfig
+from netopsbench.platform.incident.contracts import SimulatorConfig
 from netopsbench.platform.simulator.service import SimulatorService, create_app
 from netopsbench.sdk.core import NetOpsBench
 

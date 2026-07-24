@@ -47,6 +47,16 @@ def test_fault_manager_registers_custom_fault_spec_and_executor():
     assert manager.validate_parameters("custom_fault", {}) == []
 
 
+def test_fault_manager_rejects_invalid_contract_with_public_validation_error():
+    from netopsbench.sdk.exceptions import FaultValidationError
+
+    manager = faults_api.FaultManager()
+    with pytest.raises(FaultValidationError, match="FaultSpec"):
+        manager.register(spec=object(), executor=_FakeExecutor())
+    with pytest.raises(FaultValidationError, match=r"inject\(\) and recover\(\)"):
+        manager.register(spec=FaultSpec(name="invalid_executor"), executor=object())
+
+
 def test_fault_manager_load_builtin_exposes_builtin_faults():
     manager = faults_api.FaultManager()
 
@@ -201,6 +211,70 @@ def test_register_fault_shortcut(tmp_path):
     ctx = FaultContext(fault_type="test_shortcut_fault", target_device="spine1")
     assert executor.inject(ctx).success is True
     assert executor.recover(ctx).success is True
+
+
+def test_custom_fault_scenario_tracks_full_state_and_recovers(tmp_path):
+    from netopsbench.models.scenario import EpisodeSpec
+    from netopsbench.platform.faults.injector import FaultInjector
+    from netopsbench.platform.faults.scenario_execution import inject_fault, recover_fault
+    from netopsbench.platform.topology.generator import generate_topology
+    from netopsbench.sdk import FaultContext, NetOpsBench
+
+    recovered_contexts = []
+    bench = NetOpsBench(workspace=str(tmp_path))
+    bench.faults.register_fault(
+        "tracked_custom",
+        lambda context: {"success": True, "provider_id": "fault-1"},
+        lambda context: recovered_contexts.append(context) or {"success": True},
+    )
+    topology = generate_topology("xs", tmp_path / "topology")
+    injector = FaultInjector(
+        topology_metadata=topology["metadata"],
+        fault_registry=bench.faults.spec_registry,
+    )
+    runner = SimpleNamespace(injector=injector, fault_registry=bench.faults.spec_registry)
+    episode = EpisodeSpec(
+        episode_id="diagnosis",
+        fault_type="tracked_custom",
+        target_device="leaf1",
+        target_interface="Ethernet4",
+        parameters={"delay_ms": 25},
+        metadata={"ticket": "INC-1"},
+    )
+
+    result = inject_fault(runner, episode)
+
+    assert result["type"] == "tracked_custom"
+    assert len(injector.active_faults) == 1
+    active = injector.active_faults[0]
+    assert active.device == "leaf1"
+    assert active.interface == "Ethernet4"
+    assert active.metadata["parameters"] == {"delay_ms": 25}
+    assert active.metadata["metadata"] == {"ticket": "INC-1"}
+    assert active.metadata["provider_id"] == "fault-1"
+
+    recovery = recover_fault(runner)
+
+    assert recovery == [
+        {
+            "success": True,
+            "type": "tracked_custom",
+            "device": "leaf1",
+            "interface": "Ethernet4",
+            "recovered": True,
+        }
+    ]
+    assert injector.active_faults == []
+    assert recovered_contexts == [
+        FaultContext(
+            fault_type="tracked_custom",
+            target_device="leaf1",
+            target_interface="Ethernet4",
+            parameters={"delay_ms": 25},
+            metadata={"ticket": "INC-1"},
+            container_names=injector.container_names,
+        )
+    ]
 
 
 def test_custom_fault_registry_is_isolated_per_netopsbench_instance(tmp_path):

@@ -1,5 +1,7 @@
 """Public NetOpsBench SDK root."""
 
+import asyncio
+import inspect
 import logging
 from collections.abc import Iterable
 from pathlib import Path
@@ -17,6 +19,22 @@ from .scenarios import ScenarioManager
 from .sessions import SessionManager
 
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _run_async(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    if inspect.iscoroutine(coro):
+        coro.close()
+    raise RuntimeError("Cannot call sync close() from a running event loop; await bench.aclose() instead.")
 
 
 class NetOpsBench:
@@ -99,23 +117,29 @@ class NetOpsBench:
         ``bench.agents.wrap(...)``. Idempotent: safe to call multiple times
         and from ``__del__``-like cleanup paths.
         """
+        _run_async(self.aclose())
+
+    async def aclose(self) -> None:
+        """Release owned resources without blocking a running event loop.
+
+        The root is marked closed only after all cleanup succeeds, so a failed
+        close remains retryable.
+        """
         if self._closed:
             return
-        self._closed = True
         if self._simulators is not None:
-            try:
-                self._simulators.close()
-            except Exception:
-                logger.warning("SimulatorManager.close() failed", exc_info=True)
-        agents_close = getattr(self.agents, "close", None)
-        if callable(agents_close):
-            try:
-                agents_close()
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                logger.warning("AgentManager.close() failed", exc_info=True)
+            await _maybe_await(self._simulators.close())
+        await self.agents.aclose()
+        self._closed = True
 
     def __enter__(self) -> "NetOpsBench":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+    async def __aenter__(self) -> "NetOpsBench":
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        await self.aclose()

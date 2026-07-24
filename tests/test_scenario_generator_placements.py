@@ -46,11 +46,7 @@ def _generate_default(scale: str, root: Path, *, reverse_templates: bool = False
 
 
 def _role_counts(rows: list[dict], roles: dict[str, str], fault_type: str) -> Counter:
-    return Counter(
-        roles[row["episode"]["target_device"]]
-        for row in rows
-        if row["episode"]["fault_type"] == fault_type
-    )
+    return Counter(roles[row["episode"]["target_device"]] for row in rows if row["episode"]["fault_type"] == fault_type)
 
 
 @pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k8", "fat-tree-k12"])
@@ -66,9 +62,7 @@ def test_default_large_campaign_has_balanced_tier_placements(tmp_path, scale):
 
     indices_by_fault: dict[str, list[int]] = defaultdict(list)
     for row in rows:
-        indices_by_fault[row["episode"]["fault_type"]].append(
-            int(row["scenario_id"].rsplit("_", 1)[1])
-        )
+        indices_by_fault[row["episode"]["fault_type"]].append(int(row["scenario_id"].rsplit("_", 1)[1]))
     for fault_type, indices in indices_by_fault.items():
         assert sorted(indices) == list(range(1, fault_counts[fault_type] + 1))
 
@@ -143,9 +137,7 @@ def test_fat_tree_templates_select_the_requested_link_and_bgp_roles(tmp_path):
     ):
         episode = bgp_by_template[template]["episode"]
         peer_ip = episode["metadata"]["peer_ip"]
-        neighbor = next(
-            item for item in topo.bgp_neighbors[episode["target_device"]] if item["peer_ip"] == peer_ip
-        )
+        neighbor = next(item for item in topo.bgp_neighbors[episode["target_device"]] if item["peer_ip"] == peer_ip)
         assert neighbor["interface_role"] == expected_role
 
 
@@ -202,9 +194,7 @@ def test_link_down_without_interface_role_defaults_to_access_link(tmp_path):
     topo = scenario_generator.load_topology("small", str(topology_dir))
     spec = {
         "defaults": {"count_per_fault": 1},
-        "fault_templates": [
-            {"name": "default_access_link_down", "fault_type": "link_down", "device_role": "leaf"}
-        ],
+        "fault_templates": [{"name": "default_access_link_down", "fault_type": "link_down", "device_role": "leaf"}],
     }
     rows = _load_generated(scenario_generator.generate(spec, topo, tmp_path / "scenarios", seed=7))
     episode = rows[0]["episode"]

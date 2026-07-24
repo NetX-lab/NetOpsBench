@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from netopsbench.exceptions import ScenarioValidationError
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.session.orchestrator import SessionOrchestrator
 from netopsbench.sdk.reports import BenchmarkReport, RunHandle
@@ -98,8 +99,9 @@ class SessionManager:
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
+        scenario_list = self._preflight_suite(scenarios)
         return self._executor.run_suite(
-            scenarios=scenarios,
+            scenarios=scenario_list,
             agent=agent,
             scale=scale,
             workers=workers,
@@ -120,7 +122,7 @@ class SessionManager:
     ) -> RunHandle:
         return self._executor.run_on_runtime_scenario(
             scenario=scenario,
-            runtime=runtime,
+            runtime=runtime._runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,
             trace=trace,
@@ -135,13 +137,32 @@ class SessionManager:
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
+        scenario_list = self._preflight_suite(scenarios)
+        if scenario_list[0].scale != runtime.scale:
+            raise ScenarioValidationError(
+                f"Suite scale {scenario_list[0].scale!r} does not match runtime scale {runtime.scale!r}"
+            )
         return self._executor.run_on_runtime_suite(
-            scenarios=scenarios,
-            runtime=runtime,
+            scenarios=scenario_list,
+            runtime=runtime._runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,
             trace=trace,
         )
+
+    def _preflight_suite(
+        self,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
+    ) -> list[ScenarioSpec]:
+        scenario_list = self._executor._coerce_scenarios(scenarios)
+        if not scenario_list:
+            raise ScenarioValidationError("A benchmark suite must contain at least one scenario")
+        scales = sorted({scenario.scale for scenario in scenario_list})
+        if len(scales) != 1:
+            raise ScenarioValidationError(
+                "All scenarios in a suite must use the same topology scale; got: " + ", ".join(scales)
+            )
+        return scenario_list
 
 
 __all__ = ["SessionManager"]

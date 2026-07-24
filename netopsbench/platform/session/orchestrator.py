@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,12 +19,13 @@ from netopsbench.platform.session.reporting import (
     artifacts_root,
     build_run_handle,
     create_run_report,
-    next_run_id,
+    reserve_run_id,
     resolve_scale,
     save_run_metadata,
     save_run_report,
 )
 from netopsbench.platform.session.trace_store import TraceWriter
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -147,7 +149,7 @@ class SessionOrchestrator:
         trace: bool,
     ) -> Any:
         started_at = self._timestamp()
-        run_id = self._next_run_id(self._artifacts_root(artifacts_dir), started_at=started_at)
+        run_id = reserve_run_id(self._artifacts_root(artifacts_dir), started_at=started_at)
         runtime_id = f"{run_id}-runtime"
         runtime = self._provision_runtime(
             scale=scale or self._resolve_scale(scenarios),
@@ -155,8 +157,11 @@ class SessionOrchestrator:
             name=runtime_id,
             root_dir=root_dir,
         )
+        execution_failure: Exception | None = None
+        cleanup_failure: Exception | None = None
+        handle: Any | None = None
         try:
-            return self._execute_on_runtime_pool(
+            handle = self._execute_on_runtime_pool(
                 run_id=run_id,
                 mode=mode,
                 scenarios=scenarios,
@@ -165,12 +170,41 @@ class SessionOrchestrator:
                 artifacts_dir=artifacts_dir,
                 trace=trace,
                 runtime_owner="platform",
-                teardown=("preserved" if keep_runtime else "performed"),
+                teardown=("preserved" if keep_runtime else "pending"),
                 started_at=started_at,
             )
-        finally:
-            if not keep_runtime:
+        except Exception as exc:
+            execution_failure = exc
+        if not keep_runtime:
+            try:
                 runtime.teardown()
+            except Exception as exc:
+                cleanup_failure = exc
+        teardown = "preserved" if keep_runtime else ("failed" if cleanup_failure is not None else "performed")
+        self._finalize_lifecycle_report(
+            run_id=run_id,
+            mode=mode,
+            scenarios=scenarios,
+            runtime=runtime,
+            agent=agent,
+            artifacts_dir=artifacts_dir,
+            started_at=started_at,
+            runtime_owner="platform",
+            teardown=teardown,
+            execution_failure=execution_failure,
+            cleanup_failure=cleanup_failure,
+        )
+        if execution_failure is not None:
+            if cleanup_failure is not None:
+                execution_failure.add_note(
+                    f"Runtime cleanup also failed: {type(cleanup_failure).__name__}: {cleanup_failure}"
+                )
+            raise execution_failure
+        if cleanup_failure is not None:
+            raise cleanup_failure
+        if handle is not None and hasattr(handle, "refresh"):
+            handle.refresh()
+        return handle
 
     def _run_with_existing_runtime(
         self,
@@ -183,7 +217,7 @@ class SessionOrchestrator:
         trace: bool,
     ) -> Any:
         started_at = self._timestamp()
-        run_id = self._next_run_id(self._artifacts_root(artifacts_dir), started_at=started_at)
+        run_id = reserve_run_id(self._artifacts_root(artifacts_dir), started_at=started_at)
         return self._execute_on_runtime_pool(
             run_id=run_id,
             mode=mode,
@@ -298,6 +332,106 @@ class SessionOrchestrator:
         )
         return self._run_handle_adapter(handle_payload)
 
+    def _finalize_lifecycle_report(
+        self,
+        *,
+        run_id: str,
+        mode: str,
+        scenarios: list[ScenarioSpec],
+        runtime: RuntimePool,
+        agent: Any,
+        artifacts_dir: str | Path | None,
+        started_at: datetime,
+        runtime_owner: str,
+        teardown: str,
+        execution_failure: Exception | None,
+        cleanup_failure: Exception | None,
+    ) -> None:
+        artifact_dir = self._artifacts_root(artifacts_dir) / run_id
+        report_path = artifact_dir / "report.json"
+        metadata_path = artifact_dir / "metadata.json"
+        completed_at = self._timestamp()
+
+        def failure_payload(error: Exception | None) -> dict[str, str] | None:
+            if error is None:
+                return None
+            return {"type": type(error).__name__, "message": str(error)}
+
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            profile = runtime.scale_registry.get(runtime.scale)
+            report = {
+                "id": f"run:{run_id}",
+                "run_id": run_id,
+                "agent_name": getattr(agent, "name", agent.__class__.__name__),
+                "mode": mode,
+                "status": "failed",
+                "runtime_id": runtime.id,
+                "topology_scale": runtime.scale,
+                "scale_registry_sha256": runtime.scale_registry.digest,
+                "scale_profile_sha256": profile.digest,
+                "resolved_scale_profile": profile.model_dump(mode="json"),
+                "summary": {
+                    "status": "failed",
+                    "mode": mode,
+                    "runtime_id": runtime.id,
+                    "started_at": started_at.isoformat(),
+                    "completed_at": completed_at.isoformat(),
+                    "total_cases": len(scenarios),
+                },
+                "scenario_summaries": [],
+                "detailed_results": [],
+                "artifact_paths": {
+                    "report": str(report_path),
+                    "metadata": str(metadata_path),
+                    "raw_dir": str(artifact_dir / "raw"),
+                },
+                "raw": {
+                    "status": "failed",
+                    "mode": mode,
+                    "runtime_id": runtime.id,
+                    "runtime_owner": runtime_owner,
+                    "scenario_ids": [scenario.id for scenario in scenarios],
+                    "started_at": started_at.isoformat(),
+                    "completed_at": completed_at.isoformat(),
+                },
+            }
+        raw = report.setdefault("raw", {})
+        raw["teardown"] = teardown
+        raw["execution_failure"] = failure_payload(execution_failure)
+        raw["cleanup_failure"] = failure_payload(cleanup_failure)
+        raw["completed_at"] = completed_at.isoformat()
+        failed = execution_failure is not None or cleanup_failure is not None
+        if failed:
+            report["status"] = "failed"
+            raw["status"] = "failed"
+            report.setdefault("summary", {})["status"] = "failed"
+        report.setdefault("summary", {})["completed_at"] = completed_at.isoformat()
+        atomic_write_json(report_path, report, default=str)
+
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            metadata = {
+                "run_id": run_id,
+                "mode": mode,
+                "runtime_id": runtime.id,
+                "runtime_owner": runtime_owner,
+                "scenario_ids": [scenario.id for scenario in scenarios],
+                "started_at": started_at.isoformat(),
+            }
+        metadata.update(
+            {
+                "status": "failed" if failed else str(raw.get("status") or "completed"),
+                "teardown": teardown,
+                "execution_failure": failure_payload(execution_failure),
+                "cleanup_failure": failure_payload(cleanup_failure),
+                "completed_at": completed_at.isoformat(),
+            }
+        )
+        atomic_write_json(metadata_path, metadata, default=str)
+
     def _coerce_scenario(self, scenario: Any) -> ScenarioSpec:
         if isinstance(scenario, ScenarioSpec):
             return scenario
@@ -319,9 +453,6 @@ class SessionOrchestrator:
 
     def _artifacts_root(self, artifacts_dir: str | Path | None) -> Path:
         return artifacts_root(self.artifacts, artifacts_dir)
-
-    def _next_run_id(self, artifacts_root_dir: Path, *, started_at: datetime | None = None) -> str:
-        return next_run_id(artifacts_root_dir, started_at=started_at)
 
     def _resolve_scale(self, scenarios: Iterable[ScenarioSpec]) -> str:
         return resolve_scale(scenarios)

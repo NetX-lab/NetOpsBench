@@ -24,4 +24,5 @@ class ScaleManager:
     def names(self) -> tuple[str, ...]:
         return self.registry.names()
 
+
 __all__ = ["ScaleManager", "ScaleProfile", "ScaleRegistry"]

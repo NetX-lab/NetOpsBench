@@ -5,10 +5,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, timeout};
 
 use crate::config::CONTROL_PROTOCOL_VERSION;
+
+const MAX_CONTROL_REQUEST_BYTES: u64 = 65_536;
+const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTROL_CONNECTIONS: usize = 32;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct AgentStatus {
@@ -88,12 +94,15 @@ where
         .await
         .with_context(|| format!("bind control endpoint {address}"))?;
     let handler = Arc::new(handler);
+    let permits = Arc::new(Semaphore::new(MAX_CONTROL_CONNECTIONS));
     loop {
+        let permit = Arc::clone(&permits).acquire_owned().await?;
         let (stream, _) = listener.accept().await?;
         let handler = Arc::clone(&handler);
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) = handle_connection(stream, handler).await {
-                eprintln!("control connection failed: {error:#}");
+                crate::logging::error(format!("control connection failed: {error:#}"));
             }
         });
     }
@@ -105,11 +114,18 @@ where
     F: std::future::Future<Output = ResponseEnvelope> + Send + 'static,
 {
     let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
-    let Some(line) = lines.next_line().await? else {
+    let mut reader = BufReader::new(reader).take(MAX_CONTROL_REQUEST_BYTES + 1);
+    let mut encoded = Vec::new();
+    let bytes = timeout(
+        CONTROL_REQUEST_TIMEOUT,
+        reader.read_until(b'\n', &mut encoded),
+    )
+    .await
+    .context("control request timed out")??;
+    if bytes == 0 {
         return Ok(());
-    };
-    let request: RequestEnvelope = serde_json::from_str(&line).context("decode control request")?;
+    }
+    let request = decode_request(&encoded)?;
     let response = if request.protocol_version != CONTROL_PROTOCOL_VERSION {
         ResponseEnvelope::error(
             AgentStatus::default(),
@@ -126,4 +142,38 @@ where
     writer.write_all(&encoded).await?;
     writer.shutdown().await?;
     Ok(())
+}
+
+fn decode_request(encoded: &[u8]) -> Result<RequestEnvelope> {
+    if encoded.len() > MAX_CONTROL_REQUEST_BYTES as usize {
+        anyhow::bail!("control request exceeds 65536 bytes");
+    }
+    if encoded.last() != Some(&b'\n') {
+        anyhow::bail!("control request is missing newline terminator");
+    }
+    serde_json::from_slice(encoded).context("decode control request")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_requires_bounded_newline_terminated_json() {
+        let request = decode_request(b"{\"protocol_version\":1,\"op\":\"status\"}\n").unwrap();
+        assert_eq!(request.op, "status");
+        assert!(
+            decode_request(br#"{"protocol_version":1,"op":"status"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("newline")
+        );
+        let oversized = vec![b'x'; MAX_CONTROL_REQUEST_BYTES as usize + 1];
+        assert!(
+            decode_request(&oversized)
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 65536")
+        );
+    }
 }

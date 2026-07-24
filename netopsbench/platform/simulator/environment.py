@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from netopsbench.platform.simulator.contracts import (
+from netopsbench.platform.incident.contracts import (
     AgentUsage,
     DiagnosisLocation,
     DiagnosisSubmission,
@@ -15,7 +15,7 @@ from netopsbench.platform.simulator.contracts import (
     SubmitDiagnosisAction,
     ToolAction,
 )
-from netopsbench.platform.simulator.engine import (
+from netopsbench.platform.incident.engine import (
     CleanupStatus,
     DiagnosticSession,
     ExecutionFailure,
@@ -37,6 +37,7 @@ class ResetResult(BaseModel):
     observation: dict[str, Any] = Field(default_factory=dict)
     tools: list[dict[str, Any]] = Field(default_factory=list)
     failure: ExecutionFailure | None = None
+    cleanup_failure: ExecutionFailure | None = None
     cleanup_status: CleanupStatus = CleanupStatus.NOT_STARTED
     error: str | None = None
 
@@ -52,6 +53,7 @@ class StepResult(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     termination_reason: TerminationReason | None = None
     failure: ExecutionFailure | None = None
+    cleanup_failure: ExecutionFailure | None = None
     cleanup_status: CleanupStatus = CleanupStatus.NOT_STARTED
     error: str | None = None
 
@@ -93,6 +95,7 @@ class DiagnosticEnvironment:
                 state=self.incident.state,
                 case_id=self.incident.case_id,
                 failure=failure,
+                cleanup_failure=self.incident.cleanup_failure,
                 cleanup_status=self.incident.cleanup_status,
                 error=failure.message if failure else "incident preparation failed",
             )
@@ -115,15 +118,11 @@ class DiagnosticEnvironment:
         else:
             transition = self.session.submit(action.diagnosis, usage=action.usage)
             cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
-            cleanup_failure = (
-                self.incident.failure
-                if self.incident is not None and cleanup is CleanupStatus.FAILED
-                else None
-            )
+            cleanup_failure = self.incident.cleanup_failure if self.incident is not None else None
             transition = transition.model_copy(
                 update={
                     "cleanup_status": cleanup,
-                    "failure": cleanup_failure,
+                    "cleanup_failure": cleanup_failure,
                     "error": cleanup_failure.message if cleanup_failure is not None else None,
                 }
             )
@@ -140,17 +139,12 @@ class DiagnosticEnvironment:
             reason=TerminationReason.PROTOCOL_ERROR,
         )
         cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
-        cleanup_failure = (
-            self.incident.failure
-            if self.incident is not None and cleanup is CleanupStatus.FAILED
-            else None
-        )
+        cleanup_failure = self.incident.cleanup_failure if self.incident is not None else None
         if cleanup_failure is not None:
             transition = transition.model_copy(
                 update={
                     "cleanup_status": cleanup,
-                    "failure": cleanup_failure,
-                    "error": cleanup_failure.message,
+                    "cleanup_failure": cleanup_failure,
                 }
             )
         else:
@@ -167,6 +161,7 @@ class DiagnosticEnvironment:
         if not self._close_notified and self._on_close is not None:
             self._close_notified = True
             self._on_close(self)
+
 
 __all__ = [
     "AgentUsage",

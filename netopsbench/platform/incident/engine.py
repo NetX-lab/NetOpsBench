@@ -12,14 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from netopsbench.evaluator.scorer import AgentOutput, Evaluator
 from netopsbench.models.scenario import ScenarioSpec
-from netopsbench.platform.session.scoring import build_episode_ground_truth
-from netopsbench.platform.simulator.contracts import (
+from netopsbench.platform.incident.contracts import (
     AgentUsage,
     DiagnosisSubmission,
     SimulatorConfig,
     ToolAction,
 )
-from netopsbench.platform.simulator.payloads import compact_json
+from netopsbench.platform.incident.payloads import compact_json
+from netopsbench.platform.incident.scoring import build_episode_ground_truth
 from netopsbench.platform.toolkit._core.common import ToolResult
 from netopsbench.platform.toolkit.mcp.registry import tool_schemas, validate_tool_call
 
@@ -58,8 +58,6 @@ class TerminationReason(StrEnum):
     AGENT_ERROR = "agent_error"
     PROTOCOL_ERROR = "protocol_error"
     LIMIT_EXHAUSTED = "limit_exhausted"
-    INFRASTRUCTURE_ERROR = "infrastructure_error"
-    CANCELLED = "cancelled"
 
 
 class ExecutionFailure(BaseModel):
@@ -83,6 +81,7 @@ class SessionTransition(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     termination_reason: TerminationReason | None = None
     failure: ExecutionFailure | None = None
+    cleanup_failure: ExecutionFailure | None = None
     cleanup_status: CleanupStatus = CleanupStatus.NOT_STARTED
     error: str | None = None
 
@@ -146,6 +145,7 @@ class PreparedIncident:
         self.observation: dict[str, Any] = {}
         self.tool_schemas = tool_schemas()
         self.failure: ExecutionFailure | None = None
+        self.cleanup_failure: ExecutionFailure | None = None
         self.cleanup_status = CleanupStatus.NOT_STARTED
         self._default_session_config = default_session_config
         self._on_close = on_close
@@ -221,13 +221,17 @@ class PreparedIncident:
             ground_truth,
             self.case_id,
         )
-        return float(evaluation.score), {
-            "correct_verdict": evaluation.correct_verdict,
-            "correct_device": evaluation.correct_device,
-            "correct_interface": evaluation.correct_interface,
-            "correct_fault_type": evaluation.correct_fault_type,
-            "fault_type_kpi": 1.0 if evaluation.correct_fault_type else 0.0,
-        }, evaluation.to_dict()
+        return (
+            float(evaluation.score),
+            {
+                "correct_verdict": evaluation.correct_verdict,
+                "correct_device": evaluation.correct_device,
+                "correct_interface": evaluation.correct_interface,
+                "correct_fault_type": evaluation.correct_fault_type,
+                "fault_type_kpi": 1.0 if evaluation.correct_fault_type else 0.0,
+            },
+            evaluation.to_dict(),
+        )
 
     def _refresh_lease(self, *, min_seconds: float = 0.0) -> None:
         self.backend.refresh(min_seconds=min_seconds)
@@ -249,14 +253,12 @@ class PreparedIncident:
             self.backend.finish(broken=broken)
         except Exception as exc:  # noqa: BLE001 - cleanup is reported separately
             self.cleanup_status = CleanupStatus.FAILED
-            cleanup_failure = ExecutionFailure(
+            self.cleanup_failure = ExecutionFailure(
                 domain=FailureDomain.CLEANUP,
                 phase="cleanup",
                 message=str(exc),
                 error_type=type(exc).__name__,
             )
-            if self.failure is None or self.failure.domain is FailureDomain.CLEANUP:
-                self.failure = cleanup_failure
             self.state = IncidentState.BROKEN
             self._notify_close()
             return
@@ -322,9 +324,7 @@ class DiagnosticSession:
             )
             return SessionTransition(
                 state=self.state,
-                observation=self._bounded_tool_observation(
-                    {"tool": action.name, "success": False, "error": str(exc)}
-                ),
+                observation=self._bounded_tool_observation({"tool": action.name, "success": False, "error": str(exc)}),
                 failure=failure,
                 error=str(exc),
                 metrics=self._metrics(elapsed),

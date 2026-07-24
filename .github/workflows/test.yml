@@ -47,7 +47,7 @@ jobs:
           docker run --rm netopsbench-client:test sh -lc \
             'command -v ping && command -v traceroute && ! command -v python3 && ! command -v iperf3'
 
-  lint:
+  wheel:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -57,6 +57,46 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel --no-deps --wheel-dir dist .
+
+      - name: Verify package contents and imports
+        run: |
+          python - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheel = next(pathlib.Path("dist").glob("netopsbench-*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+          forbidden = {
+              "netopsbench/platform/simulator/contracts.py",
+              "netopsbench/platform/simulator/engine.py",
+              "netopsbench/platform/simulator/payloads.py",
+          }
+          unexpected = sorted(forbidden & names)
+          if unexpected:
+              raise SystemExit(f"wheel contains removed modules: {unexpected}")
+          PY
+          python -m venv /tmp/netopsbench-wheel-smoke
+          /tmp/netopsbench-wheel-smoke/bin/pip install dist/netopsbench-*.whl
+          cd /tmp
+          /tmp/netopsbench-wheel-smoke/bin/python -c "from netopsbench.sdk import NetOpsBench; from netopsbench.platform.incident import DiagnosticSession, IncidentEngine"
+          /tmp/netopsbench-wheel-smoke/bin/netopsbench --help >/dev/null
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - name: Install lint dependencies
         run: |
