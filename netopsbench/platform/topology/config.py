@@ -16,7 +16,7 @@ DEFAULT_SONIC_VS_IMAGE = (
     "@sha256:0e039d2fea3f85788f15db8ebad27cf5bd5b2cdaf17e8c31eab852021e23ea73"
 )
 DEFAULT_CLIENT_IMAGE = (
-    "docker.io/yyyyyt123/netopsbench-client" "@sha256:ac68017dbf1341b470c8330b4720db8638afa26fd726872a9d698e352ccca1f4"
+    "docker.io/yyyyyt123/netopsbench-client" "@sha256:46ca550ba88a0c23af037dd710292a01fa92b1569bf571691bcc30f94700b34a"
 )
 SONIC_PLATFORM = "x86_64-kvm_x86_64-r0"
 SONIC_HWSKU = "Force10-S6000"
