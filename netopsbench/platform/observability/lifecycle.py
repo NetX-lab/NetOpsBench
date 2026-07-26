@@ -21,6 +21,7 @@ from netopsbench.platform.observability.bgp_collector import (
 from netopsbench.platform.observability.influxdb import (
     DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
     ensure_bucket,
+    wait_for_influxdb_ready,
 )
 from netopsbench.platform.observability.telegraf import INTERNAL_INFLUXDB_URL, update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
@@ -58,6 +59,7 @@ def ensure_observability_core() -> None:
         check=True,
         timeout=600,
     )
+    wait_for_influxdb_ready(config.influxdb_url)
 
 
 def ensure_worker_observability(

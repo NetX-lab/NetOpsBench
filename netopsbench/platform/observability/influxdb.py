@@ -76,6 +76,29 @@ def _request(url: str, token: str, method: str = "GET", payload: dict | None = N
         return json.loads(raw) if raw else {}
 
 
+def wait_for_influxdb_ready(
+    base_url: str,
+    *,
+    timeout_seconds: float = 60.0,
+    poll_interval_seconds: float = 0.5,
+) -> None:
+    """Wait for the shared InfluxDB API to report a passing health status."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    health_url = f"{base_url.rstrip('/')}/health"
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with _make_url_opener(health_url).open(health_url, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("status") == "pass":
+                return
+            last_error = RuntimeError(f"unexpected health status: {payload.get('status')!r}")
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+            last_error = exc
+        time.sleep(max(0.0, poll_interval_seconds))
+    raise RuntimeError(f"InfluxDB did not become ready at {health_url}: {last_error}")
+
+
 def ensure_bucket(
     base_url: str,
     token: str,
@@ -126,7 +149,7 @@ def ensure_bucket(
             )
             logger.info("Created InfluxDB bucket: %s", bucket)
             return True
-        except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, ValueError) as exc:
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError, RuntimeError, ValueError) as exc:
             last_error = exc
             time.sleep(delay)
 
@@ -154,4 +177,5 @@ __all__ = [
     "delete_bucket",
     "ensure_bucket",
     "query_flux",
+    "wait_for_influxdb_ready",
 ]

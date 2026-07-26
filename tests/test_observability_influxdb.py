@@ -1,6 +1,82 @@
 import pytest
 
-from netopsbench.platform.observability import influxdb
+from netopsbench.platform.observability import influxdb, lifecycle
+
+
+class _HealthResponse:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self):
+        return self.payload
+
+
+def test_wait_for_influxdb_ready_retries_connection_reset(monkeypatch):
+    attempts = iter(
+        [
+            ConnectionResetError("starting"),
+            _HealthResponse(b'{"status":"pass"}'),
+        ]
+    )
+
+    class _Opener:
+        def open(self, *_args, **_kwargs):
+            result = next(attempts)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    monkeypatch.setattr(influxdb, "_make_url_opener", lambda _url: _Opener())
+    monkeypatch.setattr(influxdb.time, "sleep", lambda _seconds: None)
+
+    influxdb.wait_for_influxdb_ready(
+        "http://127.0.0.1:8086",
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+    )
+
+
+def test_ensure_bucket_retries_connection_reset(monkeypatch):
+    attempts = 0
+
+    def fake_request(url, token, method="GET", payload=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionResetError("starting")
+        if "/buckets?name=" in url:
+            return {"buckets": [{"id": "bucket-id", "name": "managed"}]}
+        return {}
+
+    monkeypatch.setattr(influxdb, "_request", fake_request)
+
+    assert (
+        influxdb.ensure_bucket(
+            "http://127.0.0.1:8086",
+            "token",
+            "netopsbench",
+            "managed",
+            retries=2,
+            delay=0,
+        )
+        is False
+    )
+
+
+def test_observability_core_waits_for_influxdb_after_compose(monkeypatch):
+    calls = []
+    monkeypatch.setattr(lifecycle, "safe_run", lambda *_args, **_kwargs: calls.append("compose"))
+    monkeypatch.setattr(lifecycle, "wait_for_influxdb_ready", lambda _url: calls.append("ready"))
+
+    lifecycle.ensure_observability_core()
+
+    assert calls == ["compose", "ready"]
 
 
 def test_ensure_bucket_applies_retention_only_when_creating_managed_bucket(monkeypatch):
