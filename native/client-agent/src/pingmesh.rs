@@ -28,7 +28,10 @@ const PROBE_MAGIC: u32 = 0x4e4f_4250;
 const PROBE_VERSION: u8 = 2;
 const HEADER_SIZE: usize = 24;
 const RTT_PAYLOAD_BYTES: usize = 64;
-const DF_CONFIRMATION_PROBES: usize = 2;
+// A confirmed network MTU signal requires nine consecutive unanswered probes
+// on one ECMP source-port batch. At the campaign's 30% random-loss rate, the
+// chance of random loss imitating that evidence is below 0.002%.
+const DF_CONFIRMATION_PROBES: usize = 8;
 const RECEIVE_BUFFER_BYTES: usize = 256 * 1024;
 const METRICS_QUEUE_CAPACITY: usize = 4096;
 const METRICS_BATCH_SIZE: usize = 50;
@@ -1047,7 +1050,7 @@ mod tests {
                 1,
             );
         }
-        assert_eq!(1 + DF_CONFIRMATION_PROBES, 3);
+        assert_eq!(1 + DF_CONFIRMATION_PROBES, 9);
         assert_eq!(
             schedule
                 .iter()

@@ -11,6 +11,7 @@ from netopsbench.platform.pingmesh._detector_coverage import is_complete_loss_df
 
 _MIN_LATENCY_DELTA_MS = 20.0
 _MIN_PATH_LOST_PROBES = 3
+_MIN_CONFIRMED_DF_PROBES = 9
 
 
 def _utcnow_iso() -> str:
@@ -28,6 +29,21 @@ def _group_by_path(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     paths: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
         key = (str(row.get("src_ip", "")), str(row.get("dst_ip", "")))
+        paths.setdefault(key, []).append(row)
+    for points in paths.values():
+        points.sort(key=lambda point: str(point.get("_time") or point.get("time") or ""))
+    return paths
+
+
+def _group_by_path_port_batch(rows: list[dict]) -> dict[tuple[str, str, str], list[dict]]:
+    """Group DF evidence by the ECMP source-port batch that produced it."""
+    paths: dict[tuple[str, str, str], list[dict]] = {}
+    for row in rows:
+        key = (
+            str(row.get("src_ip", "")),
+            str(row.get("dst_ip", "")),
+            str(row.get("port_batch_index", "")),
+        )
         paths.setdefault(key, []).append(row)
     for points in paths.values():
         points.sort(key=lambda point: str(point.get("_time") or point.get("time") or ""))
@@ -206,11 +222,11 @@ class DetectorAnalysisMixin:
         return anomalies, insufficient_baseline
 
     def _detect_df_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> list:
-        baseline_paths = _group_by_path(baseline_rows)
-        current_paths = _group_by_path(current_rows)
-        anomalies = []
-        for path_key, current_points in current_paths.items():
-            baseline_points = baseline_paths.get(path_key, [])
+        baseline_batches = _group_by_path_port_batch(baseline_rows)
+        current_batches = _group_by_path_port_batch(current_rows)
+        anomalies_by_path: dict[tuple[str, str], Any] = {}
+        for batch_key, current_points in current_batches.items():
+            baseline_points = baseline_batches.get(batch_key, [])
             baseline_df = _loss_stats(baseline_points, prefix="df_")
             current_df = _loss_stats(current_points, prefix="df_")
             baseline_rtt = _loss_stats(baseline_points)
@@ -222,26 +238,25 @@ class DetectorAnalysisMixin:
                 current_rtt["sent"] > 0 and current_rtt["loss_pct"] < rtt_threshold and current_rtt["lost"] == 0
             )
             df_loss_signal = (
-                current_df["loss_pct"] >= 20.0
+                current_df["sent"] >= _MIN_CONFIRMED_DF_PROBES
+                and current_df["lost"] >= current_df["sent"]
                 and (current_df["loss_pct"] - baseline_df["loss_pct"]) >= 15.0
-                and current_df["lost"] >= _MIN_PATH_LOST_PROBES
             )
             if not rtt_healthy or not df_loss_signal or current_df["mtu_drops"] > 0:
                 continue
-            anomalies.append(
-                self._new_anomaly(
-                    "mtu_or_fragmentation_suspect",
-                    current_points[0],
-                    value=current_df["loss_pct"],
-                    baseline=baseline_df["loss_pct"],
-                    threshold=max(20.0, baseline_df["loss_pct"] + 15.0),
-                    severity="high" if current_df["loss_pct"] >= 50.0 else "medium",
-                    samples_sent=int(current_df["sent"]),
-                    samples_lost=int(current_df["lost"]),
-                    sample_count=int(current_df["samples"]),
-                )
+            path_key = batch_key[:2]
+            anomalies_by_path[path_key] = self._new_anomaly(
+                "mtu_or_fragmentation_suspect",
+                current_points[0],
+                value=current_df["loss_pct"],
+                baseline=baseline_df["loss_pct"],
+                threshold=max(20.0, baseline_df["loss_pct"] + 15.0),
+                severity="high",
+                samples_sent=int(current_df["sent"]),
+                samples_lost=int(current_df["lost"]),
+                sample_count=int(current_df["samples"]),
             )
-        return anomalies
+        return list(anomalies_by_path.values())
 
     def analyze_snapshot_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> SnapshotAnalysis:
         loss_anomalies, insufficient_baseline = self._detect_loss_from_rows(baseline_rows, current_rows)
@@ -254,24 +269,29 @@ class DetectorAnalysisMixin:
         current_paths = _group_by_path(current_rows)
         absolute_unreachable_paths = 0
         absolute_loss_paths = 0
-        absolute_mtu_paths = 0
+        absolute_mtu_paths: set[tuple[str, str]] = set()
         for current_points in current_paths.values():
             regular = _loss_stats(current_points)
-            df = _loss_stats(current_points, prefix="df_")
             if regular is None:
                 continue
             if regular["sent"] > 0 and regular["lost"] >= regular["sent"]:
                 absolute_unreachable_paths += 1
             elif regular["loss_pct"] >= self.loss_pct_threshold and regular["lost"] >= _MIN_PATH_LOST_PROBES:
                 absolute_loss_paths += 1
+
+        for batch_key, current_points in _group_by_path_port_batch(current_rows).items():
+            regular = _loss_stats(current_points)
+            df = _loss_stats(current_points, prefix="df_")
             if (
-                df is not None
-                and regular["loss_pct"] < self.loss_pct_threshold
-                and df["loss_pct"] >= 20.0
-                and df["lost"] >= _MIN_PATH_LOST_PROBES
+                regular is not None
+                and df is not None
+                and regular["sent"] > 0
+                and regular["lost"] == 0
+                and df["sent"] >= _MIN_CONFIRMED_DF_PROBES
+                and df["lost"] >= df["sent"]
                 and df["mtu_drops"] == 0
             ):
-                absolute_mtu_paths += 1
+                absolute_mtu_paths.add(batch_key[:2])
         anomalies.sort(key=lambda item: (item.type, item.src_ip, item.dst_ip))
         unexplained_local_error_rows = [row for row in current_rows if not is_complete_loss_df_send_error(row)]
         return SnapshotAnalysis(
@@ -283,7 +303,7 @@ class DetectorAnalysisMixin:
                 "insufficient_baseline_paths": insufficient_baseline,
                 "absolute_unreachable_paths": absolute_unreachable_paths,
                 "absolute_packet_loss_paths": absolute_loss_paths,
-                "absolute_network_mtu_paths": absolute_mtu_paths,
+                "absolute_network_mtu_paths": len(absolute_mtu_paths),
                 "local_df_mtu_drops": int(
                     sum(_as_float(row.get("df_mtu_drops")) for row in unexplained_local_error_rows)
                 ),

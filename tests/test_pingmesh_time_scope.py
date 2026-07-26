@@ -306,7 +306,10 @@ def test_df_loss_is_suppressed_when_rtt_is_also_lost():
 def test_df_only_loss_is_mtu_suspect():
     detector = _coverage_detector(client_count=2)
 
-    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=0, df_lost=4)])
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=0, df_sent=9, df_lost=9)],
+    )
 
     assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
     assert analysis.quality["absolute_network_mtu_paths"] == 1
@@ -315,20 +318,55 @@ def test_df_only_loss_is_mtu_suspect():
 def test_df_loss_with_any_counted_small_probe_loss_is_not_mtu():
     detector = _coverage_detector(client_count=2)
 
-    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=1, df_lost=4)])
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=1, df_sent=9, df_lost=9)],
+    )
 
     assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
     assert analysis.quality["absolute_network_mtu_paths"] == 0
 
 
+def test_random_loss_confirmation_burst_is_not_mtu_evidence():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=0, df_sent=3, df_lost=3)],
+    )
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 0
+
+
+def test_confirmed_df_loss_is_scoped_to_one_ecmp_port_batch():
+    detector = _coverage_detector(client_count=2)
+    baseline = []
+    current = []
+    for batch in range(4):
+        baseline_row = _probe_sample(timestamp=f"2026-01-01T00:00:0{batch}Z", df_sent=1)
+        baseline_row["port_batch_index"] = batch
+        baseline.append(baseline_row)
+        current_row = _probe_sample(
+            timestamp=f"2026-01-01T00:01:0{batch}Z",
+            df_sent=9 if batch == 2 else 1,
+            df_lost=9 if batch == 2 else 0,
+        )
+        current_row["port_batch_index"] = batch
+        current.append(current_row)
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 1
+
+
 def test_df_baseline_losses_are_not_discarded_as_unreachable_samples():
     detector = _coverage_detector(client_count=2)
     baseline = [
-        _probe_sample(timestamp=f"2026-01-01T00:00:0{index}Z", df_sent=1, df_lost=int(index < 2)) for index in range(4)
+        _probe_sample(timestamp=f"2026-01-01T00:00:0{index}Z", df_sent=1, df_lost=int(index < 8)) for index in range(9)
     ]
-    current = [
-        _probe_sample(timestamp=f"2026-01-01T00:01:0{index}Z", df_sent=1, df_lost=int(index < 3)) for index in range(5)
-    ]
+    current = [_probe_sample(timestamp=f"2026-01-01T00:01:0{index}Z", df_sent=1, df_lost=1) for index in range(9)]
 
     analysis = detector.analyze_snapshot_rows(baseline, current)
 
