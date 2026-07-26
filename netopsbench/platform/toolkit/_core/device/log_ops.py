@@ -14,7 +14,7 @@ class LogOpsMixin:
         self,
         device: str,
         time_range_minutes: int = 30,
-        severity=None,
+        severity: str | None = None,
         include_raw: bool = False,
         start_time: str | None = None,
         end_time: str | None = None,

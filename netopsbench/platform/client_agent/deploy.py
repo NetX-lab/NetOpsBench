@@ -11,7 +11,6 @@ from pathlib import Path
 
 import yaml
 
-from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.topology.topology_utils import clab_container_name, load_topology_manifest
 from netopsbench.platform.utils.files import atomic_write_text
@@ -97,27 +96,45 @@ def _write_agent_env(path: Path, *, token: str, org: str, bucket: str) -> None:
 def _stop_processes_command(*, exit_with_status: bool = True) -> str:
     command = (
         "status=0; "
-        "for mode in pingmesh traffic; do "
-        '  pid_file="/run/netopsbench/$mode.pid"; '
-        '  if [ -r "$pid_file" ]; then '
-        '    pid="$(cat "$pid_file" 2>/dev/null || true)"; '
-        f'    if [ -n "$pid" ] && [ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" = "{CLIENT_AGENT_BINARY}" ]; then '
-        '      kill "$pid" >/dev/null 2>&1 || status=1; '
+        "is_client_agent_pid() { "
+        '  [ -n "$1" ] || return 1; '
+        '  exe="$(readlink "/proc/$1/exe" 2>/dev/null || true)"; '
+        f'  [ "$exe" = "{CLIENT_AGENT_BINARY}" ] || [ "$exe" = "{CLIENT_AGENT_BINARY} (deleted)" ]; '
+        "}; "
+        "pid_start_time() { "
+        "  awk '{print $22}' \"/proc/$1/stat\" 2>/dev/null || true; "
+        "}; "
+        "same_live_pid_instance() { "
+        '  [ -n "$2" ] && '
+        '  [ "$(pid_start_time "$1")" = "$2" ] && '
+        '  [ "$(awk \'{print $3}\' "/proc/$1/stat" 2>/dev/null || true)" != "Z" ]; '
+        "}; "
+        "for proc in /proc/[0-9]*; do "
+        '  pid="${proc#/proc/}"; '
+        '  if is_client_agent_pid "$pid"; then '
+        '      start_time="$(pid_start_time "$pid")"; '
+        '      if ! kill "$pid" >/dev/null 2>&1; then '
+        '        ! same_live_pid_instance "$pid" "$start_time" || status=1; '
+        "      fi; "
         "      attempt=0; "
-        '      while kill -0 "$pid" >/dev/null 2>&1; do '
+        '      while same_live_pid_instance "$pid" "$start_time"; do '
         "        attempt=$((attempt + 1)); "
         '        if [ "$attempt" -ge 50 ]; then '
-        f'          if [ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" = "{CLIENT_AGENT_BINARY}" ]; then '
-        '            kill -KILL "$pid" >/dev/null 2>&1 || status=1; '
+        '          if same_live_pid_instance "$pid" "$start_time"; then '
+        '            if ! kill -KILL "$pid" >/dev/null 2>&1; then '
+        '              ! same_live_pid_instance "$pid" "$start_time" || status=1; '
+        "            fi; "
         "          fi; "
+        "        fi; "
+        '        if [ "$attempt" -ge 60 ]; then '
+        '          ! same_live_pid_instance "$pid" "$start_time" || status=1; '
         "          break; "
         "        fi; "
         "        sleep 0.1; "
         "      done; "
-        "    fi; "
-        '    rm -f "$pid_file"; '
         "  fi; "
         "done; "
+        "rm -f /run/netopsbench/pingmesh.pid /run/netopsbench/traffic.pid; "
     )
     return command + ('exit "$status"' if exit_with_status else "")
 
@@ -215,9 +232,9 @@ def _start_client(
 def deploy_client_agents(
     topology_dir: str,
     *,
-    influxdb_token: str | None = None,
-    influxdb_org: str | None = None,
-    influxdb_bucket: str | None = None,
+    influxdb_token: str,
+    influxdb_org: str,
+    influxdb_bucket: str,
     parallelism: int = DEFAULT_DEPLOY_PARALLELISM,
 ) -> DeployResult:
     root = Path(topology_dir)
@@ -232,9 +249,9 @@ def deploy_client_agents(
     write_client_agent_config(manifest, config_path)
     _write_agent_env(
         config_path.parent / CLIENT_AGENT_ENV_NAME,
-        token=influxdb_token or config.influxdb_token,
-        org=influxdb_org or config.influxdb_org,
-        bucket=influxdb_bucket or config.influxdb_bucket,
+        token=influxdb_token,
+        org=influxdb_org,
+        bucket=influxdb_bucket,
     )
 
     running = _running_containers()
@@ -258,8 +275,13 @@ def deploy_client_agents(
             futures[future] = client_name
             scheduled_containers.append(container)
         for future in as_completed(futures):
-            client_name, ok, message = future.result()
-            outcomes[client_name] = (ok, message)
+            scheduled_client = futures[future]
+            try:
+                client_name, ok, message = future.result()
+            except Exception as exc:  # noqa: BLE001 - preserve deployment failure and clean up
+                outcomes[scheduled_client] = (False, f"{type(exc).__name__}: {exc}")
+            else:
+                outcomes[client_name] = (ok, message)
 
     for client in clients:
         client_name = client.name

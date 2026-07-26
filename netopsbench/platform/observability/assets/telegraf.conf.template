@@ -1,5 +1,4 @@
 [global_tags]
-  user = "admin"
   topology_id = "{{TOPOLOGY_ID}}"
 
 [agent]

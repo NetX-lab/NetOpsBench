@@ -21,7 +21,6 @@ def build_candidate_flow(
     dst_client: dict,
     protocol: str,
     bandwidth_by_protocol: dict[str, str],
-    link_mtu_bytes: int,
     dst_port: int,
     udp_payload_len_bytes: int,
     tcp_mss_bytes: int,
@@ -46,9 +45,7 @@ def build_candidate_flow(
     if protocol == "udp":
         flow["udp_payload_len"] = udp_payload_len_bytes
     else:
-        flow["path_mtu_bytes"] = link_mtu_bytes
         flow["tcp_mss"] = tcp_mss_bytes
-        flow["tcp_payload_len"] = tcp_mss_bytes
     return flow
 
 
@@ -187,7 +184,6 @@ def generate_traffic_config_from_topology(
                 dst_client=dst_client,
                 protocol=protocol,
                 bandwidth_by_protocol=bandwidth_by_protocol,
-                link_mtu_bytes=link_mtu_bytes,
                 dst_port=listener_port_base + incoming_slot,
             )
             if error := admission_error(candidate_flow):
@@ -228,8 +224,6 @@ def generate_traffic_config_from_topology(
             "scale": scale,
             "max_pps_per_client": max_pps_per_client,
             "switch_pps_limit": switch_pps_limit,
-            "cross_switch_target_ratio": 0.75,
-            "target_client_utilization": 1.0,
             "link_mtu_bytes": link_mtu_bytes,
         },
         "flows": flows,

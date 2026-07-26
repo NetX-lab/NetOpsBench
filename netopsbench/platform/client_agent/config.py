@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from netopsbench.models.topology import TopologyManifest
+from netopsbench.platform.utils.files import atomic_write_text
 
 CLIENT_AGENT_CONFIG_NAME = "client-agent.json"
 CLIENT_AGENT_SCHEMA_VERSION = 1
@@ -50,9 +51,9 @@ def build_client_agent_config(manifest: TopologyManifest) -> dict:
 def write_client_agent_config(manifest: TopologyManifest, output: str | Path) -> Path:
     path = Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(build_client_agent_config(manifest), indent=2) + "\n",
-        encoding="utf-8",
     )
     return path
 

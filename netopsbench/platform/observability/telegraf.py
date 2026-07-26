@@ -1,8 +1,4 @@
-#!/usr/bin/env python3
-"""
-Dynamic Telegraf Configuration Generator
-Generates telegraf.conf from template based on topology metadata
-"""
+"""Generate a topology-specific Telegraf configuration."""
 
 import json
 import re
@@ -135,19 +131,19 @@ def _render_gnmi_input(
 
 def update_telegraf_config(
     topology_file: str,
-    output_file: str | None = None,
+    output_file: str,
     influxdb_url: str | None = None,
     influxdb_token: str | None = None,
     influxdb_org: str | None = None,
     influxdb_bucket: str | None = None,
     topology_id: str | None = None,
-):
+) -> None:
     """
     Generate telegraf.conf from template using topology metadata.
 
     Args:
         topology_file: Path to topology.json file
-        output_file: Optional output path for generated telegraf.conf
+        output_file: Output path for generated telegraf.conf
         influxdb_url: Optional InfluxDB URL override
         influxdb_token: Optional InfluxDB token override
         influxdb_org: Optional InfluxDB organization override
@@ -221,7 +217,7 @@ def update_telegraf_config(
         )
 
     # Write output file
-    output_path = Path(output_file) if output_file else (Path.cwd() / "observability" / "telegraf.conf")
+    output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(rendered_config)
@@ -234,4 +230,3 @@ def update_telegraf_config(
     logger.info("  - gNMI subscription mode: %s", GNMI_SUBSCRIPTION_MODE)
     logger.info("  - IP mappings: %d", len(ip_mappings))
     logger.info("  - InfluxDB bucket: %s", resolved_influxdb_bucket)
-    return 0

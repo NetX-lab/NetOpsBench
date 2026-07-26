@@ -28,6 +28,7 @@ const PROBE_MAGIC: u32 = 0x4e4f_4250;
 const PROBE_VERSION: u8 = 2;
 const HEADER_SIZE: usize = 24;
 const RTT_PAYLOAD_BYTES: usize = 64;
+const DF_CONFIRMATION_PROBES: usize = 2;
 const RECEIVE_BUFFER_BYTES: usize = 256 * 1024;
 const METRICS_QUEUE_CAPACITY: usize = 4096;
 const METRICS_BATCH_SIZE: usize = 50;
@@ -35,6 +36,7 @@ const METRICS_BATCH_TIMEOUT: Duration = Duration::from_secs(2);
 const INGEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const PROBE_CYCLE_SLACK: Duration = Duration::from_millis(50);
 const REPLY_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+const DF_DISCOVERY_MODE: libc::c_int = libc::IP_PMTUDISC_PROBE;
 
 #[derive(Clone, Debug)]
 struct Target {
@@ -52,6 +54,7 @@ enum ProbeKind {
 struct Pending {
     kind: ProbeKind,
     target_index: usize,
+    socket_index: usize,
     sent_ns: u64,
 }
 
@@ -61,6 +64,8 @@ struct ProbeStats {
     received: u64,
     rtts_ms: Vec<f64>,
     mtu_drops: u64,
+    invalid_sent: u64,
+    local_errors: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +86,7 @@ struct ProbeResult {
     df_packets_sent: u64,
     df_packets_lost: u64,
     df_mtu_drops: u64,
+    local_probe_errors: u64,
 }
 
 struct ProbeSocket {
@@ -203,7 +209,9 @@ fn enable_receive_timestamp(socket: &Socket) -> Result<()> {
 }
 
 fn set_df(socket: &Socket) -> Result<()> {
-    let value: libc::c_int = libc::IP_PMTUDISC_DO;
+    // Set DF while deliberately ignoring a stale per-destination PMTU cache.
+    // Local EMSGSIZE is a probe failure, not evidence of a network MTU fault.
+    let value: libc::c_int = DF_DISCOVERY_MODE;
     // SAFETY: the file descriptor and option pointer are valid.
     let result = unsafe {
         libc::setsockopt(
@@ -229,8 +237,11 @@ async fn responder_loop(socket: AsyncFd<Socket>, status: Arc<Mutex<AgentStatus>>
             match received {
                 Ok(Ok(packet)) => {
                     let Some(received_ns) = packet.received_ns else {
-                        mark_protocol_error(&status, "Pingmesh request lacked kernel RX timestamp")
-                            .await;
+                        mark_timestamp_error(
+                            &status,
+                            "Pingmesh request lacked kernel RX timestamp",
+                        )
+                        .await;
                         continue;
                     };
                     let bytes = packet.bytes;
@@ -275,9 +286,9 @@ async fn probe_loop(
         .iter()
         .position(|client| client.name == local.name)
         .unwrap_or(0);
-    let port_phase = stable_host_seed(&local.name) as usize % policy.port_batch_count;
-    let startup_jitter =
-        (stable_host_seed(&local.name) % 10_000) as f64 / 10_000.0 * policy.cycle_interval_seconds;
+    let host_seed = stable_host_seed(&local.name);
+    let port_phase = host_seed as usize % policy.port_batch_count;
+    let startup_jitter = (host_seed % 10_000) as f64 / 10_000.0 * policy.cycle_interval_seconds;
     sleep(Duration::from_secs_f64(startup_jitter)).await;
 
     let cycle_duration = Duration::from_secs_f64(policy.cycle_interval_seconds);
@@ -310,6 +321,7 @@ async fn probe_loop(
             active_sockets,
             policy.df_payload_size,
             probe_duration,
+            host_seed.wrapping_add(cycle.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
             &mut sequence,
         )
         .await?;
@@ -350,21 +362,15 @@ async fn run_probe_cycle(
     sockets: &[ProbeSocket],
     df_payload_size: usize,
     duration: Duration,
+    schedule_phase: u64,
     sequence: &mut u64,
 ) -> Result<Vec<ProbeResult>> {
     let mut rtt_stats = vec![ProbeStats::default(); targets.len()];
     let mut df_stats = vec![ProbeStats::default(); targets.len()];
     drain_sockets(sockets)?;
     let mut pending: HashMap<u64, Pending> = HashMap::new();
-    let mut send_queue = Vec::new();
-    for target_index in 0..targets.len() {
-        for socket_index in 0..sockets.len() {
-            send_queue.push((ProbeKind::Rtt, target_index, socket_index));
-        }
-        if !sockets.is_empty() {
-            send_queue.push((ProbeKind::Df, target_index, target_index % sockets.len()));
-        }
-    }
+    let mut send_queue = build_probe_schedule(targets.len(), sockets.len());
+    rotate_probe_schedule(&mut send_queue, schedule_phase);
 
     let started = Instant::now();
     let deadline = started + duration;
@@ -377,60 +383,40 @@ async fn run_probe_cycle(
 
     for (index, (kind, target_index, socket_index)) in send_queue.into_iter().enumerate() {
         sleep_until(started + spacing.mul_f64(index as f64)).await;
-        let target = &targets[target_index];
-        let probe_socket = &sockets[socket_index];
-        let payload_size = match kind {
-            ProbeKind::Rtt => RTT_PAYLOAD_BYTES,
-            ProbeKind::Df => df_payload_size,
-        }
-        .max(HEADER_SIZE);
-        let mut payload = vec![0_u8; payload_size];
-        encode_header(&mut payload, *sequence, 0)?;
-        let destination = SockAddr::from(SocketAddrV4::new(
-            target.client.data_ip,
-            UDP_DESTINATION_PORT,
-        ));
-        let stats = match kind {
-            ProbeKind::Rtt => &mut rtt_stats[target_index],
-            ProbeKind::Df => &mut df_stats[target_index],
-        };
-        match probe_socket
-            .socket
-            .get_ref()
-            .send_to(&payload, &destination)
-        {
-            Ok(_) => {
-                // Timestamp after the non-blocking syscall. If the process is
-                // descheduled immediately before sendto(), a pre-call
-                // timestamp would turn host scheduling delay into network RTT.
-                let sent_ns = realtime_ns();
-                stats.sent += 1;
-                pending.insert(
-                    *sequence,
-                    Pending {
-                        kind,
-                        target_index,
-                        sent_ns,
-                    },
-                );
-            }
-            Err(error) if error.raw_os_error() == Some(libc::EMSGSIZE) => {
-                stats.sent += 1;
-                stats.mtu_drops += 1;
-            }
-            Err(error) if is_transient_local_send_error(&error) => {}
-            Err(error) if is_path_send_error(&error) => {
-                // ACL, routing, and peer reachability failures are data-plane
-                // observations. The missing reply records the loss; they must
-                // never terminate the long-lived probe process.
-                stats.sent += 1;
-            }
-            Err(error) => return Err(error).context("send Pingmesh probe"),
-        }
-        *sequence = sequence.wrapping_add(1);
+        send_probe(
+            kind,
+            target_index,
+            socket_index,
+            targets,
+            sockets,
+            df_payload_size,
+            sequence,
+            &mut pending,
+            &mut rtt_stats,
+            &mut df_stats,
+        )?;
     }
 
     drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+    sleep(REPLY_DRAIN_INTERVAL).await;
+    drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+    let unanswered_df = unanswered_df_targets(&pending);
+    for (target_index, socket_index) in unanswered_df {
+        for _ in 0..DF_CONFIRMATION_PROBES {
+            send_probe(
+                ProbeKind::Df,
+                target_index,
+                socket_index,
+                targets,
+                sockets,
+                df_payload_size,
+                sequence,
+                &mut pending,
+                &mut rtt_stats,
+                &mut df_stats,
+            )?;
+        }
+    }
     while Instant::now() < deadline && !pending.is_empty() {
         drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
         sleep(REPLY_DRAIN_INTERVAL).await;
@@ -440,6 +426,108 @@ async fn run_probe_cycle(
     Ok((0..targets.len())
         .map(|index| build_result(&rtt_stats[index], &df_stats[index], sockets.len()))
         .collect())
+}
+
+fn build_probe_schedule(
+    target_count: usize,
+    socket_count: usize,
+) -> Vec<(ProbeKind, usize, usize)> {
+    let mut schedule = Vec::new();
+    for target_index in 0..target_count {
+        for socket_index in 0..socket_count {
+            schedule.push((ProbeKind::Rtt, target_index, socket_index));
+        }
+        if socket_count > 0 {
+            schedule.push((ProbeKind::Df, target_index, target_index % socket_count));
+        }
+    }
+    schedule
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_probe(
+    kind: ProbeKind,
+    target_index: usize,
+    socket_index: usize,
+    targets: &[Target],
+    sockets: &[ProbeSocket],
+    df_payload_size: usize,
+    sequence: &mut u64,
+    pending: &mut HashMap<u64, Pending>,
+    rtt_stats: &mut [ProbeStats],
+    df_stats: &mut [ProbeStats],
+) -> Result<()> {
+    let target = &targets[target_index];
+    let probe_socket = &sockets[socket_index];
+    let payload_size = match kind {
+        ProbeKind::Rtt => RTT_PAYLOAD_BYTES,
+        ProbeKind::Df => df_payload_size,
+    }
+    .max(HEADER_SIZE);
+    let mut payload = vec![0_u8; payload_size];
+    encode_header(&mut payload, *sequence, 0)?;
+    let destination = SockAddr::from(SocketAddrV4::new(
+        target.client.data_ip,
+        UDP_DESTINATION_PORT,
+    ));
+    let stats = match kind {
+        ProbeKind::Rtt => &mut rtt_stats[target_index],
+        ProbeKind::Df => &mut df_stats[target_index],
+    };
+    match probe_socket
+        .socket
+        .get_ref()
+        .send_to(&payload, &destination)
+    {
+        Ok(_) => {
+            // Timestamp after the non-blocking syscall. If the process is
+            // descheduled immediately before sendto(), a pre-call timestamp
+            // would turn host scheduling delay into network RTT.
+            let sent_ns = realtime_ns();
+            stats.sent += 1;
+            pending.insert(
+                *sequence,
+                Pending {
+                    kind,
+                    target_index,
+                    socket_index,
+                    sent_ns,
+                },
+            );
+        }
+        Err(error) if error.raw_os_error() == Some(libc::EMSGSIZE) => {
+            stats.sent += 1;
+            stats.mtu_drops += 1;
+            stats.invalid_sent += 1;
+            stats.local_errors += 1;
+        }
+        Err(error) if is_transient_local_send_error(&error) => {
+            stats.local_errors += 1;
+        }
+        Err(error) if is_path_send_error(&error) => {
+            // ACL, routing, and peer reachability failures are data-plane
+            // observations. The missing reply records the loss; they must
+            // never terminate the long-lived probe process.
+            stats.sent += 1;
+        }
+        Err(error) => return Err(error).context("send Pingmesh probe"),
+    }
+    *sequence = sequence.wrapping_add(1);
+    Ok(())
+}
+
+fn rotate_probe_schedule<T>(queue: &mut [T], phase: u64) {
+    if !queue.is_empty() {
+        queue.rotate_left((phase as usize) % queue.len());
+    }
+}
+
+fn unanswered_df_targets(pending: &HashMap<u64, Pending>) -> Vec<(usize, usize)> {
+    pending
+        .values()
+        .filter(|item| item.kind == ProbeKind::Df)
+        .map(|item| (item.target_index, item.socket_index))
+        .collect()
 }
 
 fn drain_sockets(sockets: &[ProbeSocket]) -> Result<()> {
@@ -470,14 +558,20 @@ fn drain_replies(
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error).context("receive Pingmesh reply"),
             };
-            let Some(received_ns) = packet.received_ns else {
-                continue;
-            };
             let bytes = packet.bytes;
             let Some((sequence, responder_processing_ns)) = decode_header(&buffer[..bytes]) else {
                 continue;
             };
             let Some(item) = pending.remove(&sequence) else {
+                continue;
+            };
+            let Some(received_ns) = packet.received_ns else {
+                let stats = match item.kind {
+                    ProbeKind::Rtt => &mut rtt_stats[item.target_index],
+                    ProbeKind::Df => &mut df_stats[item.target_index],
+                };
+                stats.invalid_sent += 1;
+                stats.local_errors += 1;
                 continue;
             };
             let adjusted_ns = adjusted_rtt_ns(item.sent_ns, received_ns, responder_processing_ns);
@@ -668,31 +762,39 @@ fn stable_host_seed(hostname: &str) -> u64 {
 }
 
 fn build_result(rtt: &ProbeStats, df: &ProbeStats, active_ports: usize) -> ProbeResult {
+    let rtt_sent = valid_sent(rtt);
+    let df_sent = valid_sent(df);
     ProbeResult {
         rtt_min: rtt.rtts_ms.iter().copied().reduce(f64::min).unwrap_or(0.0),
         rtt_avg: mean(&rtt.rtts_ms),
         rtt_max: rtt.rtts_ms.iter().copied().reduce(f64::max).unwrap_or(0.0),
         rtt_p90: percentile(&rtt.rtts_ms, 0.90),
         rtt_p99: percentile(&rtt.rtts_ms, 0.99),
-        packets_sent: rtt.sent,
-        packets_lost: rtt.sent.saturating_sub(rtt.received),
+        packets_sent: rtt_sent,
+        packets_lost: rtt_sent.saturating_sub(rtt.received),
         packet_loss: percentage_lost(rtt),
         rtt_ports_active: active_ports,
         rtt_ports_total: active_ports,
         probe_cycle: 0,
         destination_batch_index: 0,
         port_batch_index: 0,
-        df_packets_sent: df.sent,
-        df_packets_lost: df.sent.saturating_sub(df.received),
+        df_packets_sent: df_sent,
+        df_packets_lost: df_sent.saturating_sub(df.received),
         df_mtu_drops: df.mtu_drops,
+        local_probe_errors: rtt.local_errors.saturating_add(df.local_errors),
     }
 }
 
+fn valid_sent(stats: &ProbeStats) -> u64 {
+    stats.sent.saturating_sub(stats.invalid_sent)
+}
+
 fn percentage_lost(stats: &ProbeStats) -> f64 {
-    if stats.sent == 0 {
+    let sent = valid_sent(stats);
+    if sent == 0 {
         100.0
     } else {
-        stats.sent.saturating_sub(stats.received) as f64 / stats.sent as f64 * 100.0
+        sent.saturating_sub(stats.received) as f64 / sent as f64 * 100.0
     }
 }
 
@@ -733,7 +835,7 @@ fn metric_lines(
         escape_tag(topology_id),
     );
     let fields = format!(
-        "rtt_min={},rtt_avg={},rtt_max={},rtt_p90={},rtt_p99={},packets_sent={}i,packets_lost={}i,packet_loss={},rtt_ports_active={}i,rtt_ports_total={}i,probe_cycle={}i,destination_batch_index={}i,port_batch_index={}i,df_packets_sent={}i,df_packets_lost={}i,df_mtu_drops={}i",
+        "rtt_min={},rtt_avg={},rtt_max={},rtt_p90={},rtt_p99={},packets_sent={}i,packets_lost={}i,packet_loss={},rtt_ports_active={}i,rtt_ports_total={}i,probe_cycle={}i,destination_batch_index={}i,port_batch_index={}i,df_packets_sent={}i,df_packets_lost={}i,df_mtu_drops={}i,local_probe_errors={}i",
         result.rtt_min,
         result.rtt_avg,
         result.rtt_max,
@@ -750,6 +852,7 @@ fn metric_lines(
         result.df_packets_sent,
         result.df_packets_lost,
         result.df_mtu_drops,
+        result.local_probe_errors,
     );
     vec![format!("pingmesh,{tags} {fields} {timestamp}")]
 }
@@ -833,8 +936,7 @@ async fn write_batch(
             Ok(()) => {
                 batch.clear();
                 let mut current = status.lock().await;
-                current.ready = true;
-                current.last_error = None;
+                mark_metrics_write_success(&mut current);
                 return Ok(());
             }
             Err(error) => {
@@ -889,9 +991,132 @@ async fn mark_protocol_error(status: &Arc<Mutex<AgentStatus>>, error: &str) {
     current.last_error = Some(error.to_string());
 }
 
+async fn mark_timestamp_error(status: &Arc<Mutex<AgentStatus>>, error: &str) {
+    let mut current = status.lock().await;
+    current.ready = false;
+    current.integrity_failed = true;
+    current.protocol_errors += 1;
+    current.last_error = Some(error.to_string());
+}
+
+fn mark_metrics_write_success(status: &mut AgentStatus) {
+    if !status.integrity_failed {
+        status.ready = true;
+        status.last_error = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn df_probe_ignores_cached_path_mtu() {
+        assert_eq!(DF_DISCOVERY_MODE, libc::IP_PMTUDISC_PROBE);
+        assert_ne!(DF_DISCOVERY_MODE, libc::IP_PMTUDISC_DO);
+    }
+
+    #[test]
+    fn probe_schedule_rotation_is_deterministic_and_source_specific() {
+        let original = vec![0, 1, 2, 3, 4];
+        let mut first = original.clone();
+        let mut repeated = original.clone();
+        let mut other = original;
+
+        rotate_probe_schedule(&mut first, 2);
+        rotate_probe_schedule(&mut repeated, 2);
+        rotate_probe_schedule(&mut other, 3);
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, other);
+        assert_eq!(first, vec![2, 3, 4, 0, 1]);
+    }
+
+    #[test]
+    fn probe_schedule_starts_with_one_df_sample_per_path() {
+        let schedule = build_probe_schedule(2, 4);
+
+        for target_index in 0..2 {
+            assert_eq!(
+                schedule
+                    .iter()
+                    .filter(|(kind, target, _socket)| {
+                        *kind == ProbeKind::Df && *target == target_index
+                    })
+                    .count(),
+                1,
+            );
+        }
+        assert_eq!(1 + DF_CONFIRMATION_PROBES, 3);
+        assert_eq!(
+            schedule
+                .iter()
+                .filter(|(kind, _target, _socket)| *kind == ProbeKind::Rtt)
+                .count(),
+            8,
+        );
+    }
+
+    #[test]
+    fn confirmation_targets_only_unanswered_df_probes() {
+        let pending = HashMap::from([
+            (
+                1,
+                Pending {
+                    kind: ProbeKind::Rtt,
+                    target_index: 3,
+                    socket_index: 1,
+                    sent_ns: 1,
+                },
+            ),
+            (
+                2,
+                Pending {
+                    kind: ProbeKind::Df,
+                    target_index: 4,
+                    socket_index: 2,
+                    sent_ns: 2,
+                },
+            ),
+        ]);
+
+        assert_eq!(unanswered_df_targets(&pending), vec![(4, 2)]);
+        assert!(unanswered_df_targets(&HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn local_probe_errors_are_excluded_from_network_loss() {
+        let rtt = ProbeStats {
+            sent: 4,
+            received: 3,
+            invalid_sent: 1,
+            local_errors: 2,
+            ..ProbeStats::default()
+        };
+        let result = build_result(&rtt, &ProbeStats::default(), 4);
+
+        assert_eq!(result.packets_sent, 3);
+        assert_eq!(result.packets_lost, 0);
+        assert_eq!(result.local_probe_errors, 2);
+    }
+
+    #[test]
+    fn successful_metrics_write_does_not_clear_timestamp_integrity_failure() {
+        let mut status = AgentStatus {
+            ready: false,
+            integrity_failed: true,
+            last_error: Some("missing kernel timestamp".to_string()),
+            ..AgentStatus::default()
+        };
+
+        mark_metrics_write_success(&mut status);
+
+        assert!(!status.ready);
+        assert_eq!(
+            status.last_error.as_deref(),
+            Some("missing kernel timestamp")
+        );
+    }
 
     #[test]
     fn responder_scheduling_is_removed_from_adjusted_rtt() {
@@ -1078,6 +1303,7 @@ mod tests {
             df_packets_sent: 1,
             df_packets_lost: 0,
             df_mtu_drops: 0,
+            local_probe_errors: 0,
         };
 
         let lines = metric_lines("topology=1", &source, &target, &result, 123);
@@ -1085,7 +1311,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(
             lines[0],
-            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,df_packets_sent=1i,df_packets_lost=0i,df_mtu_drops=0i 123"
+            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,df_packets_sent=1i,df_packets_lost=0i,df_mtu_drops=0i,local_probe_errors=0i 123"
         );
     }
 }

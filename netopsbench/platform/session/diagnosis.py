@@ -14,7 +14,7 @@ from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.incident.context import (
-    _extract_episode_pingmesh_query_window,
+    extract_episode_pingmesh_query_window,
 )
 from netopsbench.platform.incident.engine import DiagnosticSession, SessionToolGateway
 from netopsbench.platform.session.trace_store import TraceWriter
@@ -67,7 +67,7 @@ def build_runtime_diagnosis_callback(
     ) -> dict:
         start_time = datetime.now(UTC)
         trace_recorder = AgentTraceRecorder(enabled=trace_writer is not None)
-        pingmesh_query_window = _extract_episode_pingmesh_query_window(episode_result)
+        pingmesh_query_window = extract_episode_pingmesh_query_window(episode_result)
         window_start = pingmesh_query_window.get("start_time")
         window_end = pingmesh_query_window.get("end_time")
         context_payload = {"start_time": window_start, "end_time": window_end} if window_start and window_end else {}

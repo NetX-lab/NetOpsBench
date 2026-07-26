@@ -327,7 +327,11 @@ def pick_device(role: str, topo: TopologyContext, rng: random.Random) -> str:
 
 def pick_network_interface(device: str, topo: TopologyContext, rng: random.Random) -> str:
     candidates = topo.device_interfaces.get(device) or ["Ethernet0"]
-    normalized = [normalize_sonic_interface(c) for c in candidates if normalize_sonic_interface(c)]
+    normalized: list[str] = []
+    for candidate in candidates:
+        interface = normalize_sonic_interface(candidate)
+        if interface is not None:
+            normalized.append(interface)
     return rng.choice(normalized) if normalized else "Ethernet0"
 
 
@@ -390,9 +394,12 @@ def _client_host_route(client: dict[str, Any]) -> str:
 
 def pick_link_down_interface(device: str, topo: TopologyContext, rng: random.Random) -> str:
     candidates = topo.device_interfaces.get(device) or ["Ethernet0"]
-    candidates = [normalize_sonic_interface(c) for c in candidates if normalize_sonic_interface(c)]
-    if not candidates:
-        candidates = ["Ethernet0"]
+    normalized: list[str] = []
+    for candidate in candidates:
+        interface = normalize_sonic_interface(candidate)
+        if interface is not None:
+            normalized.append(interface)
+    candidates = normalized or ["Ethernet0"]
     manifest_device = topo.manifest.device(device)
     if manifest_device is not None and manifest_device.role in {DeviceRole.LEAF, DeviceRole.EDGE}:
         roles = topo.leaf_interface_roles.get(device)
@@ -674,7 +681,7 @@ def build_fault_instance(
 
     parameter_defaults = {
         "link_flapping": {"iterations": 6, "down_time": 2, "up_time": 3},
-        "packet_loss": {"loss_pct": 20},
+        "packet_loss": {"loss_pct": 30},
         "packet_corruption": {"corruption_pct": 20},
         "high_latency": {"latency_ms": 100},
     }
@@ -693,7 +700,7 @@ def build_fault_instance(
     fault_stabilization = int(
         template.get("fault_stabilization_seconds", defaults.get("fault_stabilization_seconds", 5))
     )
-    episode_fault = {
+    episode_fault: dict[str, Any] = {
         "episode_id": "diagnosis",
         "description": f"Inject {fault_type} on {target.device}",
         "fault_type": fault_type,
@@ -754,9 +761,9 @@ def _ordered_template_devices(
             pod_groups.setdefault(int(pod), []).append(name)
 
     if not pod_groups:
-        ordered = list(candidates)
-        rng.shuffle(ordered)
-        return ordered
+        shuffled = list(candidates)
+        rng.shuffle(shuffled)
+        return shuffled
 
     pod_order = sorted(pod_groups)
     rng.shuffle(pod_order)
@@ -792,9 +799,9 @@ def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: i
 
         template_name = str(template.get("name") or fault_type)
         rng = random.Random(_stable_template_seed(seed, topo.scale, template_name))
-        target_devices: list[str | None]
+        target_devices: list[str | None] = []
         if fault_type == "none":
-            target_devices = [None] * count
+            target_devices.extend([None] * count)
         else:
             # Static-route faults intentionally remain access/origin scoped to
             # match the current handler's device-local route semantics.
@@ -805,7 +812,7 @@ def generate(spec: dict[str, Any], topo: TopologyContext, out_dir: Path, seed: i
                     f"Template {template_name} requests {count} unique {role} devices, "
                     f"but topology {topo.scale} has only {len(ordered_devices)}"
                 )
-            target_devices = ordered_devices[:count]
+            target_devices.extend(ordered_devices[:count])
 
         for target_device in target_devices:
             idx = next_index_by_fault.get(fault_type, 0) + 1

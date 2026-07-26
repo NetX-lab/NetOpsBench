@@ -10,12 +10,15 @@ Most benchmark runs use automatic runtime lifecycle management. Use this page on
 NetOpsBench starts InfluxDB, Telegraf, Grafana, and Pingmesh during benchmark runs.
 
 ```text
-URL:      http://<host-ip>:3000
+URL:      http://localhost:3000
 Username: admin
 Password: admin
 ```
 
-If `http_proxy` or `https_proxy` is set on the host, `localhost:3000` may be intercepted by the proxy. Use the host IP address from the browser, or set `NO_PROXY=localhost,127.0.0.1`.
+Grafana and InfluxDB bind to loopback so the development credentials are not
+exposed on shared hosts. For remote access, use an SSH tunnel such as
+`ssh -L 3000:127.0.0.1:3000 <host>`. If a local proxy intercepts the request,
+set `NO_PROXY=localhost,127.0.0.1`.
 
 Grafana dashboards use a `Bucket` drop-down. Benchmark data lives in worker buckets, not in the default housekeeping bucket.
 
@@ -107,19 +110,13 @@ The default SONiC image and the observability containers are pinned by digest.
 The generated gNMI contract uses `50051`, `admin`, `json_ietf`,
 `COUNTERS_DB`, and a 10-second sampled subscription. Runtime-owned InfluxDB
 buckets retain raw telemetry for seven days; attaching an existing
-user-managed bucket never changes that bucket's retention policy.
+user-managed bucket never changes that bucket's retention policy. The default
+standalone `netopsbench` bucket is also initialized with seven-day retention.
 
-Successful runtime teardown marks only workspace-owned buckets as retired.
-The prune command is a dry run unless `--apply` is explicit:
-
-```bash
-netopsbench runtime telemetry-prune
-netopsbench runtime telemetry-prune --apply
-```
-
-Deletion requires seven full days in the retired state. Buckets that predate
-the ownership manifest and user-managed buckets are never adopted or deleted
-automatically.
+Successful runtime teardown deletes only the exact bucket recorded as created
+for that runtime by the current workspace. This prevents a same-name runtime
+from reading stale telemetry. Existing user-managed buckets are never adopted
+or deleted.
 
 ## Cleanup
 

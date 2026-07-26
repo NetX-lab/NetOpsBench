@@ -20,6 +20,7 @@ from netopsbench.platform.observability.lifecycle import ensure_worker_observabi
 from netopsbench.platform.observability.ownership import ManagedBucketRegistry
 from netopsbench.platform.runtime.deployment import (
     allocate_management_subnets,
+    assert_worker_slot_available,
     deploy_worker_lab,
     runtime_deploy_lock,
     teardown_worker_lab,
@@ -35,6 +36,7 @@ class RuntimePoolLike(Protocol):
     root_dir: Path
     telemetry_ownership_file: Path
     workers: list[RuntimeIdentity]
+    metadata: dict[str, object]
     _provision_created_buckets: list[str]
 
     @property
@@ -125,6 +127,13 @@ def deploy_workers(
 
 
 def ensure_worker_client_agent(worker: RuntimeIdentity) -> None:
+    preflight_errors = check_worker_health(
+        worker,
+        require_client_agent=False,
+        all_routing_devices=True,
+    )
+    if preflight_errors:
+        raise RuntimeError("Network must converge before starting native client agents: " + "; ".join(preflight_errors))
     deploy_client_agents(
         topology_dir=str(worker.topology_dir),
         influxdb_token=config.influxdb_token,
@@ -155,12 +164,18 @@ def deploy_worker_transactionally(
 ) -> None:
     """Deploy one standalone worker with the same compensated lifecycle as pools."""
     registry = scale_registry or default_scale_registry()
+    deployment_started = False
     try:
-        deploy_worker_lab(worker, scale, registry)
+        with runtime_deploy_lock():
+            assert_worker_slot_available(worker)
+            deployment_started = True
+            deploy_worker_lab(worker, scale, registry)
         ensure_worker_observability(worker)
         ensure_worker_client_agent(worker)
         validate_worker_health(worker, scale_registry=registry)
     except Exception as provision_error:
+        if not deployment_started:
+            raise
         try:
             teardown_worker_lab(worker, registry)
         except Exception as cleanup_error:
@@ -234,6 +249,9 @@ class RuntimeLifecycle:
                 worker.model_copy(update={"mgmt_subnet": subnets[index]})
                 for index, worker in enumerate(runtime.workers)
             ]
+            for worker in runtime.workers:
+                assert_worker_slot_available(worker)
+            runtime.metadata["deployment_started"] = True
             deploy_workers(runtime.workers, runtime.scale, runtime.root_dir, self.scale_registry)
         return {"workers": runtime.size}
 

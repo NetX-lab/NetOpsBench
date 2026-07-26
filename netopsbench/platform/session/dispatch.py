@@ -86,8 +86,8 @@ def _dispatch_workers(
 
 def _build_scenario_executor(
     worker_context: WorkerExecutionContext,
-    worker_raw_dir: Path,
     *,
+    worker: RuntimeIdentity,
     fault_registry: Any,
     minimum_baseline_seconds: int,
     post_recovery_wait_seconds: int,
@@ -100,12 +100,11 @@ def _build_scenario_executor(
         post_recovery_wait_seconds=post_recovery_wait_seconds,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
-        persist_results=False,
         fault_registry=fault_registry,
         scale_registry=scale_registry,
         evaluator=_create_evaluator(),
+        runtime_worker=worker,
     )
-    runner.results_dir = worker_raw_dir
     return runner
 
 
@@ -132,7 +131,7 @@ def _run_worker(
     worker_raw_dir.mkdir(parents=True, exist_ok=True)
     runner = _build_scenario_executor(
         worker_context,
-        worker_raw_dir,
+        worker=worker,
         fault_registry=fault_registry,
         minimum_baseline_seconds=minimum_baseline_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
@@ -160,44 +159,57 @@ def _run_worker(
             scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
             executed_count += 1
             raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
-            try:
-                scored = score_scenario_episode(
-                    scenario,
-                    scenario_result,
-                    evaluator,
-                    topology_dir=str(worker_context.topology_dir),
-                )
-            except Exception as exc:
+            case_valid = bool(scenario_result.get("case_valid", scenario_result.get("success")))
+            scored: list[Any] = []
+            if case_valid:
+                try:
+                    scored = score_scenario_episode(
+                        scenario,
+                        scenario_result,
+                        evaluator,
+                        topology_dir=str(worker_context.topology_dir),
+                    )
+                except Exception as exc:
+                    if trace_writer is not None:
+                        try:
+                            trace_writer.write_failure_result(
+                                scenario_id=scenario.id,
+                                scenario_result=scenario_result,
+                                stage="evaluator",
+                                error=exc,
+                            )
+                        except Exception:
+                            logger.debug("failed to persist evaluator failure trace result", exc_info=True)
+                    raise
                 if trace_writer is not None:
                     try:
-                        trace_writer.write_failure_result(
-                            scenario_id=scenario.id,
+                        trace_writer.write_evaluation_results(
+                            evaluation_results=scored,
                             scenario_result=scenario_result,
-                            stage="evaluator",
-                            error=exc,
                         )
                     except Exception:
-                        logger.debug("failed to persist evaluator failure trace result", exc_info=True)
-                raise
-            if trace_writer is not None:
-                try:
-                    trace_writer.write_evaluation_results(
-                        evaluation_results=scored,
-                        scenario_result=scenario_result,
-                    )
-                except Exception:
-                    logger.debug("failed to persist trace evaluation results", exc_info=True)
+                        logger.debug("failed to persist trace evaluation results", exc_info=True)
             evaluations.extend(scored)
             cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
-            success = bool(scenario_result.get("success")) and cleanup_success
+            success = case_valid and bool(scenario_result.get("success")) and cleanup_success
+            if not case_valid:
+                status = "invalid"
+                failure_stage = "infrastructure"
+            elif success:
+                status = "completed"
+                failure_stage = None
+            else:
+                status = "failed"
+                failure_stage = "cleanup" if not cleanup_success else "execution"
             scenario_summaries.append(
                 {
                     "scenario_id": scenario.id,
-                    "status": "completed" if success else "failed",
+                    "status": status,
+                    "case_valid": case_valid,
                     "scale": scenario.scale,
                     "worker": worker.worker_id,
                     "raw_result_path": raw_result_path,
-                    **({"failure_stage": "cleanup"} if not cleanup_success else {}),
+                    **({"failure_stage": failure_stage} if failure_stage else {}),
                 }
             )
             worker_success &= success
@@ -253,6 +265,11 @@ def execute_on_runtime_pool(
     post_recovery_wait_seconds: int = 2,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
+    if runtime.state != "warm" or bool(runtime.metadata.get("quarantined")):
+        raise RuntimeError(
+            f"Runtime {runtime.id!r} is not eligible for execution: "
+            f"state={runtime.state!r}, quarantined={bool(runtime.metadata.get('quarantined'))}"
+        )
     mismatched = [scenario.id for scenario in scenarios if scenario.scale != runtime.scale]
     if mismatched:
         raise ValueError(f"Scenario scale does not match runtime scale {runtime.scale!r}: {', '.join(mismatched)}")

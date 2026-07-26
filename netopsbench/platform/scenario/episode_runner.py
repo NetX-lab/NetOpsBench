@@ -39,6 +39,7 @@ def observe_episode(
             baseline_window=baseline_window,
         )
         coverage = observations.pop("_coverage_audit", None)
+        observations.pop("_baseline_health", None)
         result["observations"] = observations
         if coverage is not None:
             result["coverage_audit"] = coverage
@@ -58,12 +59,19 @@ def observe_episode(
     )
     if early_seconds >= episode.duration_seconds:
         early_seconds = max(0, episode.duration_seconds - 10)
-    steady_seconds = max(1, episode.duration_seconds - early_seconds)
+    stabilization_seconds = max(0, int(episode.stabilization_time))
+    steady_seconds = episode.duration_seconds - early_seconds - stabilization_seconds
+    if steady_seconds < 1:
+        raise ValueError(
+            "Fault observation budget must leave at least one steady-state second: "
+            f"duration={episode.duration_seconds}, early={early_seconds}, "
+            f"stabilization={stabilization_seconds}"
+        )
 
     windows: list[dict[str, Any]] = []
     if early_seconds:
         windows.append(executor._capture_observation_window(early_seconds, "early"))
-    _sleep(executor, episode.stabilization_time)
+    _sleep(executor, stabilization_seconds)
     windows.append(executor._capture_observation_window(steady_seconds, "steady"))
 
     observations = executor._merge_observation_windows(
@@ -72,6 +80,7 @@ def observe_episode(
         baseline_window=baseline_window,
     )
     coverage = observations.pop("_coverage_audit", None)
+    observations.pop("_baseline_health", None)
     result["observations"] = observations
     if coverage is not None:
         result["coverage_audit"] = coverage

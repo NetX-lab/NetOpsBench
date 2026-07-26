@@ -59,6 +59,9 @@ def test_default_large_campaign_has_balanced_tier_placements(tmp_path, scale):
     assert all(fault_counts[fault] == 6 for fault in EXPANDED_FAULTS)
     assert all(fault_counts[fault] == 4 for fault in ACCESS_SCOPED_FAULTS)
     assert fault_counts["none"] == 4
+    assert {
+        row["episode"]["metadata"]["loss_pct"] for row in rows if row["episode"]["fault_type"] == "packet_loss"
+    } == {30}
 
     indices_by_fault: dict[str, list[int]] = defaultdict(list)
     for row in rows:
@@ -117,6 +120,10 @@ def test_fat_tree_templates_select_the_requested_link_and_bgp_roles(tmp_path):
         "link_down_agg_edge": "edge",
         "link_down_agg_core": "core",
         "link_down_core_agg": "agg",
+        "packet_loss_leaf": "agg",
+        "packet_loss_spine": "agg",
+        "packet_loss_agg_edge": "edge",
+        "packet_loss_agg_core": "core",
     }
     for row in rows:
         template = row["metadata"]["generator"]["template"]
@@ -154,6 +161,8 @@ def test_xlarge_link_down_templates_select_the_requested_peer_roles(tmp_path):
         "link_down_access": "client",
         "link_down_leaf_fabric": "spine",
         "link_down_spine_fabric": "leaf",
+        "packet_loss_leaf": "spine",
+        "packet_loss_spine": "leaf",
     }
     for row in rows:
         template = row["metadata"]["generator"]["template"]

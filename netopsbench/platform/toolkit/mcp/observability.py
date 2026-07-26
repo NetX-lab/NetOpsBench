@@ -5,7 +5,7 @@ from .contracts import ToolSpec
 def get_device_logs(
     device: str,
     time_range_minutes: int = 30,
-    severity: str = None,
+    severity: str | None = None,
     include_raw: bool = False,
     start_time: str = "",
     end_time: str = "",

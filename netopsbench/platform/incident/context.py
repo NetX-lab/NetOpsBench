@@ -23,7 +23,7 @@ def build_topology_snapshot(toolkit: AgentToolkit) -> dict:
     return {"devices": {}}
 
 
-def _extract_episode_pingmesh_query_window(episode_result: dict[str, Any]) -> dict[str, str | None]:
+def extract_episode_pingmesh_query_window(episode_result: dict[str, Any]) -> dict[str, str | None]:
     observations = episode_result.get("observations", {}) if isinstance(episode_result, dict) else {}
     if not isinstance(observations, dict):
         return {"start_time": None, "end_time": None}

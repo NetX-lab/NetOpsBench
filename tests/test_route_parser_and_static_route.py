@@ -155,8 +155,13 @@ def test_recover_static_route_misconfig_prefers_specific_nexthop(monkeypatch):
     class Result:
         returncode = 0
         stderr = ""
+        stdout = ""
 
     def fake_vtysh(device, commands):
+        if commands == ["show running-config"]:
+            return Result()
+        if commands == ["show ip route 192.168.102.2/32"]:
+            return Result()
         captured.append((device, commands))
         return Result()
 
@@ -188,12 +193,16 @@ def test_inject_static_route_misconfig_auto_uses_topology_clients(monkeypatch):
     class Result:
         returncode = 0
         stderr = ""
+        stdout = "ip route 192.168.102.2/32 192.168.101.2\n"
 
-    captured = {}
+    captured = []
 
     def fake_vtysh(device, commands):
-        captured["device"] = device
-        captured["commands"] = commands
+        if commands == ["show running-config"]:
+            return Result()
+        if commands == ["show ip route 192.168.102.2/32"]:
+            return Result()
+        captured.append((device, commands))
         return Result()
 
     monkeypatch.setattr(injector._static_route._sonic, "vtysh", fake_vtysh)
@@ -206,11 +215,20 @@ def test_inject_static_route_misconfig_auto_uses_topology_clients(monkeypatch):
 
     assert result["success"] is True
     assert result["wrong_nexthop"] == "192.168.101.2"
-    assert captured["device"] == "leaf1"
-    assert "ip route 192.168.102.2/32 192.168.101.2" in captured["commands"]
+    assert captured == [
+        (
+            "leaf1",
+            [
+                "configure terminal",
+                "ip route 192.168.102.2/32 192.168.101.2",
+                "end",
+                "write memory",
+            ],
+        )
+    ]
 
 
-def test_get_interface_mtu_falls_back_to_live_link(monkeypatch):
+def test_get_interface_mtu_uses_effective_live_link(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
 
     class Result:
@@ -229,6 +247,84 @@ def test_get_interface_mtu_falls_back_to_live_link(monkeypatch):
     monkeypatch.setattr(injector._iface._cmd, "docker_exec", fake_docker_exec)
 
     assert injector._iface.get_interface_mtu("spine1", "Ethernet0") == 9100
+
+
+def test_get_interface_mtu_does_not_hide_live_drift_with_config_db(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_docker_exec(_container, cmd, timeout=30):
+        if cmd == ["ip", "-o", "link", "show", "dev", "Ethernet0"]:
+            return Result(stdout="9: Ethernet0: <UP> mtu 1500 qdisc mq state UP")
+        if cmd[:4] == ["sonic-db-cli", "CONFIG_DB", "hget", "PORT|Ethernet0"]:
+            return Result(stdout="9100")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(injector._iface._cmd, "docker_exec", fake_docker_exec)
+
+    assert injector._iface.get_interface_mtu("spine1", "Ethernet0") == 1500
+
+
+def test_mtu_handler_applies_live_fallback_when_config_db_does_not_converge(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    effective = iter([9100, 9100, 1400])
+    fallback_commands = []
+    monkeypatch.setattr(
+        injector._impairment._iface,
+        "get_interface_mtu",
+        lambda _device, _interface: next(effective),
+    )
+    monkeypatch.setattr(
+        injector._impairment._sonic,
+        "config_cmd",
+        lambda _device, _args: Result(),
+    )
+    monkeypatch.setattr(
+        injector._impairment._cmd,
+        "docker_exec",
+        lambda _container, command: fallback_commands.append(command) or Result(),
+    )
+
+    result = injector.inject_mtu_mismatch("spine1", "Ethernet0", mtu=1400)
+
+    assert result["success"] is True
+    assert result["original_mtu"] == 9100
+    assert fallback_commands == [["ip", "link", "set", "eth1", "mtu", "1400"]]
+
+
+def test_netem_readback_compares_normalized_numeric_values(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_docker_exec(_container, command, timeout=30):
+        if command[:4] == ["tc", "qdisc", "replace", "dev"]:
+            return Result()
+        if command == ["tc", "qdisc", "show", "dev", "eth1"]:
+            return Result(stdout="qdisc netem 8001: root refcnt 2 limit 1000 loss 10%")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(injector._impairment._cmd, "docker_exec", fake_docker_exec)
+
+    result = injector.inject_packet_loss("spine1", "Ethernet0", loss_pct=10.0)
+
+    assert result["success"] is True
 
 
 def test_recover_mtu_mismatch_normalizes_invalid_saved_mtu(monkeypatch):
@@ -250,6 +346,7 @@ def test_recover_mtu_mismatch_normalizes_invalid_saved_mtu(monkeypatch):
         raise AssertionError("linux mtu fallback should not be used when normalized SONiC MTU succeeds")
 
     monkeypatch.setattr(injector._iface, "get_common_port_mtu", lambda device, exclude_interface=None: 9100)
+    monkeypatch.setattr(injector._iface, "get_interface_mtu", lambda device, interface: 9100)
     monkeypatch.setattr(injector._impairment._sonic, "config_cmd", fake_sonic_config)
     monkeypatch.setattr(injector._impairment._cmd, "docker_exec", unexpected_docker_exec)
 

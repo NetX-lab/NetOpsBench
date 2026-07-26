@@ -6,14 +6,18 @@ from typing import Any
 
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.incident.context import (
-    _extract_episode_pingmesh_query_window,
     build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
     build_topology_snapshot,
+    extract_episode_pingmesh_query_window,
 )
 from netopsbench.platform.incident.contracts import ToolAction
 from netopsbench.platform.scenario.episode_runner import observe_episode
+from netopsbench.platform.scenario.observation import (
+    baseline_gate_errors,
+    observation_integrity_errors,
+)
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 
@@ -60,7 +64,20 @@ class ExecutorIncidentBackend:
                     scenario.traffic_profile,
                 )
             if self.baseline_window is None:
-                self.baseline_window = self.executor._capture_baseline_window()
+                reference = self.executor._capture_baseline_window()
+                validation = self.executor._wait_and_observe(
+                    int(reference["duration_seconds"]),
+                    baseline_window=reference,
+                )
+                gate_errors = baseline_gate_errors(validation)
+                if gate_errors:
+                    raise RuntimeError("Healthy baseline is unavailable: " + "; ".join(gate_errors))
+                self.baseline_window = {
+                    "name": "baseline",
+                    "start_time": validation["start_time"],
+                    "end_time": validation["end_time"],
+                    "duration_seconds": validation["duration_seconds"],
+                }
         if self.baseline_window is None:
             raise RuntimeError("Incident preparation requires an explicit Pingmesh baseline window")
         self.episode_result = observe_episode(
@@ -68,13 +85,16 @@ class ExecutorIncidentBackend:
             scenario.episode,
             baseline_window=self.baseline_window,
         )
+        integrity_errors = observation_integrity_errors(self.episode_result.get("observations") or {})
+        if integrity_errors:
+            raise RuntimeError("Incident observation is incomplete: " + "; ".join(integrity_errors))
         self.toolkit = AgentToolkit(
             topology_dir=self.topology_dir,
             topology_metadata=self.executor.topology_metadata,
         )
         self.toolkit.influxdb_bucket = self.influxdb_bucket or self.executor.influxdb_bucket
         self.toolkit.topology_id = self.topology_id or self.executor.topology_id
-        self.pingmesh_query_window = _extract_episode_pingmesh_query_window(self.episode_result)
+        self.pingmesh_query_window = extract_episode_pingmesh_query_window(self.episode_result)
         self.toolkit.set_pingmesh_time_window(
             self.pingmesh_query_window.get("start_time"),
             self.pingmesh_query_window.get("end_time"),
@@ -109,21 +129,18 @@ class ExecutorIncidentBackend:
         if self._finished:
             return
         self._finished = True
-        if self.setup_traffic and self.scenario is not None:
-            self.cleanup_result = self.executor._cleanup_after_scenario(self.scenario, self.episode_result)
+        if self.scenario is not None:
+            self.cleanup_result = self.executor._cleanup_after_scenario(
+                self.scenario,
+                self.episode_result,
+                baseline_window=self.baseline_window,
+            )
             if self.episode_result is not None and "recovery" in self.cleanup_result:
                 self.episode_result["recovery"] = self.cleanup_result["recovery"]
+            if "validated_baseline" in self.cleanup_result:
+                self.baseline_window = dict(self.cleanup_result["validated_baseline"])
             if not self.cleanup_result.get("success", False):
                 raise RuntimeError(f"Scenario cleanup failed: {self.cleanup_result}")
-            return
-        if self.scenario is not None and not self.scenario.episode.is_healthy:
-            recovery = self.executor._recover_fault()
-            if self.episode_result is not None:
-                self.episode_result["recovery"] = recovery
-            if any(not item.get("recovered", False) for item in recovery):
-                raise RuntimeError(f"Fault recovery failed: {recovery}")
-            if recovery:
-                self.executor.sleep(self.executor.post_recovery_wait_seconds)
 
 
 __all__ = ["ExecutorIncidentBackend"]

@@ -12,7 +12,6 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -26,14 +25,13 @@ from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
 from netopsbench.platform.client_agent.config import build_client_agent_config
 from netopsbench.platform.faults.injector import FaultInjector
-from netopsbench.platform.faults.services.topology_runtime import TopologyRuntime
 from netopsbench.platform.faults.specs import create_fault_registry
 from netopsbench.platform.scenario.generator import parse_bgp_config, parse_network_interfaces
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
 from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.toolkit import fastmcp_server
-from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_schemas
+from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_schemas, validate_tool_call
 
 # Internal test path: direct toolkit import keeps implementation-level e2e checks fast.
 from netopsbench.platform.toolkit.toolkit import AgentToolkit, ToolResult
@@ -344,6 +342,30 @@ class TestFastMCPServer:
             assert set(schemas[name]["input_schema"]["properties"]) == parameters
             assert schemas[name]["input_schema"]["additionalProperties"] is False
 
+    def test_tool_schema_defaults_are_valid_and_integer_arguments_are_strict(self):
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        payload_size = schemas["ping_test"]["input_schema"]["properties"]["payload_size"]
+
+        for schema in schemas.values():
+            for prop in schema["input_schema"]["properties"].values():
+                if prop.get("default", object()) is None:
+                    assert any(option.get("type") == "null" for option in prop.get("anyOf", []))
+        assert payload_size["default"] is None
+        assert validate_tool_call("ping_test", {"src": "client1", "dst_ip": "192.0.2.1"})
+        assert validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "payload_size": None},
+        )
+        assert not validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "count": "3"},
+        )
+        assert not validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "count": True},
+        )
+        assert validate_tool_call("get_device_logs", {"device": "leaf1", "severity": None})
+
 
 class TestFaultInjector:
     """Tests for fault injection."""
@@ -352,7 +374,6 @@ class TestFaultInjector:
         """Test fault injector initializes correctly."""
         injector = FaultInjector(topology_metadata=_generated_metadata())
         assert injector is not None
-        assert injector.topology_name == "dcn"
         assert injector.container_names["spine1"] == "clab-dcn-spine1"
         assert injector.active_faults == []
 
@@ -836,13 +857,6 @@ episode:
             result = validate_scenario_topology(scenario=scenario, topology_dir=tmpdir)
             assert result["status"] == "pass"
             assert parse_network_interfaces(spine_config) == ["Ethernet4"]
-
-            topo_runtime = TopologyRuntime(
-                sonic=SimpleNamespace(),
-                iface=SimpleNamespace(resolve_sonic=lambda interface: interface),
-                ctx=SimpleNamespace(clab_dir=Path(tmpdir), clients=[]),
-            )
-            assert topo_runtime.configured_device_interfaces("spine1") == ["Ethernet4"]
 
             from netopsbench.platform.session.scoring import build_episode_ground_truth
 

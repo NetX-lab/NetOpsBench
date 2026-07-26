@@ -138,5 +138,7 @@ def _has_valid_socket_batch(
         return False
     expected_active = min(ports_per_cycle, port_pool_size - port_batch_index * ports_per_cycle)
     return (
-        _field_int(row, "rtt_ports_total") == port_pool_size and _field_int(row, "rtt_ports_active") == expected_active
+        _field_int(row, "rtt_ports_total") == port_pool_size
+        and _field_int(row, "rtt_ports_active") == expected_active
+        and _field_int(row, "local_probe_errors") == 0
     )

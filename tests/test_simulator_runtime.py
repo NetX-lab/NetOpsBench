@@ -18,6 +18,10 @@ from netopsbench.platform.incident.engine import (
     IncidentState,
     SessionState,
 )
+from netopsbench.platform.scenario.observation import (
+    baseline_gate_errors,
+    observation_integrity_errors,
+)
 from netopsbench.platform.simulator import runtime as simulator_runtime_module
 from netopsbench.platform.simulator.environment import (
     DiagnosisSubmission,
@@ -327,7 +331,7 @@ def test_runtime_capacity_switch_has_no_training_phase_state(monkeypatch):
     assert returned.runtime.scale == "xs"
 
 
-def test_failed_quarantine_remains_at_capacity_until_explicit_retry(monkeypatch):
+def test_failed_quarantine_remains_at_capacity_until_drain_retry(monkeypatch):
     pool, _ = _pool(monkeypatch)
     record = WarmRuntime(
         runtime=FakeRuntime("xs", teardown_failures=1),
@@ -343,7 +347,7 @@ def test_failed_quarantine_remains_at_capacity_until_explicit_retry(monkeypatch)
     assert record.in_use is False
     assert pool._runtime_count() == 1
 
-    pool.retry_quarantined(record)
+    pool.drain()
 
     assert record.runtime.teardowns == 2
     assert pool._runtime_count() == 0
@@ -406,6 +410,33 @@ def test_simulator_manager_uses_one_physical_pool_for_different_session_limits()
     manager.close()
 
 
+def test_simulator_manager_close_retains_failed_pool_for_retry():
+    manager = SimulatorManager(
+        scale_registry=default_scale_registry(),
+        runtime_manager=SimpleNamespace(),
+    )
+
+    class Pool:
+        attempts = 0
+
+        def drain(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("teardown failed")
+
+    pool = Pool()
+    manager._lease_pool = pool
+    manager._pool_config = (1, 600)
+
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        manager.close()
+    assert manager._lease_pool is pool
+
+    manager.close()
+    assert pool.attempts == 2
+    assert manager._lease_pool is None
+
+
 def test_manager_registries_drop_closed_environments_and_incidents(monkeypatch):
     manager = SimulatorManager(
         scale_registry=default_scale_registry(),
@@ -428,13 +459,23 @@ def test_manager_registries_drop_closed_environments_and_incidents(monkeypatch):
     assert len(manager._incidents) == 0
 
 
-def _baseline_observation(*, paths=10_000, loss=0, unreachable=0, mtu=0, latency=0):
+def _baseline_observation(
+    *,
+    paths=10_000,
+    loss=0,
+    unreachable=0,
+    mtu=0,
+    latency=0,
+    local_df=0,
+    local_probe_errors=0,
+):
     return {
         "start_time": "2026-01-01T00:01:00Z",
         "end_time": "2026-01-01T00:02:00Z",
         "duration_seconds": 60,
         "data_source_status": "ok",
         "coverage_status": "complete",
+        "_baseline_coverage": {"status": "ok", "coverage_status": "complete"},
         "pingmesh_metrics": {
             "summary": {
                 "packet_loss_events": loss,
@@ -442,24 +483,64 @@ def _baseline_observation(*, paths=10_000, loss=0, unreachable=0, mtu=0, latency
                 "mtu_or_fragmentation_events": mtu,
                 "latency_spikes": latency,
             },
-            "quality": {"current_paths_observed": paths},
+            "quality": {
+                "current_paths_observed": paths,
+                "absolute_packet_loss_paths": loss,
+                "absolute_unreachable_paths": unreachable,
+                "absolute_network_mtu_paths": mtu,
+                "local_df_mtu_drops": local_df,
+                "local_probe_errors": local_probe_errors,
+            },
         },
     }
 
 
-def test_simulator_baseline_gate_uses_scale_normalized_loss_and_mtu_rates():
-    assert (
-        RuntimeEpisodeBackend._baseline_gate_errors(_baseline_observation(paths=10_000, loss=10, mtu=2, latency=2_000))
-        == []
+def test_simulator_baseline_gate_allows_only_bounded_loss_noise():
+    assert baseline_gate_errors(_baseline_observation(paths=10_000, loss=10)) == []
+
+    errors = baseline_gate_errors(
+        _baseline_observation(paths=1_000, loss=2, unreachable=1, mtu=1, latency=1, local_df=1)
     )
 
-    errors = RuntimeEpisodeBackend._baseline_gate_errors(
-        _baseline_observation(paths=1_000, loss=2, unreachable=1, mtu=1)
-    )
-
-    assert any("path_unreachable_events=1" in error for error in errors)
+    assert any("absolute_unreachable_paths=1" in error for error in errors)
     assert any("packet_loss_path_rate=0.002000" in error for error in errors)
-    assert any("mtu_suspect_path_rate=0.001000" in error for error in errors)
+    assert any("absolute_network_mtu_paths=1" in error for error in errors)
+    assert any("latency_spikes=1" in error for error in errors)
+    assert any("local_df_mtu_drops=1" in error for error in errors)
+
+
+def test_baseline_gate_rejects_incomplete_reference_coverage():
+    observation = _baseline_observation()
+    observation["_baseline_coverage"] = {"status": "ok", "coverage_status": "incomplete"}
+
+    assert baseline_gate_errors(observation) == ["baseline_coverage=incomplete"]
+    assert observation_integrity_errors(observation) == ["baseline_coverage=incomplete"]
+
+
+def test_observation_integrity_rejects_incomplete_or_local_probe_failures():
+    observation = _baseline_observation(paths=0, local_df=2, local_probe_errors=3)
+    observation["data_source_status"] = "error: timeout"
+    observation["coverage_status"] = "incomplete"
+
+    assert observation_integrity_errors(observation) == [
+        "data=error: timeout",
+        "coverage=incomplete",
+        "current_paths_observed=0",
+        "local_df_mtu_drops=2",
+        "local_probe_errors=3",
+    ]
+
+
+def test_observation_integrity_does_not_reject_real_network_anomalies():
+    observation = _baseline_observation(
+        paths=10_000,
+        loss=500,
+        unreachable=200,
+        mtu=100,
+        latency=50,
+    )
+
+    assert observation_integrity_errors(observation) == []
 
 
 def test_simulator_builds_reference_and_validation_once_then_reuses_latest_window(tmp_path):
@@ -590,6 +671,55 @@ def test_simulator_rebuilds_missing_traffic_once_and_invalidates_baseline(monkey
     assert events[:4] == ["verify", "stop", ("setup", "xs", "standard"), "baseline"]
 
 
+def test_simulator_rebuilds_baseline_after_recovering_lingering_fault(monkeypatch):
+    class Traffic:
+        active_flows = {"flow": object()}
+
+        @staticmethod
+        def verify_active_flows():
+            return True
+
+    runner = SimpleNamespace(
+        traffic_controller=Traffic(),
+        topology_dir="unused",
+        post_recovery_wait_seconds=0,
+        sleep=lambda _seconds: None,
+        _recover_fault=lambda: [{"type": "link_down", "recovered": True}],
+    )
+    worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
+    record = WarmRuntime(
+        runtime=SimpleNamespace(workers=[worker]),
+        runner=runner,
+        baseline_signature="stale",
+        baseline={"name": "stale"},
+    )
+
+    class Leases:
+        @staticmethod
+        def acquire(_scale):
+            return record
+
+    class Delegate:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @staticmethod
+        def prepare(_scenario):
+            return {"case_id": "case-test"}
+
+    backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
+    monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        backend,
+        "_ensure_baseline",
+        lambda _scenario: (record.baseline_signature is None and record.baseline is None)
+        or pytest.fail("lingering-fault recovery must invalidate the cached baseline"),
+    )
+    monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
+
+    assert backend.prepare(_scenario(healthy=True)) == {"case_id": "case-test"}
+
+
 def test_simulator_quarantines_when_traffic_rebuild_is_incomplete(monkeypatch):
     events = []
 
@@ -622,10 +752,14 @@ def test_simulator_quarantines_when_traffic_rebuild_is_incomplete(monkeypatch):
         def quarantine(_record):
             events.append("quarantine")
 
+    from netopsbench.platform.incident.engine import IncidentEngine, IncidentState
+
     backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
     monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
 
-    with pytest.raises(RuntimeError, match="Background traffic matrix incomplete"):
-        backend.prepare(_scenario(healthy=True))
+    incident = IncidentEngine(lambda: backend).prepare(_scenario(healthy=True))
 
     assert events == ["stop", "quarantine"]
+    assert incident.state is IncidentState.BROKEN
+    assert incident.failure is not None
+    assert incident.failure.message == "Background traffic matrix incomplete"

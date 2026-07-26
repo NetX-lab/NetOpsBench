@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
@@ -12,41 +10,67 @@ from netopsbench.platform.utils.proc import docker_prefix, safe_run
 class CommandRunner:
     """Executes shell and docker commands for fault injection."""
 
+    @staticmethod
+    def _error_result(
+        args: list[str],
+        *,
+        returncode: int,
+        stdout: str | bytes | None,
+        stderr: str | bytes | None,
+    ) -> subprocess.CompletedProcess:
+        def as_text(value: str | bytes | None) -> str:
+            if isinstance(value, bytes):
+                return value.decode(errors="replace")
+            return value or ""
+
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout=as_text(stdout),
+            stderr=as_text(stderr),
+        )
+
     def run_cmd(
         self,
         args: list[str],
         timeout: int = 60,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        return safe_run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-
-    def terminate_process(self, pid: int | None, *, sig: int = signal.SIGKILL) -> bool:
-        if pid in (None, ""):
-            return True
         try:
-            os.kill(int(pid), sig)
-            return True
-        except ProcessLookupError:
-            return True
-        except (OSError, TypeError, ValueError):
-            return False
+            return safe_run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return self._error_result(
+                args,
+                returncode=124,
+                stdout=exc.stdout,
+                stderr=exc.stderr or f"command timed out after {timeout}s",
+            )
+        except OSError as exc:
+            return self._error_result(
+                args,
+                returncode=127,
+                stdout="",
+                stderr=f"{type(exc).__name__}: {exc}",
+            )
 
     def docker_exec(self, container: str, cmd_args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
         return self.run_cmd([*docker_prefix(), "docker", "exec", container] + cmd_args, timeout)
 
-    def docker_exec_detached(
-        self, container: str, cmd_args: list[str], timeout: int = 10
-    ) -> subprocess.CompletedProcess:
-        return self.run_cmd([*docker_prefix(), "docker", "exec", "-d", container] + cmd_args, timeout)
-
-    def container_is_running(self, container: str) -> bool:
+    def container_is_running(self, container: str) -> bool | None:
         result = self.run_cmd(
             [*docker_prefix(), "docker", "inspect", "-f", "{{.State.Running}}", container], timeout=10
         )
-        return result.returncode == 0 and (result.stdout or "").strip() == "true"
+        if result.returncode != 0:
+            return None
+        state = (result.stdout or "").strip().lower()
+        if state == "true":
+            return True
+        if state == "false":
+            return False
+        return None

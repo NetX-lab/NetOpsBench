@@ -77,14 +77,13 @@ def _install_real_runtime_mocks(monkeypatch):
             influxdb_org=None,
             influxdb_bucket=None,
             topology_id=None,
-            persist_results=True,
             fault_registry=None,
             scale_registry=None,
             evaluator=None,
+            runtime_worker=None,
         ):
             self.topology_dir = topology_dir
             self.topology_metadata = topology_metadata
-            self.results_dir = None
             self.evaluator = evaluator
 
         def run_scenario(self, scenario, diagnosis_callback=None):
@@ -140,7 +139,6 @@ def _install_real_runtime_mocks(monkeypatch):
                 )
             return {
                 "success": True,
-                "result_file": str(Path(self.results_dir or ".") / f"{scenario.scenario_id}.json"),
                 "episode": {
                     "episode": {
                         "episode_id": "ep1",
@@ -175,7 +173,7 @@ def _install_platform_runtime_mocks(monkeypatch):
     def fake_provision(self, *, scale, workers=1, name=None, root_dir=None):
         runtime = self._build_runtime(scale=scale, workers=workers, name=name, root_dir=root_dir)
         runtime.metadata["provisioning_mode"] = "worker_pool"
-        runtime.state = "deployed"
+        runtime.state = "warm"
         for worker in runtime.workers:
             worker_dir = Path(worker.topology_dir or worker.root_dir)
             worker_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +278,7 @@ def test_run_on_runtime_scenario_supports_handle_and_path_without_teardown(tmp_p
     scenario_path = tmp_path / "runtime-scenario.yaml"
     ScenarioManager().save(scenario, scenario_path)
     runtime = bench.runtimes.create(scale="xs", workers=1, name="existing-runtime")
+    runtime._runtime.state = "warm"
 
     first = bench.sessions.run_on_runtime_scenario(
         scenario=scenario,
@@ -304,6 +303,7 @@ def test_run_on_runtime_suite_does_not_teardown_user_runtime(tmp_path, monkeypat
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="shared-runtime")
+    runtime._runtime.state = "warm"
     scenario_dir = tmp_path / "suite"
     scenario_dir.mkdir()
     ScenarioManager().save(_make_scenario(scenario_id="suite-1"), scenario_dir / "suite-1.yaml")
@@ -370,6 +370,7 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="ctx-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="ctx-scenario")
 
     class CaptureAgent:
@@ -427,6 +428,7 @@ def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypat
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="trace-scenario")
 
     class TraceAgent:
@@ -486,6 +488,7 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
 
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-failure-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="failure-scenario")
 
     class FailingAgent:
@@ -534,6 +537,7 @@ def test_runtime_trace_false_disables_trace_artifacts_and_recorder_capture(tmp_p
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-off-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="trace-off-scenario")
 
     class TraceOffAgent:
@@ -596,6 +600,7 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="env-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="env-scenario")
 
     monkeypatch.setenv("NETOPSBENCH_TOPOLOGY_DIR", "outer-topology-dir")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 from netopsbench.logging_utils import get_logger
@@ -10,6 +12,21 @@ from netopsbench.platform.traffic.controller import TrafficController, TrafficFl
 from netopsbench.platform.traffic.generator import generate_traffic_config, validate_traffic_config
 
 logger = get_logger(__name__)
+
+_RESULT_STAT_KEYS = {
+    "total_flows",
+    "udp_flows",
+    "tcp_flows",
+    "rejected_candidates",
+    "min_incoming_flows",
+    "max_incoming_flows",
+    "required_listener_ports",
+    "estimated_max_pps_per_client",
+    "estimated_max_udp_pps_per_client",
+    "cross_switch_flows",
+    "same_switch_flows",
+    "cross_switch_flow_ratio",
+}
 
 
 def setup_traffic(runner, scale: str, profile: str) -> dict:
@@ -88,7 +105,17 @@ def setup_traffic(runner, scale: str, profile: str) -> dict:
         runner.traffic_controller.stop_all()
         runner.traffic_controller = None
         raise RuntimeError(f"Background traffic matrix incomplete: started {len(started_flow_ids)}/{len(flows)} flows")
-    return traffic_config
+    matrix_digest = hashlib.sha256(
+        json.dumps(traffic_config["flows"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    result_stats = {key: value for key, value in traffic_config["stats"].items() if key in _RESULT_STAT_KEYS}
+    result_stats["estimated_max_switch_pps"] = max_switch_pps
+    return {
+        "profile": traffic_config["profile"],
+        "stats": result_stats,
+        "runtime": traffic_config["runtime"],
+        "matrix_digest": matrix_digest,
+    }
 
 
 def stop_traffic(runner) -> None:

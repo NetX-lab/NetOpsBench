@@ -37,12 +37,6 @@ class SonicRuntime:
             raise ValueError(f"Unknown device: {device}")
         return self._cmd.docker_exec(container, ["config"] + args)
 
-    def reload_bgp_config(self, device: str) -> subprocess.CompletedProcess:
-        container = self._ctx.container_names.get(device)
-        if not container:
-            raise ValueError(f"Unknown device: {device}")
-        return self._cmd.docker_exec(container, ["vtysh", "-b"], timeout=60)
-
     def bgp_neighbor_states(self, output: str):
         states = []
         for raw_line in (output or "").splitlines():
@@ -68,3 +62,14 @@ class SonicRuntime:
             return False
         states = self.bgp_neighbor_states(output)
         return bool(states) and all(state.isdigit() for state in states)
+
+    def bgp_neighbor_state(self, device: str, peer_ip: str) -> bool | None:
+        """Return the neighbor's established state, or ``None`` when unreadable."""
+        result = self.vtysh(device, ["show ip bgp summary"])
+        if result.returncode != 0:
+            return None
+        for raw_line in (result.stdout or "").splitlines():
+            parts = raw_line.split()
+            if len(parts) >= 10 and parts[0] == peer_ip:
+                return parts[9].isdigit()
+        return False

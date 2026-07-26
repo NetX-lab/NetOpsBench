@@ -71,13 +71,11 @@ def test_clos_builder_returns_complete_fabric_plan_without_writing(tmp_path):
     assert isinstance(plan, FabricPlan)
     assert not output_dir.exists()
     assert len(plan.device_plans) == 6
-    spine1 = plan.device_plan("spine1")
-    leaf1 = plan.device_plan("leaf1")
-    assert spine1 is not None
+    spine1 = next(device for device in plan.device_plans if device.name == "spine1")
+    leaf1 = next(device for device in plan.device_plans if device.name == "leaf1")
     assert spine1.required_ports == 2
     assert spine1.configdb_interface_cidrs["Ethernet0"] == ("10.1.1.1/30",)
     assert spine1.bgp_neighbors[0].peer_ip == "10.1.1.2"
-    assert leaf1 is not None
     assert leaf1.required_ports == 3
     assert leaf1.bgp_networks == ("192.168.101.0/30",)
     assert plan.manifest.links[0].endpoints[0].interface == "eth1"

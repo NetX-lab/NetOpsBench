@@ -399,7 +399,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_octets\" or r._field == \"out_octets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> map(fn: (r) => ({ r with _value: r._value * 8.0 }))\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"bps\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_octets\" or r._field == \"out_octets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> map(fn: (r) => ({ r with _value: r._value * 8.0 }))\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"bps\")",
           "refId": "A"
         }
       ],
@@ -450,7 +450,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_unicast_pkts\" or r._field == \"out_unicast_pkts\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\"])\n  |> yield(name: \"pps\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_unicast_pkts\" or r._field == \"out_unicast_pkts\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"source\", \"name\"])\n  |> yield(name: \"pps\")",
           "refId": "A"
         }
       ],
@@ -508,7 +508,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"source\"] =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r[\"_field\"] == \"out_discarded_packets\" or r[\"_field\"] == \"in_discarded_packets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"source\"] =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r[\"_field\"] == \"out_discarded_packets\" or r[\"_field\"] == \"in_discarded_packets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
           "refId": "A"
         }
       ],
@@ -544,10 +544,6 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byRegexp", "options": ".*in_fcs_error.*" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
-          },
-          {
             "matcher": { "id": "byRegexp", "options": ".*in_error.*" },
             "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
           }
@@ -568,12 +564,12 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_errors\" or r._field == \"out_errors\" or r._field == \"in_fcs_error_packets\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> drop(columns: [\"user\"])\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r.source =~ /^${Device:regex}$/)\n  |> filter(fn: (r) => r._measurement == \"interfaces\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r.name != \"mgmt0\")\n  |> filter(fn: (r) => r._field == \"in_errors\" or r._field == \"out_errors\")\n  |> toFloat()\n  |> derivative(unit: 1s, nonNegative: true)\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"source\", \"name\", \"_field\"])\n  |> yield(name: \"pps\")",
           "refId": "A"
         }
       ],
-      "title": "🔴 Physical Errors (CRC/FCS)",
-      "description": "Physical layer errors: fiber attenuation, cable contact issues, interference causing frame check failures. in_fcs_error_packets is the key CRC indicator.",
+      "title": "🔴 Interface Errors",
+      "description": "Input and output interface error rates reported by SONiC counters.",
       "type": "timeseries"
     },
     {

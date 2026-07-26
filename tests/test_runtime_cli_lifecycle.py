@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import pytest
 
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime import lifecycle
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_slot(monkeypatch):
+    monkeypatch.setattr(lifecycle, "runtime_deploy_lock", nullcontext)
+    monkeypatch.setattr(lifecycle, "assert_worker_slot_available", lambda _worker: None)
 
 
 def _worker(tmp_path) -> RuntimeIdentity:
@@ -47,4 +55,20 @@ def test_standalone_worker_deploy_preserves_provision_and_cleanup_failures(tmp_p
     monkeypatch.setattr(lifecycle, "teardown_worker_lab", lambda *_args: (_ for _ in ()).throw(OSError("cleanup")))
 
     with pytest.raises(RuntimeError, match=r"ValueError: deploy.*OSError: cleanup"):
+        lifecycle.deploy_worker_transactionally(_worker(tmp_path), "xs")
+
+
+def test_standalone_worker_preflight_conflict_does_not_teardown_existing_lab(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "assert_worker_slot_available",
+        lambda _worker: (_ for _ in ()).throw(RuntimeError("lab already exists")),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "teardown_worker_lab",
+        lambda *_args: pytest.fail("preflight failure must not teardown the existing lab"),
+    )
+
+    with pytest.raises(RuntimeError, match="lab already exists"):
         lifecycle.deploy_worker_transactionally(_worker(tmp_path), "xs")

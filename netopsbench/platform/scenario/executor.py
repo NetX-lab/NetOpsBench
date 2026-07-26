@@ -14,17 +14,20 @@ from pydantic import ValidationError
 from netopsbench.evaluator.scorer import Evaluator
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
+from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.scenario_execution import inject_fault as _inject_fault_impl
 from netopsbench.platform.faults.scenario_execution import recover_fault as _recover_fault_impl
 from netopsbench.platform.faults.specs import FaultSpecRegistry, create_fault_registry
-from netopsbench.platform.runtime.health import HEALTH_POLL_INTERVAL_SECONDS
+from netopsbench.platform.runtime.health import (
+    HEALTH_POLL_INTERVAL_SECONDS,
+    check_worker_health,
+)
 from netopsbench.platform.topology.topology_utils import coerce_topology_manifest, load_topology_manifest
 from netopsbench.platform.traffic.controller import TrafficController
 from netopsbench.platform.traffic.scenario_execution import setup_traffic as _setup_traffic_impl
 from netopsbench.platform.traffic.scenario_execution import stop_traffic as _stop_traffic_impl
-from netopsbench.platform.utils.files import atomic_write_json
 
 from .incident_backend import ExecutorIncidentBackend
 from .observation import analyze_observation_windows as _analyze_observation_windows_impl
@@ -65,10 +68,10 @@ class ScenarioExecutor:
         influxdb_bucket: str | None = None,
         topology_id: str | None = None,
         sleep_fn: Callable[[float], None] | None = None,
-        persist_results: bool = True,
         fault_registry: FaultSpecRegistry | None = None,
         scale_registry: ScaleRegistry | None = None,
         evaluator: Evaluator | None = None,
+        runtime_worker: RuntimeIdentity | None = None,
     ):
         """
         Initialize scenario runner.
@@ -95,17 +98,20 @@ class ScenarioExecutor:
             fault_registry=self.fault_registry,
         )
         self.traffic_controller: TrafficController | None = None
-        self.results_dir = Path("scenario_results")
         self.topology_id = topology_id or manifest.topology_id
         self.influxdb_url = influxdb_url
         self.influxdb_token = influxdb_token
         self.influxdb_org = influxdb_org
         self.influxdb_bucket = influxdb_bucket
         self.minimum_baseline_seconds = max(0, int(minimum_baseline_seconds))
-        self.post_recovery_wait_seconds = max(0, int(post_recovery_wait_seconds))
+        self.post_recovery_wait_seconds = max(
+            0,
+            int(post_recovery_wait_seconds),
+            manifest.pingmesh.cycle_interval_seconds,
+        )
         self._sleep_fn = sleep_fn or time.sleep
-        self.persist_results = bool(persist_results)
         self.evaluator = evaluator or Evaluator()
+        self.runtime_worker = runtime_worker
 
     def sleep(self, seconds: float) -> None:
         self._sleep_fn(seconds)
@@ -146,7 +152,13 @@ class ScenarioExecutor:
             return False
         return all(isinstance(item, dict) and item.get("recovered") is True for item in results)
 
-    def _cleanup_after_scenario(self, scenario: ScenarioSpec, episode_result: dict | None) -> dict:
+    def _cleanup_after_scenario(
+        self,
+        scenario: ScenarioSpec,
+        episode_result: dict | None,
+        *,
+        baseline_window: dict[str, Any] | None = None,
+    ) -> dict:
         """Recover the fault while runtime-owned background traffic remains active."""
         started = monotonic()
         profile = self.scale_registry.get(scenario.topology_scale)
@@ -154,6 +166,9 @@ class ScenarioExecutor:
         deadline = started + timeout_seconds
         attempts = 0
         errors: list[str] = []
+        recovery_attempted = False
+        post_recovery_waited = False
+        convergence_pending = False
         prior_recovery = episode_result.get("recovery") if isinstance(episode_result, dict) else None
         recovery_results = prior_recovery
 
@@ -165,6 +180,7 @@ class ScenarioExecutor:
             )
             if not recovery_complete:
                 try:
+                    recovery_attempted = True
                     recovery_results = self._recover_fault()
                     active_faults = list(getattr(self.injector, "active_faults", []) or [])
                     recovery_complete = self._recovery_results_succeeded(recovery_results) and not active_faults
@@ -177,7 +193,59 @@ class ScenarioExecutor:
                     errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
 
             if recovery_complete:
-                result = {
+                if recovery_attempted and recovery_results and not post_recovery_waited:
+                    post_recovery_wait = getattr(self, "post_recovery_wait_seconds", 0)
+                    if post_recovery_wait:
+                        self.sleep(post_recovery_wait)
+                    post_recovery_waited = True
+                convergence_errors: list[str] = []
+                controller = getattr(self, "traffic_controller", None)
+                if controller is not None and (
+                    not bool(controller.active_flows) or not controller.verify_active_flows()
+                ):
+                    convergence_errors.append("background traffic is not fully ready")
+                runtime_worker = getattr(self, "runtime_worker", None)
+                if runtime_worker is not None:
+                    convergence_errors.extend(
+                        check_worker_health(
+                            runtime_worker,
+                            scale_registry=self.scale_registry,
+                            all_routing_devices=True,
+                        )
+                    )
+                if convergence_errors:
+                    convergence_pending = True
+                    errors.extend(f"post_recovery: {error}" for error in convergence_errors)
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        break
+                    self.sleep(min(float(HEALTH_POLL_INTERVAL_SECONDS), remaining))
+                    continue
+                validated_baseline = None
+                if recovery_attempted and baseline_window is not None:
+                    validation = self._wait_and_observe(
+                        int(baseline_window["duration_seconds"]),
+                        baseline_window=baseline_window,
+                    )
+                    from .observation import baseline_gate_errors
+
+                    baseline_errors = baseline_gate_errors(validation)
+                    if baseline_errors:
+                        errors.extend(f"post_recovery_baseline: {error}" for error in baseline_errors)
+                        return {
+                            "success": False,
+                            "status": "post_recovery_baseline_failed",
+                            "attempts": attempts,
+                            "duration_seconds": max(0.0, monotonic() - started),
+                            "errors": list(dict.fromkeys(errors)),
+                        }
+                    validated_baseline = {
+                        "name": "baseline",
+                        "start_time": validation["start_time"],
+                        "end_time": validation["end_time"],
+                        "duration_seconds": validation["duration_seconds"],
+                    }
+                result: dict[str, Any] = {
                     "success": True,
                     "status": "clean" if attempts == 1 else "recovered_after_retry",
                     "attempts": attempts,
@@ -186,6 +254,8 @@ class ScenarioExecutor:
                 }
                 if recovery_results is not None:
                     result["recovery"] = recovery_results
+                if validated_baseline is not None:
+                    result["validated_baseline"] = validated_baseline
                 return result
 
             remaining = deadline - monotonic()
@@ -195,7 +265,7 @@ class ScenarioExecutor:
 
         return {
             "success": False,
-            "status": "recovery_timeout",
+            "status": "post_recovery_convergence_timeout" if convergence_pending else "recovery_timeout",
             "attempts": attempts,
             "duration_seconds": max(0.0, monotonic() - started),
             "timeout_seconds": timeout_seconds,
@@ -247,6 +317,7 @@ class ScenarioExecutor:
             "topology_scale": scenario.topology_scale,
             "traffic_profile": scenario.traffic_profile,
             "episode": None,
+            "case_valid": False,
             "success": False,
         }
 
@@ -273,6 +344,7 @@ class ScenarioExecutor:
                 scenario_result["error"] = failure.message if failure else "incident preparation failed"
                 scenario_result["failure"] = failure.model_dump(mode="json") if failure else None
             else:
+                scenario_result["case_valid"] = True
                 episode_result = backend.episode_result or {}
                 session = incident.open_session(
                     SimulatorConfig(
@@ -354,6 +426,8 @@ class ScenarioExecutor:
         finally:
             if incident is not None:
                 scenario_result["incident_cleanup_status"] = incident.close().value
+                if incident.cleanup_failure is not None:
+                    scenario_result["cleanup_failure"] = incident.cleanup_failure.model_dump(mode="json")
             cleanup = backend.cleanup_result
             if cleanup is not None:
                 scenario_result["cleanup"] = cleanup
@@ -370,24 +444,9 @@ class ScenarioExecutor:
 
             scenario_result["end_time"] = datetime.now(UTC).isoformat()
 
-        result_file: Path | str | None
-        if self.persist_results:
-            result_file = self._persist_scenario_result(scenario, scenario_result)
-            scenario_result["result_file"] = str(result_file)
-        else:
-            result_file = scenario_result.get("result_file")
-
         logger.info(f"\n{'#'*70}")
         logger.info("# Scenario Complete")
         logger.info(f"# Success: {scenario_result['success']}")
-        if result_file:
-            logger.info(f"# Results saved to: {result_file}")
         logger.info(f"{'#'*70}")
 
         return scenario_result
-
-    def _persist_scenario_result(self, scenario: ScenarioSpec, scenario_result: dict) -> Path:
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        result_file = self.results_dir / f"{scenario.scenario_id}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
-        atomic_write_json(result_file, scenario_result)
-        return result_file

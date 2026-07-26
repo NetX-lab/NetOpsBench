@@ -48,9 +48,7 @@ def estimate_packet_size_bytes(
         udp_payload = float(flow.get("udp_payload_len", udp_payload_len_bytes))
         return max(udp_payload, 64.0) + UDP_IP_OVERHEAD_BYTES
     if protocol == "tcp":
-        tcp_payload = flow.get("tcp_payload_len")
-        if tcp_payload is None:
-            tcp_payload = flow.get("tcp_mss", tcp_mss_bytes)
+        tcp_payload = flow.get("tcp_mss", tcp_mss_bytes)
         return max(float(tcp_payload), float(MIN_TCP_PAYLOAD_BYTES)) + TCP_IP_OVERHEAD_BYTES
     return 0.0
 

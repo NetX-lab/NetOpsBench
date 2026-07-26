@@ -100,7 +100,6 @@ def generate_traffic_config_from_topology(
         {
             "udp_payload_len_bytes": UDP_PAYLOAD_LEN_BYTES,
             "tcp_mss_bytes": TCP_MSS_BYTES,
-            "tcp_payload_len_bytes_estimate": TCP_MSS_BYTES,
         }
     )
     return traffic
@@ -133,8 +132,8 @@ def validate_traffic_config(
     settings = settings or TrafficSettings()
     max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     stats = config.get("stats", {})
-    estimated_clients = stats.get("estimated_pps_per_client") or stats.get("estimated_udp_pps_per_client", {})
-    max_client_pps = stats.get("estimated_max_pps_per_client") or stats.get("estimated_max_udp_pps_per_client", 0.0)
+    estimated_clients = stats.get("estimated_pps_per_client", {})
+    max_client_pps = stats.get("estimated_max_pps_per_client", 0.0)
     switch_pps = stats.get("estimated_switch_pps", {})
     max_switch_pps = switch_pps.get("max_switch_pps", 0.0)
     if max_client_pps > max_allowed_client_pps:

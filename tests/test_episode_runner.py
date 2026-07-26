@@ -123,7 +123,7 @@ def test_observation_defers_detector_analysis_until_all_windows_are_captured():
     )
 
     assert result["state"] == "active"
-    assert executor.calls == ["inject", "capture:early:4", "capture:steady:8", "merge"]
+    assert executor.calls == ["inject", "capture:early:4", "capture:steady:6", "merge"]
 
 
 def test_observation_uses_executor_sleep_hook_for_stabilization():

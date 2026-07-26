@@ -9,13 +9,14 @@ from pathlib import Path
 from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.topology import PingmeshPolicy
 
+from .planning import pingmesh_policy_for_profile
+
 DEFAULT_SONIC_VS_IMAGE = (
     "yyyyyt123/netopsbench-sonic-vs-202505-telemetry"
     "@sha256:0e039d2fea3f85788f15db8ebad27cf5bd5b2cdaf17e8c31eab852021e23ea73"
 )
 DEFAULT_CLIENT_IMAGE = (
-    "docker.io/yyyyyt123/netopsbench-client"
-    "@sha256:212829ac179289f0747b2c09f9f1ba9651bbfc0fce95c85c57a38779109b56ba"
+    "docker.io/yyyyyt123/netopsbench-client" "@sha256:dbf37d3dbea591b44fc0db6487295694e71b807417e66638ba30155d4b14bc98"
 )
 SONIC_PLATFORM = "x86_64-kvm_x86_64-r0"
 SONIC_HWSKU = "Force10-S6000"
@@ -119,7 +120,7 @@ def _clos_config_from_profile(profile: ScaleProfile) -> TopologyConfig:
         clients_per_leaf=profile.clients_per_attached_switch,
         mgmt_ipv4_subnet=_topology_mgmt_subnet(profile),
         scale_name=profile.name,
-        pingmesh_policy=_pingmesh_policy(profile),
+        pingmesh_policy=pingmesh_policy_for_profile(profile),
     )
 
 
@@ -129,16 +130,7 @@ def _fat_tree_config_from_profile(profile: ScaleProfile) -> FatTreeConfig:
         clients_per_edge=profile.clients_per_attached_switch,
         mgmt_ipv4_subnet=_topology_mgmt_subnet(profile),
         scale_name=profile.name,
-        pingmesh_policy=_pingmesh_policy(profile),
-    )
-
-
-def _pingmesh_policy(profile: ScaleProfile) -> PingmeshPolicy:
-    return PingmeshPolicy(
-        destination_batch_size=profile.pingmesh_destination_batch_size,
-        rtt_port_pool_size=profile.pingmesh_rtt_port_pool_size,
-        rtt_ports_per_cycle=profile.pingmesh_rtt_ports_per_cycle,
-        cycle_interval_seconds=profile.pingmesh_cycle_interval_seconds,
+        pingmesh_policy=pingmesh_policy_for_profile(profile),
     )
 
 

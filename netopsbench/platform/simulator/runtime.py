@@ -18,6 +18,7 @@ from netopsbench.platform.runtime.lifecycle import ensure_worker_client_agent, e
 from netopsbench.platform.runtime.manager import RuntimeManager, RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
+from netopsbench.platform.scenario.observation import baseline_gate_errors
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
 logger = get_logger(__name__)
@@ -118,15 +119,8 @@ class RuntimeLeasePool:
             self._remove(record)
             self._condition.notify_all()
 
-    def retry_quarantined(self, record: WarmRuntime) -> None:
-        """Retry teardown for a quarantined runtime without releasing capacity."""
-        with self._condition:
-            records = self._runtimes.get(record.runtime.scale, [])
-            if record not in records or not record.quarantined:
-                raise ValueError("Runtime is not quarantined in this lease pool")
-        self.quarantine(record)
-
     def drain(self, scales: set[str] | None = None) -> None:
+        failures: list[str] = []
         with self._lock:
             selected = [
                 record
@@ -137,8 +131,11 @@ class RuntimeLeasePool:
             for record in selected:
                 try:
                     self.quarantine(record)
-                except Exception:
+                except Exception as exc:
                     logger.warning("Failed to drain quarantined runtime", exc_info=True)
+                    failures.append(f"{record.runtime.name}: {type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError("Simulator runtime drain failed: " + "; ".join(failures))
 
     def reap_orphans(self) -> None:
         now = time.monotonic()
@@ -204,9 +201,9 @@ class RuntimeLeasePool:
             topology_dir=str(worker.topology_dir),
             topology_id=worker.topology_id,
             influxdb_bucket=worker.bucket,
-            persist_results=False,
             fault_registry=self.fault_registry,
             scale_registry=self.registry,
+            runtime_worker=worker,
         )
         return WarmRuntime(runtime=runtime, runner=runner)
 
@@ -232,6 +229,8 @@ class RuntimeEpisodeBackend:
                 raise RuntimeError(f"Runtime recovery failed: {recovery}")
             if recovery:
                 runner.sleep(runner.post_recovery_wait_seconds)
+                self.record.baseline_signature = None
+                self.record.baseline = None
             errors = self._health_errors(self.record, refresh=True)
             if errors:
                 raise RuntimeError("Runtime health check failed: " + "; ".join(errors))
@@ -263,7 +262,6 @@ class RuntimeEpisodeBackend:
             self.finish(broken=False)
             raise
         except Exception:
-            self.finish(broken=True)
             raise
 
     def call_tool(self, action: ToolAction) -> dict[str, Any]:
@@ -281,17 +279,16 @@ class RuntimeEpisodeBackend:
             return
         requested_broken = broken
         failure = ""
+        delegate = self.delegate
         try:
-            if self.delegate is not None:
+            if delegate is not None:
                 try:
-                    self.delegate.finish(broken=broken)
+                    delegate.finish(broken=broken)
+                    if delegate.baseline_window is not None:
+                        record.baseline = dict(delegate.baseline_window)
                 except Exception as exc:
                     broken = True
                     failure = f"{type(exc).__name__}: {exc}"
-                health_errors = self._health_errors(record, refresh=True)
-                if health_errors:
-                    broken = True
-                    failure = "Runtime health check failed after recovery: " + "; ".join(health_errors)
         except Exception as exc:
             broken = True
             failure = f"{type(exc).__name__}: {exc}"
@@ -319,7 +316,7 @@ class RuntimeEpisodeBackend:
             int(reference["duration_seconds"]),
             baseline_window=reference,
         )
-        gate_errors = self._baseline_gate_errors(validation)
+        gate_errors = baseline_gate_errors(validation)
         if gate_errors:
             raise _BaselineNotReadyError("Healthy baseline is unavailable: " + "; ".join(gate_errors))
         self.record.baseline_signature = signature
@@ -329,36 +326,6 @@ class RuntimeEpisodeBackend:
             "end_time": validation["end_time"],
             "duration_seconds": validation["duration_seconds"],
         }
-
-    @staticmethod
-    def _baseline_gate_errors(observation: dict[str, Any]) -> list[str]:
-        """Validate a healthy window using rates that remain stable across scales."""
-        errors: list[str] = []
-        if observation.get("data_source_status") != "ok":
-            errors.append(f"data={observation.get('data_source_status')}")
-        if observation.get("coverage_status") != "complete":
-            errors.append(f"coverage={observation.get('coverage_status')}")
-
-        report = observation.get("pingmesh_metrics") or {}
-        summary = report.get("summary") or {}
-        quality = report.get("quality") or {}
-        current_paths = int(quality.get("current_paths_observed", 0) or 0)
-        if current_paths <= 0:
-            errors.append("current_paths_observed=0")
-            return errors
-
-        unreachable = int(summary.get("path_unreachable_events", 0) or 0)
-        packet_loss = int(summary.get("packet_loss_events", 0) or 0)
-        mtu_suspects = int(summary.get("mtu_or_fragmentation_events", 0) or 0)
-        if unreachable:
-            errors.append(f"path_unreachable_events={unreachable}")
-        loss_rate = packet_loss / current_paths
-        if loss_rate > 0.001:
-            errors.append(f"packet_loss_path_rate={loss_rate:.6f}")
-        mtu_rate = mtu_suspects / current_paths
-        if mtu_rate > 0.0002:
-            errors.append(f"mtu_suspect_path_rate={mtu_rate:.6f}")
-        return errors
 
     def _health_errors(self, record: WarmRuntime, *, refresh: bool) -> list[str]:
         worker = record.runtime.workers[0]

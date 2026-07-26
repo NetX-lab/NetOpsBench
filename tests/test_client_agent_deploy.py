@@ -134,7 +134,13 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
             assert "netopsbench-client-agent traffic" in command
             assert "/run/netopsbench/pingmesh.pid" in command
             assert "/run/netopsbench/traffic.pid" in command
-            assert 'while kill -0 "$pid"' in command
+            assert "for proc in /proc/[0-9]*" in command
+            assert 'readlink "/proc/$1/exe"' in command
+            assert 'if ! kill "$pid"' in command
+            assert "/usr/local/bin/netopsbench-client-agent (deleted)" in command
+            assert 'while same_live_pid_instance "$pid" "$start_time"' in command
+            assert "awk '{print $22}' \"/proc/$1/stat\"" in command
+            assert "awk '{print $3}' \"/proc/$1/stat\"" in command
             assert "python" not in command
             assert "iperf3" not in command
             assert ". /etc/netopsbench/client-agent.env" in command
@@ -164,6 +170,9 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
 
     result = deploy_mod.deploy_client_agents(
         str(topology_dir),
+        influxdb_token="test-token",
+        influxdb_org="test-org",
+        influxdb_bucket="test-bucket",
         parallelism=7,
     )
 
@@ -174,6 +183,7 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
     assert len(config["clients"]) == len(clients)
     assert "probes" not in config
     assert "NETOPSBENCH_INFLUXDB_URL=http://telegraf:8186" in env_path.read_text()
+    assert "NETOPSBENCH_INFLUXDB_BUCKET=test-bucket" in env_path.read_text()
     assert env_path.stat().st_mode & 0o777 == 0o600
     assert _RecordingExecutor.max_workers_seen == [7]
     assert len(_RecordingExecutor.submitted) == len(clients)
@@ -232,12 +242,50 @@ def test_deploy_is_all_or_nothing(tmp_path, monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="1/2.*client2"):
-        deploy_mod.deploy_client_agents(str(topology_dir))
+        deploy_mod.deploy_client_agents(
+            str(topology_dir),
+            influxdb_token="test-token",
+            influxdb_org="test-org",
+            influxdb_bucket="test-bucket",
+        )
 
     cleanup = [(container, command) for container, command in commands if "nohup" not in command]
     assert {container for container, _ in cleanup} == {f"clab-demo-{client}" for client in clients}
     assert all("readlink" in command and "kill -KILL" in command for _, command in cleanup)
     assert all("pkill" not in command for _, command in cleanup)
+
+
+def test_deploy_worker_exception_still_cleans_every_scheduled_client(tmp_path, monkeypatch):
+    topology_dir = tmp_path / "topology"
+    clients = _write_topology(topology_dir)
+    monkeypatch.setattr(
+        deploy_mod,
+        "_running_containers",
+        lambda: {f"clab-demo-{client}" for client in clients},
+    )
+    cleanup_containers: list[str] = []
+
+    def _start_client(**kwargs):
+        if kwargs["client_name"] == "client2":
+            raise subprocess.TimeoutExpired("docker exec", 30)
+        return kwargs["client_name"], True, ""
+
+    monkeypatch.setattr(deploy_mod, "_start_client", _start_client)
+    monkeypatch.setattr(
+        deploy_mod,
+        "_stop_client_agent",
+        lambda container: cleanup_containers.append(container),
+    )
+
+    with pytest.raises(RuntimeError, match="1/2.*client2"):
+        deploy_mod.deploy_client_agents(
+            str(topology_dir),
+            influxdb_token="test-token",
+            influxdb_org="test-org",
+            influxdb_bucket="test-bucket",
+        )
+
+    assert set(cleanup_containers) == {f"clab-demo-{client}" for client in clients}
 
 
 def test_readiness_allows_slow_start_within_fifteen_seconds(monkeypatch):
@@ -287,4 +335,9 @@ def test_custom_image_without_native_bind_is_rejected(tmp_path):
     _write_topology(topology_dir, include_bind=False)
 
     with pytest.raises(RuntimeError, match="configs/client-agent:/etc/netopsbench:ro"):
-        deploy_mod.deploy_client_agents(str(topology_dir))
+        deploy_mod.deploy_client_agents(
+            str(topology_dir),
+            influxdb_token="test-token",
+            influxdb_org="test-org",
+            influxdb_bucket="test-bucket",
+        )

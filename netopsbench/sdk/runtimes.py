@@ -153,15 +153,21 @@ class RuntimeManager:
             raise RuntimeProvisionError(str(exc)) from exc
 
     def list(self) -> builtins.list[RuntimePool]:
-        return [RuntimePool(runtime) for runtime in self._manager.list()]
+        try:
+            return [RuntimePool(runtime) for runtime in self._manager.list()]
+        except RuntimeProvisionError:
+            raise
+        except Exception as exc:
+            raise RuntimeProvisionError(str(exc)) from exc
 
     def get(self, name: str) -> RuntimePool | None:
-        runtime = self._manager.get(name)
-        return RuntimePool(runtime) if runtime is not None else None
-
-    def telemetry_prune(self, *, apply: bool = False) -> builtins.list[dict[str, str]]:
-        """List or delete expired workspace-owned telemetry buckets."""
-        return self._manager.telemetry_prune(apply=apply)
+        try:
+            runtime = self._manager.get(name)
+            return RuntimePool(runtime) if runtime is not None else None
+        except RuntimeProvisionError:
+            raise
+        except Exception as exc:
+            raise RuntimeProvisionError(str(exc)) from exc
 
 
 __all__ = ["RuntimeIdentity", "RuntimeManager", "RuntimePool"]

@@ -18,7 +18,6 @@ class _FakeRunner:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        self.results_dir = Path(".")
         self.evaluator = kwargs["evaluator"]
 
     def run_scenario(self, scenario, diagnosis_callback=None):
@@ -26,7 +25,6 @@ class _FakeRunner:
             "success": True,
             "scenario_id": scenario.scenario_id,
             "episode": {},
-            "persist_results": self.kwargs.get("persist_results"),
         }
 
     def close(self):
@@ -119,11 +117,11 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
         scale="xs",
         root_dir=tmp_path / "runtime",
         workers=[_worker(tmp_path, 1), _worker(tmp_path, 2)],
+        state="warm",
     )
     scenarios = [_scenario("scenario-1"), _scenario("scenario-2")]
 
     def score_episode(_scenario, scenario_result, evaluator, **_kwargs):
-        assert scenario_result["persist_results"] is False
         return [SimpleNamespace(score=1.0, evaluator_id=evaluator.id)]
 
     monkeypatch.setattr(dispatch, "ScenarioExecutor", _FakeRunner)
@@ -163,9 +161,39 @@ def test_execute_on_runtime_pool_rejects_scenario_scale_mismatch(tmp_path):
         scale="small",
         root_dir=tmp_path / "runtime",
         workers=[_worker(tmp_path, 1)],
+        state="warm",
     )
 
     with pytest.raises(ValueError, match="does not match runtime scale"):
+        execute_on_runtime_pool(
+            scenarios=[_scenario("scenario-1")],
+            runtime=runtime,
+            agent=SimpleNamespace(name="agent"),
+            raw_dir=tmp_path / "raw",
+        )
+
+
+def test_execute_on_runtime_pool_rejects_non_warm_or_quarantined_runtime(tmp_path):
+    runtime = RuntimePool(
+        id="runtime-1",
+        name="runtime-1",
+        scale="xs",
+        root_dir=tmp_path / "runtime",
+        workers=[_worker(tmp_path, 1)],
+        state="deployed",
+    )
+
+    with pytest.raises(RuntimeError, match="not eligible"):
+        execute_on_runtime_pool(
+            scenarios=[_scenario("scenario-1")],
+            runtime=runtime,
+            agent=SimpleNamespace(name="agent"),
+            raw_dir=tmp_path / "raw",
+        )
+
+    runtime.state = "warm"
+    runtime.metadata["quarantined"] = True
+    with pytest.raises(RuntimeError, match="quarantined=True"):
         execute_on_runtime_pool(
             scenarios=[_scenario("scenario-1")],
             runtime=runtime,
@@ -182,6 +210,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
             cleanup_success = scenario.id != "scenario-1"
             return {
                 "success": cleanup_success,
+                "case_valid": True,
                 "scenario_id": scenario.id,
                 "episode": {},
                 "cleanup": {"success": cleanup_success},
@@ -193,6 +222,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
         scale="xs",
         root_dir=tmp_path / "runtime",
         workers=[_worker(tmp_path, 1), _worker(tmp_path, 2)],
+        state="warm",
     )
     scenarios = [_scenario(f"scenario-{index}") for index in range(1, 5)]
 

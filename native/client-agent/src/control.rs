@@ -31,6 +31,8 @@ pub struct AgentStatus {
     pub bytes_sent: u64,
     pub reconnects: u64,
     pub protocol_errors: u64,
+    #[serde(skip)]
+    pub integrity_failed: bool,
     pub completed_cycles: u64,
     pub last_cycle_duration_ms: f64,
     pub max_cycle_duration_ms: f64,

@@ -89,24 +89,26 @@ def check_observability(
     syslog_marker: str = "",
     active_interfaces: Sequence[str] | None = None,
     min_active_coverage_ratio: float = 0.5,
+    require_pingmesh: bool = True,
 ) -> list[str]:
     """Run Pingmesh, interface, and syslog path checks."""
     errors: list[str] = []
     active = [item for item in active_interfaces or [] if item]
     topology_filter = _topology_filter(topology_id)
 
-    pingmesh_query = (
-        f'from(bucket: "{bucket}")\n'
-        f"  |> range(start: -10m)\n"
-        f'  |> filter(fn: (r) => r._measurement == "pingmesh")\n'
-        f"{topology_filter}"
-        f'  |> filter(fn: (r) => r._field == "rtt_p99")\n'
-        f"  |> last()\n"
-        f"  |> group()\n"
-        f"  |> limit(n: 1)\n"
-    )
-    if count_data_rows(query_runner(pingmesh_query)) <= 0:
-        errors.append("no recent pingmesh samples found in InfluxDB")
+    if require_pingmesh:
+        pingmesh_query = (
+            f'from(bucket: "{bucket}")\n'
+            f"  |> range(start: -10m)\n"
+            f'  |> filter(fn: (r) => r._measurement == "pingmesh")\n'
+            f"{topology_filter}"
+            f'  |> filter(fn: (r) => r._field == "rtt_p99")\n'
+            f"  |> last()\n"
+            f"  |> group()\n"
+            f"  |> limit(n: 1)\n"
+        )
+        if count_data_rows(query_runner(pingmesh_query)) <= 0:
+            errors.append("no recent pingmesh samples found in InfluxDB")
 
     if bgp_device:
         bgp_query = (

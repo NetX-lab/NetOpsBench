@@ -11,10 +11,10 @@ def ping_test(
     src: str,
     dst_ip: str,
     count: int = 5,
-    payload_size: int = None,
+    payload_size: int | None = None,
     dont_fragment: bool = False,
 ):
-    """Run ping test from any network device (client, leaf, or spine) to a destination IP."""
+    """Run ping test from any topology device to a destination IP."""
     return as_payload(
         get_toolkit().ping_test(
             src=src,

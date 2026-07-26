@@ -282,7 +282,14 @@ def test_loop_collection_spreads_device_starts_over_interval(monkeypatch, tmp_pa
         lambda _lab, device, _prefix, timestamp, _topology, *_args, **_kwargs: [f"{device} {timestamp}"],
     )
 
-    lines = _collect_bgp_lines_paced(metadata_file, interval_seconds=9, parallelism=3, stop_event=_StopEvent())
+    lines = []
+    _collect_bgp_lines_paced(
+        metadata_file,
+        interval_seconds=9,
+        parallelism=3,
+        stop_event=_StopEvent(),
+        on_lines=lines.extend,
+    )
 
     assert lines == ["spine1 9", "spine2 9", "leaf1 9"]
     assert waits == [3, 6]
@@ -306,7 +313,7 @@ def test_loop_collection_can_stream_completed_device_batches(monkeypatch, tmp_pa
     )
     emitted = []
 
-    lines = _collect_bgp_lines_paced(
+    _collect_bgp_lines_paced(
         metadata_file,
         interval_seconds=2,
         parallelism=2,
@@ -314,7 +321,6 @@ def test_loop_collection_can_stream_completed_device_batches(monkeypatch, tmp_pa
         on_lines=emitted.extend,
     )
 
-    assert lines == []
     assert emitted == ["spine1 9", "leaf1 9"]
 
 

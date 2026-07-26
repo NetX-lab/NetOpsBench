@@ -153,10 +153,30 @@ def deploy_worker_lab(worker: RuntimeIdentity, scale: str, registry: ScaleRegist
         raise RuntimeError(f"SONiC activation failed for: {', '.join(result.failed)}")
 
 
+def assert_worker_slot_available(worker: RuntimeIdentity) -> None:
+    """Reject globally conflicting Containerlab resources before deployment."""
+    docker = docker_prefix()
+    conflicts = _lab_container_names(docker, worker.lab_name)
+    if conflicts:
+        preview = ", ".join(conflicts[:8])
+        raise RuntimeError(f"Containerlab lab already exists for {worker.lab_name}: {preview}")
+    if _network_exists(docker, worker.mgmt_network):
+        raise RuntimeError(f"Management network already exists for {worker.lab_name}: {worker.mgmt_network}")
+    if _container_exists(docker, f"telegraf-{worker.lab_name}"):
+        raise RuntimeError(f"Telegraf container already exists for {worker.lab_name}")
+
+
 def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None = None) -> None:
     """Remove one worker's collector, sidecar, Containerlab lab, and network."""
     topology_dir = Path(worker.topology_dir)
-    _stop_collector(topology_dir / "bgp_collector.pid")
+    errors: list[str] = []
+    try:
+        _stop_collector(
+            topology_dir / "bgp_collector.pid",
+            topology_dir / "topology.json",
+        )
+    except Exception as exc:
+        errors.append(f"BGP collector cleanup failed: {type(exc).__name__}: {exc}")
     docker = docker_prefix()
     safe_run([*docker, "docker", "rm", "-f", f"telegraf-{worker.lab_name}"], check=False, timeout=60)
     safe_run(
@@ -175,13 +195,35 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
     if profile is not None and profile.containerlab_max_workers is not None:
         command.extend(["--max-workers", str(profile.containerlab_max_workers)])
     teardown_timeout = profile.deploy_timeout_seconds if profile is not None else 600
-    safe_run(command, cwd=topology_dir, check=False, timeout=teardown_timeout)
+    destroy = safe_run(
+        command,
+        cwd=topology_dir,
+        check=False,
+        timeout=teardown_timeout,
+    )
 
     names = _lab_container_names(docker, worker.lab_name)
     if names:
         safe_run([*docker, "docker", "rm", "-f", *names], check=False, timeout=300)
     _wait_for_lab_removal(docker, worker.lab_name)
-    safe_run([*docker, "docker", "network", "rm", worker.mgmt_network], check=False, timeout=60)
+    network_remove = safe_run(
+        [*docker, "docker", "network", "rm", worker.mgmt_network],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    if _container_exists(docker, f"telegraf-{worker.lab_name}"):
+        errors.append(f"telegraf container remained: telegraf-{worker.lab_name}")
+    if _network_exists(docker, worker.mgmt_network):
+        details = (network_remove.stderr or network_remove.stdout or "management network remained").strip()
+        errors.append(f"{worker.mgmt_network}: {details}")
+    if destroy.returncode != 0 and errors:
+        details = (destroy.stderr or destroy.stdout or "").strip()
+        errors.append(f"containerlab destroy failed ({destroy.returncode}): {details[-2000:]}")
+    if errors:
+        raise RuntimeError("Worker teardown incomplete: " + "; ".join(errors))
 
 
 def _teardown_profile(manifest_file: Path, registry: ScaleRegistry | None) -> ScaleProfile | None:
@@ -203,7 +245,7 @@ def _lab_container_names(docker: list[str], lab_name: str) -> list[str]:
             "ps",
             "-a",
             "--filter",
-            f"name=clab-{lab_name}-",
+            f"label=containerlab={lab_name}",
             "--format",
             "{{.Names}}",
         ],
@@ -213,6 +255,28 @@ def _lab_container_names(docker: list[str], lab_name: str) -> list[str]:
         timeout=60,
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _container_exists(docker: list[str], name: str) -> bool:
+    result = safe_run(
+        [*docker, "docker", "container", "inspect", name],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
+def _network_exists(docker: list[str], name: str) -> bool:
+    result = safe_run(
+        [*docker, "docker", "network", "inspect", name],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    return result.returncode == 0
 
 
 def _wait_for_lab_removal(
@@ -272,17 +336,64 @@ def worker_from_topology(topology_dir: str) -> RuntimeIdentity:
     )
 
 
-def _stop_collector(pid_file: Path) -> None:
+def _stop_collector(pid_file: Path, topology_file: Path) -> None:
     try:
         pid = int(pid_file.read_text(encoding="utf-8").strip())
-        os.kill(pid, signal.SIGTERM)
+        command_line = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
     except (FileNotFoundError, OSError, ValueError):
+        pid_file.unlink(missing_ok=True)
+        return
+    expected = "netopsbench.platform.observability.bgp_collector" in command_line and str(topology_file) in command_line
+    if not expected:
+        logger.warning(
+            "refusing to terminate stale collector pid %s for %s",
+            pid,
+            topology_file,
+        )
+        pid_file.unlink(missing_ok=True)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if not _process_is_running(pid):
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if not _process_is_running(pid):
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError(f"BGP collector process {pid} remained after SIGKILL")
+    except ProcessLookupError:
         pass
     pid_file.unlink(missing_ok=True)
 
 
+def _process_is_running(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+    except (FileNotFoundError, OSError, IndexError):
+        state = ""
+    if state == "Z":
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 __all__ = [
     "allocate_management_subnets",
+    "assert_worker_slot_available",
     "deploy_worker_lab",
     "management_subnet",
     "runtime_deploy_lock",

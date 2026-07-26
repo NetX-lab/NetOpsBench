@@ -26,9 +26,8 @@ def test_update_telegraf_config_uses_packaged_template_and_central_defaults(tmp_
     topo_path = topology_dir / "topology.json"
 
     output_path = tmp_path / "telegraf.conf"
-    rc = telegraf_mod.update_telegraf_config(str(topo_path), output_file=str(output_path))
+    telegraf_mod.update_telegraf_config(str(topo_path), output_file=str(output_path))
 
-    assert rc == 0
     rendered = output_path.read_text(encoding="utf-8")
     assert '"172.20.20.11:50051"' in rendered
     assert '"172.20.20.13:50051"' in rendered
@@ -90,9 +89,8 @@ def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path):
     generate_topology("xlarge", str(topology_dir))
     topology_file = topology_dir / "topology.json"
     output_path = tmp_path / "telegraf.conf"
-    rc = telegraf_mod.update_telegraf_config(str(topology_file), output_file=str(output_path))
+    telegraf_mod.update_telegraf_config(str(topology_file), output_file=str(output_path))
 
-    assert rc == 0
     rendered = output_path.read_text(encoding="utf-8")
     assert rendered.count("[[inputs.gnmi]]") == 2
     assert "# gNMI role: spine" in rendered
@@ -130,9 +128,8 @@ def test_update_telegraf_config_scopes_native_fat_tree_roles_from_artifacts(tmp_
 
     output_path = tmp_path / "telegraf.conf"
 
-    rc = telegraf_mod.update_telegraf_config(str(topology_dir / "topology.json"), output_file=str(output_path))
+    telegraf_mod.update_telegraf_config(str(topology_dir / "topology.json"), output_file=str(output_path))
 
-    assert rc == 0
     rendered = output_path.read_text(encoding="utf-8")
     assert rendered.count("[[inputs.gnmi]]") == 3
     assert "# gNMI role: core" in rendered
@@ -163,6 +160,9 @@ def test_grafana_configs_use_runtime_scoping_variables():
     assert "NETOPSBENCH_INFLUXDB_TOKEN=${NETOPSBENCH_INFLUXDB_TOKEN:-replace-me}" in compose_text
     assert "NETOPSBENCH_INFLUXDB_BUCKET=${NETOPSBENCH_INFLUXDB_BUCKET:-netopsbench}" in compose_text
     assert "NETOPSBENCH_INFLUXDB_URL=http://influxdb:8086" in compose_text
+    assert "DOCKER_INFLUXDB_INIT_RETENTION=168h" in compose_text
+    assert '"127.0.0.1:8086:8086"' in compose_text
+    assert '"127.0.0.1:3000:3000"' in compose_text
     assert "image: influxdb@sha256:" in compose_text
     assert "image: grafana/grafana@sha256:" in compose_text
     assert "image: influxdb:" not in compose_text
@@ -210,6 +210,9 @@ def test_packaged_observability_assets_enable_bgp_tail_input():
     assert "max_undelivered_metrics = 200000" in telegraf_text
     assert 'parser_type = "upstream"' in telegraf_text
     assert 'content_encoding = "gzip"' in telegraf_text
+    assert 'user = "admin"' not in telegraf_text
+    assert "in_fcs_error_packets" not in dashboard_text
+    assert 'drop(columns: [\\"user\\"])' not in dashboard_text
     assert "/var/log/pingmesh/metrics.log" not in telegraf_text
     assert "debug = false" in telegraf_text
     assert "[[processors.printer]]" not in telegraf_text
@@ -317,6 +320,27 @@ def test_native_client_image_has_no_python_or_iperf_runtime():
     assert DEFAULT_CLIENT_IMAGE.startswith("docker.io/yyyyyt123/netopsbench-client@sha256:")
     assert ":latest" not in DEFAULT_CLIENT_IMAGE
     assert DEFAULT_SONIC_VS_IMAGE.startswith("yyyyyt123/netopsbench-sonic-vs-202505-telemetry@sha256:")
+
+
+def test_client_image_build_context_excludes_local_secrets_and_artifacts():
+    entries = {
+        line.strip()
+        for line in Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert {".env", ".env.*", ".netopsbench*", "scenario_results"} <= entries
+
+
+def test_client_image_workflow_publishes_traceable_dockerhub_tags():
+    workflow = Path(".github/workflows/client-agent-image.yml").read_text(encoding="utf-8")
+
+    assert "yyyyyt123/netopsbench-client:latest" in workflow
+    assert "yyyyyt123/netopsbench-client:sha-${GITHUB_SHA}" in workflow
+    assert "org.opencontainers.image.revision=${{ github.sha }}" in workflow
+    assert "DOCKERHUB_USERNAME" in workflow
+    assert "DOCKERHUB_TOKEN" in workflow
+    assert "ghcr.io" not in workflow
 
 
 def test_native_management_contract_matches_rust_constants():

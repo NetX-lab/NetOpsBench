@@ -101,6 +101,62 @@ def test_cleanup_retry_stops_at_scale_timeout(monkeypatch):
     assert calls == ["sleep:1.0"]
 
 
+def test_cleanup_requires_shared_post_recovery_health(monkeypatch):
+    runner = _runner(active_faults=[])
+    clock = [0.0]
+    health_checks = 0
+    runner.runtime_worker = object()
+    runner.traffic_controller = SimpleNamespace(
+        active_flows={"flow": object()},
+        verify_active_flows=lambda: True,
+    )
+    runner.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+
+    def check_health(worker, **_kwargs):
+        nonlocal health_checks
+        assert worker is runner.runtime_worker
+        health_checks += 1
+        return ["network not converged"] if health_checks == 1 else []
+
+    monkeypatch.setattr(
+        executor_module,
+        "check_worker_health",
+        check_health,
+    )
+    monkeypatch.setattr(executor_module, "monotonic", lambda: clock[0])
+
+    cleanup = runner._cleanup_after_scenario(_scenario(), None)
+
+    assert cleanup["success"] is True
+    assert cleanup["status"] == "recovered_after_retry"
+    assert cleanup["attempts"] == 2
+    assert cleanup["errors"] == ["post_recovery: network not converged"]
+
+
+def test_cleanup_retries_background_traffic_until_scale_deadline(monkeypatch):
+    runner = _runner(active_faults=[])
+    clock = [0.0]
+    checks = 0
+
+    def verify():
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+
+    runner.traffic_controller = SimpleNamespace(
+        active_flows={"flow": object()},
+        verify_active_flows=verify,
+    )
+    runner.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    monkeypatch.setattr(executor_module, "monotonic", lambda: clock[0])
+
+    cleanup = runner._cleanup_after_scenario(_scenario(), None)
+
+    assert cleanup["success"] is True
+    assert cleanup["attempts"] == 2
+    assert checks == 2
+
+
 def test_executor_close_stops_suite_owned_traffic_once():
     runner = _runner(active_faults=[])
     calls = []

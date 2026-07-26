@@ -81,7 +81,7 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
     def _aggregate_anomalies(self, anomalies: list[Anomaly]) -> dict:
         by_src_leaf: dict[str, dict[str, int]] = {}
         by_dst_leaf: dict[str, dict[str, int]] = {}
-        keys = ("drop_count", "latency_spikes", "jitter_spikes", "path_unreachable", "mtu_suspects")
+        keys = ("drop_count", "latency_spikes", "path_unreachable", "mtu_suspects")
         for anomaly in anomalies:
             src_leaf = self._resolve_leaf(anomaly.src_leaf, anomaly.src_name)
             dst_leaf = self._resolve_leaf(anomaly.dst_leaf, anomaly.dst_name)
@@ -91,9 +91,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 key = "path_unreachable" if anomaly.type == "path_unreachable" else "drop_count"
                 by_src_leaf[src_leaf][key] += 1
                 by_dst_leaf[dst_leaf][key] += 1
-            elif anomaly.type == "jitter_spike":
-                by_src_leaf[src_leaf]["jitter_spikes"] += 1
-                by_dst_leaf[dst_leaf]["jitter_spikes"] += 1
             elif anomaly.type == "mtu_or_fragmentation_suspect":
                 by_src_leaf[src_leaf]["mtu_suspects"] += 1
                 by_dst_leaf[dst_leaf]["mtu_suspects"] += 1
@@ -119,8 +116,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         regular_loss = [item for item in anomalies if item.type == "packet_loss"]
         unreachable = [item for item in anomalies if item.type == "path_unreachable"]
         mtu = [item for item in anomalies if item.type == "mtu_or_fragmentation_suspect"]
-        jitter = [item for item in anomalies if item.type == "jitter_spike"]
-
         now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
         return {
             "timestamp": now_utc,
@@ -137,7 +132,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 "packet_loss_events": len(regular_loss),
                 "path_unreachable_events": len(unreachable),
                 "mtu_or_fragmentation_events": len(mtu),
-                "jitter_spikes": len(jitter),
             },
             "anomalies": [self._anomaly_to_dict(item) for item in anomalies],
             "returned_anomalies": len(anomalies),
@@ -172,47 +166,23 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         return selected
 
     def _merge_window_anomalies(self, analyses: list[tuple[str, list[Anomaly]]]) -> list[Anomaly]:
-        merged: dict[tuple[str, str, str], Anomaly] = {}
+        full: dict[tuple[str, str, str], Anomaly] = {}
         seen_windows: dict[tuple[str, str, str], set[str]] = {}
-        statistical_types = {"latency_spike", "jitter_spike"}
-        full_statistical: dict[tuple[str, str, str], Anomaly] = {}
         for window_name, anomalies in analyses:
             if window_name != "full":
                 continue
             for anomaly in anomalies:
-                if anomaly.type in statistical_types:
-                    key = (self._anomaly_family(anomaly), anomaly.src_ip, anomaly.dst_ip)
-                    full_statistical[key] = anomaly
-        severity_rank = {"low": 0, "medium": 1, "high": 2}
-        type_rank = {"packet_loss": 0, "path_unreachable": 1}
+                key = (self._anomaly_family(anomaly), anomaly.src_ip, anomaly.dst_ip)
+                full[key] = anomaly
+                seen_windows.setdefault(key, set()).add("full")
         for window_name, anomalies in analyses:
+            if window_name == "full":
+                continue
             for anomaly in anomalies:
                 key = (self._anomaly_family(anomaly), anomaly.src_ip, anomaly.dst_ip)
-                if anomaly.type in statistical_types:
-                    if key not in full_statistical:
-                        continue
+                if key in full:
                     seen_windows.setdefault(key, set()).add(window_name)
-                    merged.setdefault(key, full_statistical[key])
-                    continue
-                seen_windows.setdefault(key, set()).add(window_name)
-                current = merged.get(key)
-                candidate_rank = (
-                    type_rank.get(anomaly.type, 0),
-                    severity_rank.get(anomaly.severity, 0),
-                    anomaly.value,
-                )
-                current_rank = (
-                    (
-                        type_rank.get(current.type, 0),
-                        severity_rank.get(current.severity, 0),
-                        current.value,
-                    )
-                    if current
-                    else (-1, -1, -1.0)
-                )
-                if current is None or candidate_rank > current_rank:
-                    merged[key] = anomaly
-        for key, anomaly in merged.items():
+        for key, anomaly in full.items():
             windows = sorted(seen_windows[key])
             anomaly.windows_observed = windows
             if "early" in windows and "steady" in windows:
@@ -223,7 +193,40 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 anomaly.persistence = "steady_only"
             else:
                 anomaly.persistence = "full_window"
-        return sorted(merged.values(), key=lambda item: (item.type, item.src_ip, item.dst_ip))
+        return sorted(full.values(), key=lambda item: (item.type, item.src_ip, item.dst_ip))
+
+    def _query_covered_snapshot(self, start_time: str, end_time: str):
+        snapshot = self._query_snapshot(start_time, end_time)
+        if snapshot.status != "ok":
+            return snapshot, {
+                "status": "error",
+                "coverage_status": "error",
+                "error": snapshot.error or "query_failed",
+            }
+        coverage = self.summarize_coverage(snapshot.rows)
+        expected_seconds = int(coverage.get("expected_epoch_cycles", 0)) * int(
+            self._pingmesh_policy.get("cycle_interval_seconds", 1)
+        )
+        actual_seconds = max(
+            0.0,
+            (
+                datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                - datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            ).total_seconds(),
+        )
+        for _attempt in range(2):
+            if actual_seconds < expected_seconds or coverage.get("coverage_status") == "complete":
+                break
+            time.sleep(max(1, int(self._pingmesh_policy.get("cycle_interval_seconds", 1))))
+            snapshot = self._query_snapshot(start_time, end_time)
+            if snapshot.status != "ok":
+                return snapshot, {
+                    "status": "error",
+                    "coverage_status": "error",
+                    "error": snapshot.error or "query_failed",
+                }
+            coverage = self.summarize_coverage(snapshot.rows)
+        return snapshot, coverage
 
     def generate_windowed_anomaly_report(
         self,
@@ -233,31 +236,11 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         current_start: str,
         current_end: str,
         windows: list[dict],
+        include_internal_health: bool = False,
     ) -> dict:
-        baseline = self._query_snapshot(baseline_start, baseline_end)
-        current = self._query_snapshot(current_start, current_end)
+        baseline, baseline_coverage = self._query_covered_snapshot(baseline_start, baseline_end)
+        current, current_coverage = self._query_covered_snapshot(current_start, current_end)
         query_status = self._error_status(baseline, current)
-        if query_status["ok"]:
-            initial_coverage = self.summarize_coverage(current.rows)
-            expected_seconds = int(initial_coverage.get("expected_epoch_cycles", 0)) * int(
-                self._pingmesh_policy.get("cycle_interval_seconds", 1)
-            )
-            actual_seconds = max(
-                0.0,
-                (
-                    datetime.fromisoformat(current_end.replace("Z", "+00:00"))
-                    - datetime.fromisoformat(current_start.replace("Z", "+00:00"))
-                ).total_seconds(),
-            )
-            for _attempt in range(2):
-                coverage = self.summarize_coverage(current.rows)
-                if actual_seconds < expected_seconds or coverage.get("coverage_status") == "complete":
-                    break
-                time.sleep(max(1, int(self._pingmesh_policy.get("cycle_interval_seconds", 1))))
-                current = self._query_snapshot(current_start, current_end)
-                query_status = self._error_status(baseline, current)
-                if not query_status["ok"]:
-                    break
         if not query_status["ok"]:
             return self._build_report(
                 anomalies=[],
@@ -277,13 +260,25 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
             rows = self._slice_rows(current.rows, str(window["start_time"]), str(window["end_time"]))
             window_analyses.append((name, self.analyze_snapshot_rows(baseline.rows, rows).anomalies))
         anomalies = self._merge_window_anomalies(window_analyses)
-        return self._build_report(
+        report = self._build_report(
             anomalies=anomalies,
             baseline_start=baseline_start,
             baseline_end=baseline_end,
             current_start=current_start,
             current_end=current_end,
             query_status=query_status,
-            coverage=self.summarize_coverage(current.rows),
+            coverage=current_coverage,
             quality=full_analysis.quality,
         )
+        absolute_health = {
+            name: int(report["quality"].pop(name, 0) or 0)
+            for name in (
+                "absolute_unreachable_paths",
+                "absolute_packet_loss_paths",
+                "absolute_network_mtu_paths",
+            )
+        }
+        if include_internal_health:
+            report["_baseline_health"] = absolute_health
+            report["_baseline_coverage"] = baseline_coverage
+        return report

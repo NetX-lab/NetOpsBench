@@ -61,14 +61,24 @@ Scenarios are generated from the packaged canonical campaign spec. Running `neto
 
 Pingmesh compares an explicit healthy baseline with the fault observation
 window. A path is reported as a latency spike when its median `rtt_avg`
-increases by at least 20 ms, or when the median increases by at least 20 ms in
-two independent ECMP port batches. A peak or a single elevated port batch does
-not qualify. Packet-loss evidence likewise combines a strong per-path count
-with source/destination leaf concentration, so uniformly distributed
-background loss is not presented as a localized fault. These rules are shared
-by built-in and custom topologies.
+increases by at least 20 ms across the complete observation window. Peaks and
+individual ECMP port batches do not qualify. Packet loss requires both the
+configured percentage increase and at least three lost probes on that path;
+loss elsewhere in the same rack does not amplify weak evidence. Jitter remains
+available in the raw RTT samples but is not a formal anomaly. These rules are
+shared by built-in and custom topologies.
+
+The canonical packet-loss campaign applies 30% loss on one selected egress
+member. On redundant fabrics, ECMP can dilute the endpoint-visible symptom;
+the benchmark reports only the evidence actually measured and does not lower
+detector thresholds to force an anomaly. Large profiles use a three-second
+probe cycle so complete ECMP coverage is spread over 102 seconds (xlarge/K8)
+or 114 seconds (K12) instead of being emitted in a host-scheduling burst.
 
 Background traffic must start its complete topology-derived flow matrix before the baseline is captured. A partial matrix is an infrastructure-invalid case, rather than a degraded observation presented to the agent.
+The baseline is also invalid when coverage is incomplete, any path is
+unreachable, latency or network-MTU anomalies exist, or a local DF probe could
+not be sent.
 
 Each topology sends native Pingmesh batches through its topology-local
 Telegraf listener. Multiple warm topologies may therefore keep observability

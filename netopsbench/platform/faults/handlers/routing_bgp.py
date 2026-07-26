@@ -54,7 +54,7 @@ class BgpHandler:
             raise RuntimeError(f"Unable to determine local BGP ASN for target device: device={device}")
 
         commands = ["configure terminal", f"router bgp {local_as}"]
-        fault_info = {
+        fault_info: dict[str, Any] = {
             "type": "bgp_neighbor_misconfig",
             "device": device,
             "peer_ip": peer_ip,
@@ -91,12 +91,44 @@ class BgpHandler:
 
         commands.extend(["end", "write memory"])
         result = self._sonic.vtysh(device, commands)
-        fault_info["success"] = result.returncode == 0
-        fault_info["error"] = result.stderr if result.returncode != 0 else None
+        state_changed = False
+        if result.returncode == 0:
+            for _ in range(10):
+                if self._sonic.bgp_neighbor_state(device, peer_ip) is False:
+                    state_changed = True
+                    break
+                time.sleep(1)
+        fault_info["success"] = result.returncode == 0 and state_changed
+        fault_info["error"] = (
+            None if fault_info["success"] else result.stderr or f"BGP neighbor {peer_ip} remained established"
+        )
 
         if fault_info["success"]:
             self._tracker.track(fault_info)
+            return fault_info
 
+        rollback = self.recover_bgp_neighbor_misconfig(
+            device,
+            peer_ip,
+            misconfig_kind,
+            original_remote_as=fault_info.get("original_remote_as"),
+            original_password=fault_info.get("original_password"),
+            original_update_source=fault_info.get("original_update_source"),
+            wrong_remote_as=fault_info.get("wrong_remote_as"),
+            bad_update_source=fault_info.get("bad_update_source"),
+        )
+        if not rollback.get("recovered"):
+            error = "; ".join(
+                filter(
+                    None,
+                    [
+                        str(fault_info.get("error") or ""),
+                        str(rollback.get("error") or "BGP compensation failed"),
+                    ],
+                )
+            )
+            fault_info["error"] = error
+            self._tracker.track_residual(fault_info, error)
         return fault_info
 
     def recover_bgp_neighbor_misconfig(
@@ -140,12 +172,19 @@ class BgpHandler:
 
         commands.extend(["end", "write memory"])
         result = self._sonic.vtysh(device, commands)
-
-        self._tracker.remove_faults(
-            lambda fault: fault["type"] == "bgp_neighbor_misconfig"
-            and fault["device"] == device
-            and fault.get("peer_ip") == peer_ip
-        )
+        established = False
+        if result.returncode == 0:
+            for _ in range(30):
+                if self._sonic.bgp_neighbor_state(device, peer_ip) is True:
+                    established = True
+                    break
+                time.sleep(1)
+        if established:
+            self._tracker.remove_faults(
+                lambda fault: fault["type"] == "bgp_neighbor_misconfig"
+                and fault["device"] == device
+                and fault.get("peer_ip") == peer_ip
+            )
 
         return {
             "type": "bgp_neighbor_misconfig",
@@ -153,6 +192,6 @@ class BgpHandler:
             "peer_ip": peer_ip,
             "misconfig_kind": misconfig_kind,
             "wrong_remote_as": wrong_remote_as,
-            "recovered": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "recovered": established,
+            "error": None if established else result.stderr or f"BGP neighbor {peer_ip} did not re-establish",
         }

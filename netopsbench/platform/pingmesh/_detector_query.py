@@ -18,6 +18,7 @@ _SNAPSHOT_FIELDS = (
     "df_packets_sent",
     "df_packets_lost",
     "df_mtu_drops",
+    "local_probe_errors",
     "probe_cycle",
     "destination_batch_index",
     "port_batch_index",
@@ -37,6 +38,14 @@ class SnapshotQueryResult:
 
 
 class DetectorQueryMixin:
+    bucket: str
+    influxdb_url: str
+    token: str
+    org: str
+    topology_id: str | None
+    _pingmesh_clients: list[str]
+    client_to_leaf: dict[str, str]
+
     @staticmethod
     def _safe_flux_string(value: str) -> str:
         return str(value).replace("\\", "\\\\").replace('"', '\\"')

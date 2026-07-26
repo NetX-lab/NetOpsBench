@@ -27,18 +27,18 @@ profiles:
   - name: xlarge
     topology: {family: clos, spines: 16, leafs: 128, clients_per_leaf: 1}
     management: {prefix: 23, subnet_base: 180}
-    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 2}
+    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 3}
     traffic: {max_pps_per_client: 100}
     runtime: {deploy_timeout_seconds: 3600, worker_deploy_parallelism: 1, health_timeout_seconds: 240, containerlab_max_workers: 16}
   - name: fat-tree-k8
     topology: {family: fat-tree, k: 8, clients_per_edge: 4}
     management: {prefix: 24, subnet_base: 200}
-    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 2}
+    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 3}
     traffic: {max_pps_per_client: 100}
     runtime: {deploy_timeout_seconds: 3600, worker_deploy_parallelism: 1, health_timeout_seconds: 240, containerlab_max_workers: 1}
   - name: fat-tree-k12
     topology: {family: fat-tree, k: 12, clients_per_edge: 2}
     management: {prefix: 23, subnet_base: 220}
-    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 2}
+    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 3}
     traffic: {max_pps_per_client: 50}
     runtime: {deploy_timeout_seconds: 5400, worker_deploy_parallelism: 1, health_timeout_seconds: 300, containerlab_max_workers: 1}

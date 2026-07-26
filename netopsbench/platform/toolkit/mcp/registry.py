@@ -77,7 +77,7 @@ def validate_tool_call(name: str, arguments: dict[str, Any]) -> bool:
             return False
         if key in arguments:
             try:
-                TypeAdapter(hints.get(key, Any)).validate_python(arguments[key])
+                TypeAdapter(hints.get(key, Any)).validate_python(arguments[key], strict=True)
             except ValidationError:
                 return False
     return True

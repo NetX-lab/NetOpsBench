@@ -31,11 +31,33 @@ def _healthy_scenario() -> ScenarioSpec:
     )
 
 
+def _healthy_observation(duration: int) -> dict:
+    return {
+        "start_time": "2026-01-01T00:00:00Z",
+        "end_time": "2026-01-01T00:01:00Z",
+        "duration_seconds": duration,
+        "pingmesh_metrics": {
+            "summary": {
+                "total_anomalies": 0,
+                "packet_loss_events": 0,
+                "path_unreachable_events": 0,
+                "latency_spikes": 0,
+                "mtu_or_fragmentation_events": 0,
+            },
+            "quality": {"current_paths_observed": 2, "local_df_mtu_drops": 0},
+            "anomalies": [],
+        },
+        "anomalies_detected": False,
+        "coverage_status": "complete",
+        "data_source_status": "ok",
+        "_baseline_coverage": {"status": "ok", "coverage_status": "complete"},
+    }
+
+
 def test_healthy_scenario_observes_and_diagnoses(monkeypatch):
     runner = ScenarioExecutor(
         topology_metadata=_metadata(),
         sleep_fn=lambda _seconds: None,
-        persist_results=False,
     )
     monkeypatch.setattr(runner, "_setup_traffic", lambda scale, profile: {"ok": True})
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
@@ -43,14 +65,7 @@ def test_healthy_scenario_observes_and_diagnoses(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_wait_and_observe",
-        lambda duration, **_kwargs: {
-            "start_time": "2026-01-01T00:00:00Z",
-            "end_time": "2026-01-01T00:01:00Z",
-            "duration_seconds": duration,
-            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
-            "anomalies_detected": False,
-            "data_source_status": "ok",
-        },
+        lambda duration, **_kwargs: _healthy_observation(duration),
     )
     calls = []
 
@@ -69,7 +84,6 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
     runner = ScenarioExecutor(
         topology_metadata=_metadata(),
         sleep_fn=lambda _seconds: None,
-        persist_results=False,
     )
     monkeypatch.setattr(runner, "_setup_traffic", lambda scale, profile: {"ok": True})
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
@@ -77,14 +91,7 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
     monkeypatch.setattr(
         runner,
         "_wait_and_observe",
-        lambda duration, **_kwargs: {
-            "start_time": "2026-01-01T00:00:00Z",
-            "end_time": "2026-01-01T00:01:00Z",
-            "duration_seconds": duration,
-            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
-            "anomalies_detected": False,
-            "data_source_status": "ok",
-        },
+        lambda duration, **_kwargs: _healthy_observation(duration),
     )
 
     def fail(_payload, **_kwargs):
@@ -102,7 +109,6 @@ def test_invalid_diagnosis_schema_is_protocol_outcome_zero(monkeypatch):
     runner = ScenarioExecutor(
         topology_metadata=_metadata(),
         sleep_fn=lambda _seconds: None,
-        persist_results=False,
     )
     monkeypatch.setattr(runner, "_setup_traffic", lambda scale, profile: {"ok": True})
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
@@ -110,11 +116,7 @@ def test_invalid_diagnosis_schema_is_protocol_outcome_zero(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_wait_and_observe",
-        lambda duration, **_kwargs: {
-            "duration_seconds": duration,
-            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
-            "data_source_status": "ok",
-        },
+        lambda duration, **_kwargs: _healthy_observation(duration),
     )
 
     result = runner.run_scenario(

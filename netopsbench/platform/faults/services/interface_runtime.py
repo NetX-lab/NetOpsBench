@@ -76,20 +76,20 @@ class InterfaceRuntime:
         container = self._ctx.container_names.get(device)
         if not container:
             raise ValueError(f"Unknown device: {device}")
+        result = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", sonic_interface])
+        live_mtu = self.parse_link_mtu(result.stdout if result.returncode == 0 else "")
+        if live_mtu is not None:
+            return live_mtu
+
         result = self._cmd.docker_exec(
             container, ["sonic-db-cli", "CONFIG_DB", "hget", f"PORT|{sonic_interface}", "mtu"]
         )
         raw = (result.stdout or "").strip()
         if self.is_valid_sonic_mtu(raw):
             return int(raw)
-
-        result = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", sonic_interface])
-        live_mtu = self.parse_link_mtu(result.stdout if result.returncode == 0 else "")
-        if live_mtu is not None:
-            return live_mtu
         return self.get_common_port_mtu(device, exclude_interface=sonic_interface)
 
     def resolve_recovery_mtu(self, device: str, sonic_interface: str, original_mtu: int | None) -> int:
-        if self.is_valid_sonic_mtu(original_mtu):
-            return int(original_mtu)
+        if original_mtu is not None and self.is_valid_sonic_mtu(original_mtu):
+            return original_mtu
         return self.get_common_port_mtu(device, exclude_interface=sonic_interface)

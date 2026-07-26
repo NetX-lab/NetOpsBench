@@ -14,16 +14,17 @@ from pathlib import Path
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.runtime import RuntimeIdentity
-from netopsbench.platform.observability.bgp_collector import DEFAULT_BGP_POLL_INTERVAL_SECONDS
+from netopsbench.platform.observability.bgp_collector import (
+    DEFAULT_BGP_COLLECTOR_PARALLELISM,
+    DEFAULT_BGP_POLL_INTERVAL_SECONDS,
+)
 from netopsbench.platform.observability.influxdb import (
     DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
     ensure_bucket,
 )
-from netopsbench.platform.observability.telegraf import update_telegraf_config
+from netopsbench.platform.observability.telegraf import INTERNAL_INFLUXDB_URL, update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-BGP_COLLECTOR_PARALLELISM = 16
-INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
 TELEGRAF_IMAGE = "telegraf@sha256:9768f82ebf8bde6da0d61ba220c00161750740c3e322b507a5982b89bbfca99a"
 logger = get_logger(__name__)
 
@@ -162,7 +163,7 @@ def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
         "--interval",
         str(DEFAULT_BGP_POLL_INTERVAL_SECONDS),
         "--parallelism",
-        str(BGP_COLLECTOR_PARALLELISM),
+        str(DEFAULT_BGP_COLLECTOR_PARALLELISM),
         "--topology-id",
         worker.topology_id,
         "--influxdb-bucket",

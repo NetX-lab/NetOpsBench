@@ -3,7 +3,7 @@ services:
     image: influxdb@sha256:b8d940ca9376f85118260f5b6bd236b8a00b1749c3350c5578d4cde8e27f31f2
     container_name: influxdb
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     volumes:
       - influxdb-data:/var/lib/influxdb2
       - influxdb-config:/etc/influxdb2
@@ -13,13 +13,14 @@ services:
       - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
       - DOCKER_INFLUXDB_INIT_ORG=${NETOPSBENCH_INFLUXDB_ORG:-netopsbench}
       - DOCKER_INFLUXDB_INIT_BUCKET=${NETOPSBENCH_INFLUXDB_BUCKET:-netopsbench}
+      - DOCKER_INFLUXDB_INIT_RETENTION=168h
       - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${NETOPSBENCH_INFLUXDB_TOKEN:-replace-me}
 
   grafana:
     image: grafana/grafana@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
     container_name: grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning

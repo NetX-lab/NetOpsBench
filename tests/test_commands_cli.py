@@ -252,41 +252,8 @@ def test_cli_runtime_teardown_not_found(tmp_path, monkeypatch, capsys):
     assert "runtime not found: ghost" in out
 
 
-def test_cli_runtime_telemetry_prune_is_dry_run_unless_apply(tmp_path, monkeypatch, capsys):
-    from datetime import UTC, datetime
-
-    from netopsbench.platform.observability.ownership import ManagedBucketRegistry
-    from netopsbench.platform.runtime.manager import RuntimeManager
-
-    manager = RuntimeManager(workspace=tmp_path)
-    registry = ManagedBucketRegistry(manager.telemetry_ownership_file)
-    registry.record_created("managed-old", "retired-runtime", now=datetime(2020, 1, 1, tzinfo=UTC))
-    registry.retire(["managed-old"], now=datetime(2020, 1, 2, tzinfo=UTC))
-    deleted = []
-    monkeypatch.setattr(
-        "netopsbench.platform.runtime.manager.delete_bucket",
-        lambda _url, _token, bucket: deleted.append(bucket) or True,
-    )
-
-    monkeypatch.setattr(
-        "sys.argv",
-        ["netopsbench", "--workspace", str(tmp_path), "runtime", "telemetry-prune"],
-    )
-    assert main() == 0
-    assert "would delete: managed-old" in capsys.readouterr().out
-    assert deleted == []
-
-    monkeypatch.setattr(
-        "sys.argv",
-        ["netopsbench", "--workspace", str(tmp_path), "runtime", "telemetry-prune", "--apply"],
-    )
-    assert main() == 0
-    assert "deleted: managed-old" in capsys.readouterr().out
-    assert deleted == ["managed-old"]
-
-
 def test_cli_result_list(tmp_path, monkeypatch, capsys):
-    results_dir = tmp_path / "scenario_results" / "suite1" / "run-0001"
+    results_dir = tmp_path / ".netopsbench" / "runs" / "run-0001"
     results_dir.mkdir(parents=True)
     (results_dir / "report.json").write_text(
         '{"id": "run:run-0001", "summary": {"status": "completed", "total_cases": 3, "average_score": 0.75, "completed_at": "2026-04-12T00:00:00Z"}, "scenario_summaries": [], "detailed_results": [], "artifact_paths": {}, "raw": {}}',
@@ -303,7 +270,7 @@ def test_cli_result_list(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_result_list_empty(tmp_path, monkeypatch, capsys):
-    (tmp_path / "scenario_results").mkdir()
+    (tmp_path / ".netopsbench" / "runs").mkdir(parents=True)
     monkeypatch.setattr("sys.argv", ["netopsbench", "--workspace", str(tmp_path), "result", "list"])
     assert main() == 0
     out = capsys.readouterr().out

@@ -240,13 +240,10 @@ def _render_into(plan: FabricPlan, root: Path) -> dict[str, Any]:
         "metadata_file": str(metadata_path),
         "client_agent_config_file": str(client_agent_config),
         "config_files": config_paths,
-        "startup_config_files": config_paths,
         "sonic_start_wrapper_file": str(sonic_start_wrapper),
         "frr_config_files": frr_paths,
         "metadata": plan.manifest.model_dump(mode="json"),
         "agent_topology": plan.manifest.to_agent_topology(),
-        "manifest": plan.manifest,
-        "plan": plan,
     }
 
 
@@ -282,7 +279,7 @@ def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, An
         "sonic_start_wrapper_file",
     ):
         result[key] = str(root) + str(result[key])[len(staged_prefix) :]
-    for key in ("config_files", "startup_config_files", "frr_config_files"):
+    for key in ("config_files", "frr_config_files"):
         result[key] = [str(root) + str(path)[len(staged_prefix) :] for path in result[key]]
     return result
 

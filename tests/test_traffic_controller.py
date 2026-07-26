@@ -368,3 +368,17 @@ def test_setup_traffic_cleans_partial_matrix_and_fails_before_baseline(tmp_path,
 
     assert controller_instances[0].stop_calls == 1
     assert runner.traffic_controller is None
+
+    class CompleteController(PartialController):
+        def start_matrix(self, flows):
+            self.last_start_stats = SimpleNamespace(to_dict=lambda: {"started_flow_count": len(flows)})
+            return [flow.flow_id for flow in flows]
+
+    monkeypatch.setattr(scenario_execution_mod, "TrafficController", CompleteController)
+    result = scenario_execution_mod.setup_traffic(runner, "xs", "standard")
+
+    assert result["stats"]["total_flows"] == 2
+    assert result["runtime"] == {"started_flow_count": 2}
+    assert len(result["matrix_digest"]) == 64
+    assert "flows" not in result
+    assert "estimated_switch_pps" not in result["stats"]

@@ -19,7 +19,6 @@ from netopsbench.platform.faults.services.command_runner import CommandRunner
 from netopsbench.platform.faults.services.interface_runtime import InterfaceRuntime
 from netopsbench.platform.faults.services.routing_runtime import RoutingRuntime
 from netopsbench.platform.faults.services.sonic_runtime import SonicRuntime
-from netopsbench.platform.faults.services.topology_runtime import TopologyRuntime
 from netopsbench.platform.faults.services.tracking import FaultTracker
 from netopsbench.platform.faults.specs import FaultSpecRegistry, create_fault_registry
 from netopsbench.platform.topology.topology_utils import (
@@ -54,14 +53,13 @@ class FaultInjector:
                     "Pass topology_metadata or a generated topology directory."
                 )
             manifest = load_topology_manifest(metadata_file)
-        self._ctx = FaultRuntimeContext(manifest=manifest, clab_dir=resolved_clab_dir)
+        self._ctx = FaultRuntimeContext(manifest=manifest)
 
         # Build services (order matters — each layer depends on previous ones)
         self._cmd = CommandRunner()
         self._sonic = SonicRuntime(self._cmd, self._ctx)
         self._iface = InterfaceRuntime(self._cmd, self._sonic, self._ctx)
-        self._topo_rt = TopologyRuntime(self._sonic, self._iface, self._ctx)
-        self._routing = RoutingRuntime(self._topo_rt, self._ctx)
+        self._routing = RoutingRuntime(self._sonic, self._ctx)
         self._tracker = FaultTracker()
 
         # Build handlers
@@ -70,24 +68,12 @@ class FaultInjector:
         self._bgp = BgpHandler(self._sonic, self._routing, self._tracker, self._ctx)
         self._static_route = StaticRouteHandler(self._sonic, self._tracker, self._ctx)
         self._route_policy = RoutePolicyHandler(self._sonic, self._routing, self._tracker, self._ctx)
-        self._system = SystemHandler(self._cmd, self._sonic, self._iface, self._topo_rt, self._tracker, self._ctx)
+        self._system = SystemHandler(self._cmd, self._sonic, self._tracker, self._ctx)
         self._acl = AclHandler(self._cmd, self._sonic, self._routing, self._tracker, self._ctx)
-
-    @property
-    def topology_name(self) -> str:
-        return self._ctx.topology_name
 
     @property
     def container_names(self) -> dict[str, str]:
         return self._ctx.container_names
-
-    @property
-    def topology_metadata(self) -> dict[str, Any]:
-        return self._ctx.topology_metadata
-
-    @property
-    def clab_dir(self) -> str:
-        return str(self._ctx.clab_dir)
 
     @property
     def active_faults(self) -> list:
@@ -108,11 +94,14 @@ class FaultInjector:
     def inject_link_down(self, device: str, interface: str) -> dict[str, Any]:
         return self._link.inject_link_down(device, interface)
 
-    def recover_link_down(self, device: str, interface: str) -> dict[str, Any]:
-        return self._link.recover_link_down(device, interface)
+    def recover_link_down(self, device: str, interface: str, **kwargs) -> dict[str, Any]:
+        return self._link.recover_link_down(device, interface, **kwargs)
 
     def inject_link_flapping(self, device: str, interface: str, **kwargs) -> dict[str, Any]:
         return self._link.inject_link_flapping(device, interface, **kwargs)
+
+    def recover_link_flapping(self, device: str, interface: str, **kwargs) -> dict[str, Any]:
+        return self._link.recover_link_flapping(device, interface, **kwargs)
 
     # ------------------------------------------------------------------
     # Impairment fault delegation
@@ -127,7 +116,7 @@ class FaultInjector:
     def inject_packet_corruption(self, device: str, interface: str, corruption_pct: float = 5.0) -> dict[str, Any]:
         return self._impairment.inject_packet_corruption(device, interface, corruption_pct=corruption_pct)
 
-    def inject_packet_loss(self, device: str, interface: str, loss_pct: float = 10.0) -> dict[str, Any]:
+    def inject_packet_loss(self, device: str, interface: str, loss_pct: float = 30.0) -> dict[str, Any]:
         return self._impairment.inject_packet_loss(device, interface, loss_pct=loss_pct)
 
     def inject_high_latency(self, device: str, interface: str, latency_ms: float = 100.0) -> dict[str, Any]:
@@ -212,8 +201,8 @@ class FaultInjector:
     def inject_device_down(self, device: str) -> dict[str, Any]:
         return self._system.inject_device_down(device)
 
-    def recover_device_down(self, device: str, interfaces: list[str] | None = None) -> dict[str, Any]:
-        return self._system.recover_device_down(device, interfaces=interfaces)
+    def recover_device_down(self, device: str) -> dict[str, Any]:
+        return self._system.recover_device_down(device)
 
     # ------------------------------------------------------------------
     # Recovery / query

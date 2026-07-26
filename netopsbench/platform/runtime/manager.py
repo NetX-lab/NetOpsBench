@@ -114,21 +114,48 @@ class RuntimePool:
                 RuntimeLifecycle(scale_registry=self.scale_registry).run("teardown", self)
             except RuntimeLifecycleError as exc:
                 self.stage_results["teardown"] = exc.result
+                self.state = "cleanup_failed"
+                self.metadata["quarantined"] = True
+                self.metadata["cleanup_error"] = exc.result.error or str(exc)
+                self.metadata["cleanup_pending_buckets"] = ManagedBucketRegistry(
+                    self.telemetry_ownership_file
+                ).active_for_runtime(self.id)
                 self._write_metadata()
                 raise
+            registry = ManagedBucketRegistry(self.telemetry_ownership_file)
             pending = self.metadata.get("cleanup_pending_buckets")
             if self.state == "cleanup_failed" and isinstance(pending, list):
                 self._provision_created_buckets = [str(bucket) for bucket in pending]
-                self._delete_provision_created_buckets()
-                self.metadata.pop("cleanup_pending_buckets", None)
             else:
-                ManagedBucketRegistry(self.telemetry_ownership_file).retire([worker.bucket for worker in self.workers])
-        self.state = "torn_down"
-        metadata_path = self.root_dir / "runtime.json"
-        if metadata_path.exists():
-            metadata_path.unlink()
+                self._provision_created_buckets = registry.active_for_runtime(self.id)
+            try:
+                self._delete_provision_created_buckets()
+            except Exception as exc:
+                self.state = "cleanup_failed"
+                self.metadata["quarantined"] = True
+                self.metadata["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                self.metadata["cleanup_pending_buckets"] = list(self._provision_created_buckets)
+                self._write_metadata()
+                raise
+            self.metadata.pop("cleanup_pending_buckets", None)
+
         if self.root_dir.exists():
             shutil.rmtree(self.root_dir, ignore_errors=True)
+        if self.root_dir.exists():
+            safe_run(
+                ["sudo", "-n", "rm", "-rf", str(self.root_dir)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        if self.root_dir.exists():
+            self.state = "cleanup_failed"
+            self.metadata["quarantined"] = True
+            self.metadata["cleanup_error"] = f"runtime directory remained after teardown: {self.root_dir}"
+            self._write_metadata()
+            raise RuntimeError(str(self.metadata["cleanup_error"]))
+        self.state = "torn_down"
         return self
 
     def _delete_provision_created_buckets(self) -> None:
@@ -163,7 +190,13 @@ class RuntimeManager:
         worker_count = max(1, int(workers))
         runtime_name = str(name or f"{scale}-{worker_count}-{uuid.uuid4().hex[:8]}").strip()
         runtime_root = Path(root_dir) if root_dir is not None else (self.runtime_root_dir / runtime_name)
-        runtime_root.mkdir(parents=True, exist_ok=True)
+        runtime_root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            runtime_root.mkdir()
+        except FileExistsError as exc:
+            raise RuntimeMetadataError(
+                f"Runtime path already exists; attach or teardown it before reusing the name: {runtime_root}"
+            ) from exc
         logs_dir = runtime_root / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         worker_items: list[RuntimeIdentity] = []
@@ -204,7 +237,8 @@ class RuntimeManager:
         except Exception as provision_error:
             logger.warning("Worker deployment failed; tearing down partial state", exc_info=True)
             try:
-                teardown_workers(runtime.workers, self.scale_registry)
+                if runtime.metadata.get("deployment_started"):
+                    teardown_workers(runtime.workers, self.scale_registry)
             except Exception as cleanup_error:
                 logger.warning("Best-effort teardown_workers failed during cleanup", exc_info=True)
                 runtime.state = "cleanup_failed"
@@ -244,6 +278,21 @@ class RuntimeManager:
                 logger.warning("sudo rm of runtime root failed during cleanup", exc_info=True)
             if runtime.root_dir.exists():
                 shutil.rmtree(runtime.root_dir, ignore_errors=True)
+            if runtime.root_dir.exists():
+                residual_cleanup_error = RuntimeError(
+                    f"runtime directory remained after provisioning cleanup: {runtime.root_dir}"
+                )
+                runtime.state = "cleanup_failed"
+                runtime.metadata["quarantined"] = True
+                runtime.metadata["cleanup_error"] = str(residual_cleanup_error)
+                try:
+                    runtime._write_metadata()
+                except Exception:
+                    logger.warning("Unable to persist provisioning cleanup failure", exc_info=True)
+                raise RuntimeError(
+                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
+                    f"{provision_error}) and cleanup failed ({residual_cleanup_error})"
+                ) from residual_cleanup_error
             raise
         runtime.metadata["provisioning_mode"] = "worker_pool"
         runtime.state = "warm"
@@ -324,16 +373,6 @@ class RuntimeManager:
             if runtime.name == name:
                 return runtime
         return None
-
-    def telemetry_prune(self, *, apply: bool = False) -> builtins.list[dict[str, str]]:
-        registry = ManagedBucketRegistry(self.telemetry_ownership_file)
-        eligible = registry.eligible()
-        if not apply:
-            return eligible
-        for item in eligible:
-            delete_bucket(config.influxdb_url, config.influxdb_token, item["bucket"])
-            registry.mark_deleted(item["bucket"])
-        return eligible
 
 
 __all__ = ["RuntimeManager", "RuntimeMetadataError", "RuntimePool"]

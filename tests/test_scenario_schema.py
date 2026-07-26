@@ -50,7 +50,7 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
         destination_batch_size=16,
         rtt_port_pool_size=16,
         rtt_ports_per_cycle=4,
-        cycle_interval_seconds=2,
+        cycle_interval_seconds=3,
     )
     manifest = TopologyManifest.model_validate(
         {
@@ -64,9 +64,10 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
         }
     )
 
-    assert scenario_generator.diagnostic_observation_duration(20, manifest) == 77
-    assert scenario_generator.diagnostic_observation_duration(30, manifest) == 77
-    assert scenario_generator.diagnostic_observation_duration(90, manifest) == 90
+    assert scenario_generator.diagnostic_observation_duration(20, manifest) == 114
+    assert scenario_generator.diagnostic_observation_duration(30, manifest) == 114
+    assert scenario_generator.diagnostic_observation_duration(90, manifest) == 114
+    assert scenario_generator.diagnostic_observation_duration(120, manifest) == 120
 
     xlarge = manifest.model_copy(
         update={
@@ -75,11 +76,11 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
                 destination_batch_size=16,
                 rtt_port_pool_size=16,
                 rtt_ports_per_cycle=4,
-                cycle_interval_seconds=2,
+                cycle_interval_seconds=3,
             ),
         }
     )
-    assert scenario_generator.diagnostic_observation_duration(30, xlarge) == 69
+    assert scenario_generator.diagnostic_observation_duration(30, xlarge) == 102
 
 
 @pytest.mark.parametrize(
@@ -89,9 +90,9 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
         ("small", 7),
         ("medium", 8),
         ("large", 9),
-        ("xlarge", 69),
-        ("fat-tree-k8", 69),
-        ("fat-tree-k12", 77),
+        ("xlarge", 102),
+        ("fat-tree-k8", 102),
+        ("fat-tree-k12", 114),
     ],
 )
 def test_builtin_scale_complete_windows_are_topology_derived(scale, expected_window):
@@ -120,6 +121,19 @@ def test_custom_pingmesh_policy_derives_complete_window_without_scale_name():
     assert policy.coverage_epoch_seconds(41) == 48
     assert policy.coverage_grace_seconds() == 6
     assert policy.complete_window_seconds(41) == 54
+
+
+def test_executor_recovery_wait_covers_one_pingmesh_cycle(tmp_path):
+    metadata = _minimal_canonical_topology()
+    metadata["pingmesh"]["cycle_interval_seconds"] = 3
+
+    runner = ScenarioExecutor(
+        topology_dir=str(tmp_path),
+        topology_metadata=metadata,
+        post_recovery_wait_seconds=1,
+    )
+
+    assert runner.post_recovery_wait_seconds == 3
 
 
 def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
@@ -332,7 +346,7 @@ def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
             fault_type="link_down",
             target_device="agg1",
             target_interface="Ethernet0",
-            duration_seconds=69,
+            duration_seconds=102,
         ),
     )
 
@@ -528,16 +542,14 @@ def test_scenario_runner_prefers_parameters_over_metadata(monkeypatch):
     }
 
 
-def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_path, monkeypatch):
+def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
     events = []
     runner = ScenarioExecutor(
         topology_dir="lab-topology",
         topology_metadata=_minimal_canonical_topology(),
         minimum_baseline_seconds=3,
         sleep_fn=lambda _seconds: None,
-        persist_results=False,
     )
-    runner.results_dir = tmp_path
 
     def setup_traffic(scale, profile):
         events.append("traffic_ready")
@@ -550,17 +562,38 @@ def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_pat
         return baseline
 
     def observe(duration, *, baseline_window):
-        events.append("current_observed")
-        assert baseline_window == baseline
+        is_validation = len([event for event in events if event.endswith("_observed")]) == 0
+        events.append("validation_observed" if is_validation else "current_observed")
+        assert baseline_window == (
+            baseline
+            if is_validation
+            else {
+                "name": "baseline",
+                "start_time": "current-start",
+                "end_time": "current-end",
+                "duration_seconds": 7,
+            }
+        )
         return {
             "start_time": "current-start",
             "end_time": "current-end",
             "duration_seconds": duration,
-            "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "anomalies": []},
+            "pingmesh_metrics": {
+                "summary": {
+                    "total_anomalies": 0,
+                    "packet_loss_events": 0,
+                    "path_unreachable_events": 0,
+                    "latency_spikes": 0,
+                    "mtu_or_fragmentation_events": 0,
+                },
+                "quality": {"current_paths_observed": 2, "local_df_mtu_drops": 0},
+                "anomalies": [],
+            },
             "anomalies_detected": False,
             "coverage_status": "complete",
             "data_source_status": "ok",
             "_coverage_audit": {"coverage_status": "complete"},
+            "_baseline_coverage": {"status": "ok", "coverage_status": "complete"},
         }
 
     monkeypatch.setattr(runner, "_setup_traffic", setup_traffic)
@@ -580,8 +613,71 @@ def test_scenario_executor_can_return_result_without_persisting_raw_file(tmp_pat
     result = runner.run_scenario(scenario)
 
     assert result["success"] is True
-    assert events == ["traffic_ready", "baseline_captured", "current_observed"]
+    assert events == ["traffic_ready", "baseline_captured", "validation_observed", "current_observed"]
     assert result["episode"]["coverage_audit"] == {"coverage_status": "complete"}
     assert "_coverage_audit" not in result["episode"]["observations"]
     assert "result_file" not in result
-    assert list(tmp_path.iterdir()) == []
+
+
+def test_fault_observation_stabilization_is_inside_total_duration_budget():
+    from netopsbench.platform.scenario.episode_runner import observe_episode
+
+    calls = []
+
+    class Executor:
+        def _inject_fault(self, _episode):
+            return {"success": True}
+
+        def _capture_observation_window(self, duration, name):
+            calls.append((name, duration))
+            return {
+                "name": name,
+                "start_time": f"{name}-start",
+                "end_time": f"{name}-end",
+                "duration_seconds": duration,
+            }
+
+        def sleep(self, duration):
+            calls.append(("stabilization", duration))
+
+        def _merge_observation_windows(
+            self,
+            windows,
+            total_duration_seconds,
+            *,
+            baseline_window,
+        ):
+            calls.append(("merge", total_duration_seconds, len(windows)))
+            assert baseline_window["name"] == "baseline"
+            return {
+                "data_source_status": "ok",
+                "coverage_status": "complete",
+                "pingmesh_metrics": {"quality": {"current_paths_observed": 1}},
+            }
+
+    episode = EpisodeSpec(
+        episode_id="duration-budget",
+        fault_type="link_down",
+        target_device="leaf1",
+        target_interface="Ethernet0",
+        duration_seconds=114,
+        stabilization_time=5,
+        metadata={"early_observation_seconds": 20},
+    )
+
+    observe_episode(
+        Executor(),
+        episode,
+        baseline_window={
+            "name": "baseline",
+            "start_time": "baseline-start",
+            "end_time": "baseline-end",
+        },
+    )
+
+    assert calls == [
+        ("early", 20),
+        ("stabilization", 5),
+        ("steady", 89),
+        ("merge", 114, 2),
+    ]

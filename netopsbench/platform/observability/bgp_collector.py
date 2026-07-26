@@ -381,22 +381,21 @@ def _collect_bgp_lines_paced(
     interval_seconds: float,
     parallelism: int,
     stop_event: threading.Event,
+    on_lines: Callable[[list[str]], None],
     topology_id: str | None = None,
     transition_tracker: BgpTransitionTracker | None = None,
     include_full_snapshot: bool = True,
-    on_lines: Callable[[list[str]], None] | None = None,
-) -> list[str]:
+) -> None:
     """Collect one fleet snapshot while spreading docker exec starts over the interval."""
     lab_name, devices = _read_topology(metadata_file)
     if not devices:
-        return []
+        return
 
     resolved_topology_id = topology_id or lab_name
     command_prefix = docker_prefix()
     workers = max(1, min(int(parallelism), len(devices)))
     launch_spacing = max(0.0, float(interval_seconds)) / len(devices)
     round_started = time.monotonic()
-    futures = []
     pending = []
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -415,22 +414,14 @@ def _collect_bgp_lines_paced(
                 transition_tracker,
                 include_full_snapshot,
             )
-            futures.append(future)
             pending.append(future)
-            if on_lines is not None:
-                completed = [item for item in pending if item.done()]
-                for item in completed:
-                    on_lines(item.result())
-                    pending.remove(item)
+            completed = [item for item in pending if item.done()]
+            for item in completed:
+                on_lines(item.result())
+                pending.remove(item)
 
-    lines: list[str] = []
-    if on_lines is not None:
-        for future in pending:
-            on_lines(future.result())
-        return lines
-    for future in futures:
-        lines.extend(future.result())
-    return lines
+    for future in pending:
+        on_lines(future.result())
 
 
 def _write_lines(

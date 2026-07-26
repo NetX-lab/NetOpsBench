@@ -2,6 +2,8 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from netopsbench.platform.observability.ownership import ManagedBucketRegistry
 
 
@@ -30,25 +32,14 @@ def test_concurrent_bucket_records_do_not_overwrite_each_other(tmp_path):
     assert set(payload["buckets"]) == {f"bucket-{index}" for index in range(8)}
 
 
-def test_retirement_and_prune_eligibility_require_full_seven_days(tmp_path):
-    registry = ManagedBucketRegistry(tmp_path / "ownership.json")
-    created = datetime(2026, 7, 1, tzinfo=UTC)
-    retired = datetime(2026, 7, 2, tzinfo=UTC)
-    registry.record_created("managed", "runtime-xs", now=created)
-    registry.retire(["managed", "unowned"], now=retired)
+def test_registry_rejects_retirement_manifest_from_pre_02_lifecycle(tmp_path):
+    path = tmp_path / "ownership.json"
+    path.write_text('{"schema_version":"1","buckets":{}}', encoding="utf-8")
 
-    assert registry.eligible(now=retired + timedelta(days=7) - timedelta(seconds=1)) == []
-    assert registry.eligible(now=retired + timedelta(days=7)) == [
-        {
-            "bucket": "managed",
-            "runtime_id": "runtime-xs",
-            "retired_at": "2026-07-02T00:00:00Z",
-        }
-    ]
+    registry = ManagedBucketRegistry(path)
 
-    registry.mark_deleted("managed", now=retired + timedelta(days=7))
-    assert registry.eligible(now=retired + timedelta(days=8)) == []
-    assert "managed" not in json.loads(registry.path.read_text(encoding="utf-8"))["buckets"]
+    with pytest.raises(ValueError, match="Invalid managed telemetry ownership manifest"):
+        registry.active_for_runtime("runtime")
 
 
 def test_recreated_deleted_bucket_starts_a_new_owned_lifecycle(tmp_path):
@@ -57,8 +48,7 @@ def test_recreated_deleted_bucket_starts_a_new_owned_lifecycle(tmp_path):
     first = datetime(2026, 7, 1, tzinfo=UTC)
     second = datetime(2026, 7, 20, tzinfo=UTC)
     registry.record_created("managed", "runtime-old", now=first)
-    registry.retire(["managed"], now=first + timedelta(days=1))
-    registry.mark_deleted("managed", now=first + timedelta(days=8))
+    registry.mark_deleted("managed")
 
     registry.record_created("managed", "runtime-new", now=second)
 
@@ -66,28 +56,12 @@ def test_recreated_deleted_bucket_starts_a_new_owned_lifecycle(tmp_path):
     assert entry == {
         "runtime_id": "runtime-new",
         "created_at": "2026-07-20T00:00:00Z",
-        "retired_at": None,
-        "deleted_at": None,
     }
 
 
-def test_runtime_manager_prune_is_dry_run_by_default_and_deletes_only_owned(monkeypatch, tmp_path):
-    from netopsbench.platform.runtime import manager as runtime_manager
+def test_active_for_runtime_excludes_other_runtime_buckets(tmp_path):
+    registry = ManagedBucketRegistry(tmp_path / "ownership.json")
+    registry.record_created("active-a", "runtime-a")
+    registry.record_created("active-b", "runtime-b")
 
-    manager = runtime_manager.RuntimeManager(workspace=tmp_path)
-    registry = ManagedBucketRegistry(manager.telemetry_ownership_file)
-    registry.record_created("managed", "runtime-xs", now=datetime(2020, 1, 1, tzinfo=UTC))
-    registry.retire(["managed"], now=datetime(2020, 1, 2, tzinfo=UTC))
-    deleted = []
-    monkeypatch.setattr(
-        runtime_manager,
-        "delete_bucket",
-        lambda _url, _token, bucket: deleted.append(bucket) or True,
-    )
-
-    assert [item["bucket"] for item in manager.telemetry_prune()] == ["managed"]
-    assert deleted == []
-
-    assert [item["bucket"] for item in manager.telemetry_prune(apply=True)] == ["managed"]
-    assert deleted == ["managed"]
-    assert manager.telemetry_prune() == []
+    assert registry.active_for_runtime("runtime-a") == ["active-a"]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from netopsbench.models.topology import TopologyManifest
@@ -12,18 +11,9 @@ from netopsbench.platform.topology.topology_utils import clab_container_name
 
 @dataclass(frozen=True, slots=True)
 class FaultRuntimeContext:
-    """The manifest and artifact directory for one fault-injection runtime."""
+    """Canonical manifest-derived state shared by fault handlers."""
 
     manifest: TopologyManifest
-    clab_dir: Path
-
-    @property
-    def topology_name(self) -> str:
-        return self.manifest.name
-
-    @property
-    def topology_metadata(self) -> dict[str, Any]:
-        return self.manifest.model_dump(mode="json")
 
     @property
     def container_names(self) -> dict[str, str]:
@@ -31,7 +21,7 @@ class FaultRuntimeContext:
 
     @property
     def clients(self) -> list[dict[str, Any]]:
-        return list(self.manifest.to_agent_topology()["devices"]["clients"])
+        return [client.model_dump(mode="json") for client in self.manifest.clients()]
 
     @property
     def clients_by_leaf(self) -> dict[str, list[dict[str, Any]]]:

@@ -110,25 +110,33 @@ class SimulatorManager:
             environments = list(self._environments)
             incidents = list(self._incidents)
             lease_pool = self._lease_pool
-            self._environments.clear()
-            self._incidents.clear()
-            self._lease_pool = None
-            self._pool_config = None
+        failures: list[str] = []
         for environment in environments:
             try:
                 environment.close()
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to close simulator environment", exc_info=True)
+                failures.append(f"environment: {type(exc).__name__}: {exc}")
         for incident in incidents:
             try:
                 incident.close()
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to close prepared incident", exc_info=True)
+                failures.append(f"incident: {type(exc).__name__}: {exc}")
         if lease_pool is not None:
             try:
                 lease_pool.drain()
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to drain simulator runtime leases", exc_info=True)
+                failures.append(f"runtime_pool: {type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError("Simulator manager close failed: " + "; ".join(failures))
+        with self._lock:
+            self._environments.clear()
+            self._incidents.clear()
+            if self._lease_pool is lease_pool:
+                self._lease_pool = None
+                self._pool_config = None
 
     def _engine(self, config: SimulatorConfig) -> IncidentEngine:
         physical_config = (config.max_active_runtimes, config.orphan_lease_ttl_seconds)

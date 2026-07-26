@@ -217,13 +217,7 @@ def test_apply_single_device_preseed_activates_without_shell_copy(monkeypatch, t
 def test_expected_interface_addresses_ignores_marker_keys(tmp_path):
     config = tmp_path / "config_db.json"
     config.write_text(
-        (
-            '{"INTERFACE": {'
-            '"Ethernet0": {}, '
-            '"Ethernet0|10.1.1.2/30": {}, '
-            '"Ethernet4|10.2.1.2/30": {}'
-            "}}\n"
-        ),
+        ('{"INTERFACE": {' '"Ethernet0": {}, ' '"Ethernet0|10.1.1.2/30": {}, ' '"Ethernet4|10.2.1.2/30": {}' "}}\n"),
         encoding="utf-8",
     )
 
@@ -236,12 +230,7 @@ def test_expected_interface_addresses_ignores_marker_keys(tmp_path):
 def test_reconcile_preseed_interfaces_repairs_only_missing_kernel_address(monkeypatch, tmp_path):
     config = tmp_path / "config_db.json"
     config.write_text(
-        (
-            '{"INTERFACE": {'
-            '"Ethernet0|10.1.1.2/30": {}, '
-            '"Ethernet4|10.2.1.2/30": {}'
-            "}}\n"
-        ),
+        ('{"INTERFACE": {' '"Ethernet0|10.1.1.2/30": {}, ' '"Ethernet4|10.2.1.2/30": {}' "}}\n"),
         encoding="utf-8",
     )
     calls = []
@@ -272,10 +261,7 @@ def test_reconcile_preseed_interfaces_repairs_only_missing_kernel_address(monkey
 
     assert apply_configs._reconcile_preseed_interfaces([], "clab-demo-leaf1", str(config)) == []
     assert any(cmd[-6:] == ["ip", "link", "set", "dev", "Ethernet0", "up"] for cmd in calls)
-    assert any(
-        cmd[-6:] == ["ip", "address", "replace", "10.1.1.2/30", "dev", "Ethernet0"]
-        for cmd in calls
-    )
+    assert any(cmd[-6:] == ["ip", "address", "replace", "10.1.1.2/30", "dev", "Ethernet0"] for cmd in calls)
     assert not any("Ethernet4" in cmd and "replace" in cmd for cmd in calls)
 
 
@@ -290,9 +276,7 @@ def test_reconcile_preseed_interfaces_reports_persistent_drift(monkeypatch, tmp_
 
     monkeypatch.setattr(apply_configs, "safe_run", fake_safe_run)
 
-    assert apply_configs._reconcile_preseed_interfaces([], "clab-demo-leaf1", str(config)) == [
-        "Ethernet0|10.1.1.2/30"
-    ]
+    assert apply_configs._reconcile_preseed_interfaces([], "clab-demo-leaf1", str(config)) == ["Ethernet0|10.1.1.2/30"]
 
 
 def test_apply_single_device_requires_preseed_config(monkeypatch, tmp_path):
