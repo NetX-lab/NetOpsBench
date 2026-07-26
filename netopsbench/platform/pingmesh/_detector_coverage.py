@@ -140,5 +140,20 @@ def _has_valid_socket_batch(
     return (
         _field_int(row, "rtt_ports_total") == port_pool_size
         and _field_int(row, "rtt_ports_active") == expected_active
-        and _field_int(row, "local_probe_errors") == 0
+        and (_field_int(row, "local_probe_errors") == 0 or is_complete_loss_df_send_error(row))
+    )
+
+
+def is_complete_loss_df_send_error(row: dict) -> bool:
+    """Return true when a DF send error is shadowed by complete RTT path loss."""
+    local_errors = _field_int(row, "local_probe_errors")
+    df_mtu_drops = _field_int(row, "df_mtu_drops")
+    packets_sent = _field_int(row, "packets_sent")
+    packets_lost = _field_int(row, "packets_lost")
+    return bool(
+        local_errors
+        and local_errors == df_mtu_drops
+        and packets_sent
+        and packets_lost is not None
+        and packets_lost >= packets_sent
     )
