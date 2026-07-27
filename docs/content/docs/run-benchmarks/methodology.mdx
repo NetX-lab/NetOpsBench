@@ -77,8 +77,15 @@ or 114 seconds (K12) instead of being emitted in a host-scheduling burst.
 
 Background traffic must start its complete topology-derived flow matrix before the baseline is captured. A partial matrix is an infrastructure-invalid case, rather than a degraded observation presented to the agent.
 The baseline is also invalid when coverage is incomplete, any path is
-unreachable, latency or network-MTU anomalies exist, or a local DF probe could
-not be sent.
+unreachable, latency or network-MTU anomalies exist, or an unexplained local DF
+probe error occurs. A DF-only local send error is treated as a consequence of
+the measured path failure only when the same row contains at least three lost
+ordinary RTT probes and no other local error.
+
+`mtu_or_fragmentation_suspect` is deliberately a symptom label, not a confirmed
+MTU root cause. In particular, an isolated DF-only symptom during link flapping
+still requires interface-MTU or multi-path evidence before an agent should
+diagnose `mtu_mismatch`.
 
 Each topology sends native Pingmesh batches through its topology-local
 Telegraf listener. Multiple warm topologies may therefore keep observability

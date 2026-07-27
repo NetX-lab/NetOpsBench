@@ -53,7 +53,7 @@ class FaultInjector:
                     "Pass topology_metadata or a generated topology directory."
                 )
             manifest = load_topology_manifest(metadata_file)
-        self._ctx = FaultRuntimeContext(manifest=manifest)
+        self._ctx = FaultRuntimeContext(manifest=manifest, topology_dir=resolved_clab_dir)
 
         # Build services (order matters — each layer depends on previous ones)
         self._cmd = CommandRunner()

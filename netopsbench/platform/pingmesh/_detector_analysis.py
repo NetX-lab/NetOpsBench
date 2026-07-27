@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from netopsbench.platform.pingmesh._detector_coverage import is_complete_loss_df_send_error
+from netopsbench.platform.pingmesh._detector_coverage import is_explained_df_send_error
 
 _MIN_LATENCY_DELTA_MS = 20.0
 _MIN_PATH_LOST_PROBES = 3
@@ -293,7 +293,7 @@ class DetectorAnalysisMixin:
             ):
                 absolute_mtu_paths.add(batch_key[:2])
         anomalies.sort(key=lambda item: (item.type, item.src_ip, item.dst_ip))
-        unexplained_local_error_rows = [row for row in current_rows if not is_complete_loss_df_send_error(row)]
+        unexplained_local_error_rows = [row for row in current_rows if not is_explained_df_send_error(row)]
         return SnapshotAnalysis(
             anomalies=anomalies,
             quality={

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from netopsbench.models.topology import TopologyManifest
@@ -14,6 +15,11 @@ class FaultRuntimeContext:
     """Canonical manifest-derived state shared by fault handlers."""
 
     manifest: TopologyManifest
+    topology_dir: Path
+
+    @property
+    def topology_file(self) -> Path:
+        return self.topology_dir / f"{self.manifest.name}.clab.yaml"
 
     @property
     def container_names(self) -> dict[str, str]:

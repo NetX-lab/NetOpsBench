@@ -412,15 +412,15 @@ def test_local_df_mtu_drop_is_probe_quality_failure_not_network_anomaly():
     assert analysis.quality["local_df_mtu_drops"] == 1
 
 
-def test_df_send_error_is_quality_neutral_when_rtt_path_is_completely_unreachable():
+def test_df_send_error_is_quality_neutral_when_rtt_path_has_strong_loss_evidence():
     detector = _coverage_detector(client_count=2)
-    current = _probe_sample(sent=4, lost=4, df_sent=0, df_lost=0)
-    current["df_mtu_drops"] = 1
-    current["local_probe_errors"] = 1
+    current = _probe_sample(sent=4, lost=3, df_sent=0, df_lost=0)
+    current["df_mtu_drops"] = 15
+    current["local_probe_errors"] = 15
 
     analysis = detector.analyze_snapshot_rows([_probe_sample()], [current])
 
-    assert [item.type for item in analysis.anomalies] == ["path_unreachable"]
+    assert [item.type for item in analysis.anomalies] == ["packet_loss"]
     assert analysis.quality["local_df_mtu_drops"] == 0
     assert analysis.quality["local_probe_errors"] == 0
 
@@ -749,7 +749,7 @@ def test_coverage_rejects_local_probe_errors():
     assert audit["invalid_socket_rows"] == 1
 
 
-def test_coverage_accepts_df_send_error_shadowed_by_complete_rtt_loss():
+def test_coverage_accepts_df_send_error_explained_by_strong_rtt_loss():
     detector = _coverage_detector(2)
     rows = [
         {
@@ -761,9 +761,9 @@ def test_coverage_accepts_df_send_error_shadowed_by_complete_rtt_loss():
             "rtt_ports_active": 4,
             "rtt_ports_total": 16,
             "packets_sent": 4,
-            "packets_lost": 4 if source == "client1" else 0,
-            "df_mtu_drops": 1 if source == "client1" else 0,
-            "local_probe_errors": 1 if source == "client1" else 0,
+            "packets_lost": 3 if source == "client1" else 0,
+            "df_mtu_drops": 15 if source == "client1" else 0,
+            "local_probe_errors": 15 if source == "client1" else 0,
         }
         for source, destination in (("client1", "client2"), ("client2", "client1"))
         for port_batch in range(4)
@@ -773,6 +773,38 @@ def test_coverage_accepts_df_send_error_shadowed_by_complete_rtt_loss():
 
     assert audit["coverage_status"] == "complete"
     assert audit["invalid_socket_rows"] == 0
+
+
+def test_coverage_rejects_df_send_error_without_strong_rtt_loss():
+    detector = _coverage_detector(2)
+
+    def audit_for(*, lost: int, local_errors: int, df_mtu_drops: int) -> dict:
+        rows = [
+            {
+                "probe_cycle": float(port_batch),
+                "destination_batch_index": 0.0,
+                "port_batch_index": float(port_batch),
+                "src_name": source,
+                "dst_name": destination,
+                "rtt_ports_active": 4,
+                "rtt_ports_total": 16,
+                "packets_sent": 4,
+                "packets_lost": lost if source == "client1" and port_batch == 0 else 0,
+                "df_mtu_drops": df_mtu_drops if source == "client1" and port_batch == 0 else 0,
+                "local_probe_errors": local_errors if source == "client1" and port_batch == 0 else 0,
+            }
+            for source, destination in (("client1", "client2"), ("client2", "client1"))
+            for port_batch in range(4)
+        ]
+        return detector.summarize_coverage(rows)
+
+    for audit in (
+        audit_for(lost=2, local_errors=15, df_mtu_drops=15),
+        audit_for(lost=0, local_errors=15, df_mtu_drops=15),
+        audit_for(lost=3, local_errors=16, df_mtu_drops=15),
+    ):
+        assert audit["coverage_status"] == "incomplete"
+        assert audit["invalid_socket_rows"] == 1
 
 
 def test_pingmesh_coverage_summary_reports_missing_batches():

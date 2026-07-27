@@ -247,7 +247,7 @@ def test_access_link_recovery_restores_client_routes_removed_by_link_down():
     assert states[("clab-dcn-client1", "eth1")] == "up"
 
 
-def test_device_down_stops_the_target_container():
+def test_device_down_uses_containerlab_node_stop():
     injector = FaultInjector(topology_metadata=_metadata())
     calls = []
     result = type("R", (), {"returncode": 0, "stderr": "", "stdout": "spine1"})()
@@ -257,24 +257,54 @@ def test_device_down_stops_the_target_container():
     fault = injector.inject_device_down("spine1")
 
     assert fault["success"] is True
-    assert fault["mode"] == "container_stop"
-    assert calls[0][-3:] == ["docker", "stop", "clab-dcn-spine1"]
+    assert fault["mode"] == "containerlab_node_stop"
+    assert calls[0][-7:] == [
+        "stop",
+        "-t",
+        str(injector._system._ctx.topology_file),
+        "--node",
+        "spine1",
+        "--timeout",
+        "20s",
+    ]
 
 
-def test_device_down_starts_and_waits_for_bgp_recovery():
+def test_device_down_starts_supervisor_activates_and_waits_for_bgp_recovery(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     calls = []
     result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
     established = iter([False, True])
     injector._system._cmd.run_cmd = lambda command, **_kwargs: calls.append(command) or result
     injector._system._cmd.container_is_running = lambda _container: True
-    injector._system._sonic.supervisord_ready = lambda _container: True
+    supervisor_ready = iter([False, True, True])
+    injector._system._sonic.supervisord_ready = lambda _container: next(supervisor_ready)
     injector._system._sonic.bgp_neighbors_established = lambda _device: next(established)
     injector._system._sonic.vtysh = lambda _device, _commands: result
+    activations = []
+    monkeypatch.setattr(
+        "netopsbench.platform.faults.handlers.system.activate_device",
+        lambda *args, **kwargs: activations.append((args, kwargs)) or (True, "activated"),
+    )
 
     with patch("netopsbench.platform.faults.handlers.system.time.sleep"):
         recovery = injector.recover_device_down("spine1")
 
     assert recovery["recovered"] is True
     assert recovery["sonic_ready"] is True
-    assert calls[0][-3:] == ["docker", "start", "clab-dcn-spine1"]
+    assert calls[0][-7:] == [
+        "start",
+        "-t",
+        str(injector._system._ctx.topology_file),
+        "--node",
+        "spine1",
+        "--timeout",
+        "20s",
+    ]
+    assert calls[1][-5:] == [
+        "docker",
+        "exec",
+        "-d",
+        "clab-dcn-spine1",
+        "/usr/local/bin/supervisord",
+    ]
+    assert activations

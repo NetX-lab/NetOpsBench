@@ -358,6 +358,8 @@ def _apply_single_device(
     topology_dir: str,
     lab_name: str,
     ecmp_hash_policy: int,
+    *,
+    readiness_max_tries: int | None = None,
 ) -> tuple[str, bool, str, float, float, float]:
     """Activate one preseeded device after Containerlab has started it."""
     started_at = time.monotonic()
@@ -391,7 +393,12 @@ def _apply_single_device(
         )
 
     readiness_started = time.monotonic()
-    if not _wait_for_sonic(device, container, expected_port_count=expected_port_count):
+    if not _wait_for_sonic(
+        device,
+        container,
+        max_tries=readiness_max_tries,
+        expected_port_count=expected_port_count,
+    ):
         readiness_elapsed = time.monotonic() - readiness_started
         return (
             device,
@@ -433,6 +440,25 @@ def _apply_single_device(
         readiness_elapsed,
         activation_elapsed,
     )
+
+
+def activate_device(
+    device: str,
+    topology_dir: str,
+    lab_name: str,
+    ecmp_hash_policy: int,
+    *,
+    readiness_max_tries: int | None = None,
+) -> tuple[bool, str]:
+    """Activate one SONiC device using the canonical post-deploy path."""
+    _, success, message, *_ = _apply_single_device(
+        device,
+        topology_dir,
+        lab_name,
+        ecmp_hash_policy,
+        readiness_max_tries=readiness_max_tries,
+    )
+    return success, message
 
 
 def apply_configs(

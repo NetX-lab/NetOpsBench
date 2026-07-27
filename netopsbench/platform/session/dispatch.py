@@ -276,7 +276,7 @@ def execute_on_runtime_pool(
     mismatched = [scenario.id for scenario in scenarios if scenario.scale != runtime.scale]
     if mismatched:
         raise ValueError(f"Scenario scale does not match runtime scale {runtime.scale!r}: {', '.join(mismatched)}")
-    return _dispatch_workers(
+    result = _dispatch_workers(
         runtime.workers,
         scenarios,
         lambda worker, assigned: _run_worker(
@@ -292,6 +292,19 @@ def execute_on_runtime_pool(
             scenarios=assigned,
         ),
     )
+    cleanup_failures = sorted(
+        {
+            str(item["worker"])
+            for item in result.scenarios
+            if item.get("failure_stage") == "cleanup" and item.get("worker")
+        }
+    )
+    if cleanup_failures:
+        runtime.metadata["quarantined"] = True
+        runtime.metadata["quarantine_reason"] = "scenario_cleanup_failure"
+        runtime.metadata["quarantined_workers"] = cleanup_failures
+        runtime._write_metadata()
+    return result
 
 
 __all__ = ["PoolDispatchResult", "assign_scenarios_to_workers", "execute_on_runtime_pool"]

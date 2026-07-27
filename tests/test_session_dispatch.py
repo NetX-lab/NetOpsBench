@@ -287,3 +287,8 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
             "success": True,
         },
     ]
+    assert runtime.metadata["quarantined"] is True
+    assert runtime.metadata["quarantine_reason"] == "scenario_cleanup_failure"
+    assert runtime.metadata["quarantined_workers"] == ["worker-1"]
+    persisted = (runtime.root_dir / "runtime.json").read_text(encoding="utf-8")
+    assert '"quarantined": true' in persisted
