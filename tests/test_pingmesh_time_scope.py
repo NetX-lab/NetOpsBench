@@ -308,7 +308,7 @@ def test_df_only_loss_is_mtu_suspect():
 
     analysis = detector.analyze_snapshot_rows(
         [_probe_sample(df_sent=1)],
-        [_probe_sample(lost=0, df_sent=9, df_lost=9)],
+        [_probe_sample(lost=0, df_sent=16, df_lost=16)],
     )
 
     assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
@@ -320,19 +320,19 @@ def test_df_loss_with_any_counted_small_probe_loss_is_not_mtu():
 
     analysis = detector.analyze_snapshot_rows(
         [_probe_sample(df_sent=1)],
-        [_probe_sample(lost=1, df_sent=9, df_lost=9)],
+        [_probe_sample(lost=1, df_sent=16, df_lost=16)],
     )
 
     assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
     assert analysis.quality["absolute_network_mtu_paths"] == 0
 
 
-def test_random_loss_confirmation_burst_is_not_mtu_evidence():
+def test_nine_probe_random_loss_burst_is_not_mtu_evidence():
     detector = _coverage_detector(client_count=2)
 
     analysis = detector.analyze_snapshot_rows(
         [_probe_sample(df_sent=1)],
-        [_probe_sample(lost=0, df_sent=3, df_lost=3)],
+        [_probe_sample(lost=0, df_sent=9, df_lost=9)],
     )
 
     assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
@@ -349,8 +349,8 @@ def test_confirmed_df_loss_is_scoped_to_one_ecmp_port_batch():
         baseline.append(baseline_row)
         current_row = _probe_sample(
             timestamp=f"2026-01-01T00:01:0{batch}Z",
-            df_sent=9 if batch == 2 else 1,
-            df_lost=9 if batch == 2 else 0,
+            df_sent=16 if batch == 2 else 1,
+            df_lost=16 if batch == 2 else 0,
         )
         current_row["port_batch_index"] = batch
         current.append(current_row)
@@ -364,9 +364,10 @@ def test_confirmed_df_loss_is_scoped_to_one_ecmp_port_batch():
 def test_df_baseline_losses_are_not_discarded_as_unreachable_samples():
     detector = _coverage_detector(client_count=2)
     baseline = [
-        _probe_sample(timestamp=f"2026-01-01T00:00:0{index}Z", df_sent=1, df_lost=int(index < 8)) for index in range(9)
+        _probe_sample(timestamp=f"2026-01-01T00:00:{index:02d}Z", df_sent=1, df_lost=int(index < 15))
+        for index in range(16)
     ]
-    current = [_probe_sample(timestamp=f"2026-01-01T00:01:0{index}Z", df_sent=1, df_lost=1) for index in range(9)]
+    current = [_probe_sample(timestamp=f"2026-01-01T00:01:{index:02d}Z", df_sent=1, df_lost=1) for index in range(16)]
 
     analysis = detector.analyze_snapshot_rows(baseline, current)
 

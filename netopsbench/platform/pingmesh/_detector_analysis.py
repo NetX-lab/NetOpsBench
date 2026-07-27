@@ -11,7 +11,7 @@ from netopsbench.platform.pingmesh._detector_coverage import is_complete_loss_df
 
 _MIN_LATENCY_DELTA_MS = 20.0
 _MIN_PATH_LOST_PROBES = 3
-_MIN_CONFIRMED_DF_PROBES = 9
+_MIN_CONFIRMED_DF_PROBES = 16
 
 
 def _utcnow_iso() -> str:
