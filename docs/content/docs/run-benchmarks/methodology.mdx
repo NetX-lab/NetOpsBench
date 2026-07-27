@@ -79,8 +79,9 @@ Background traffic must start its complete topology-derived flow matrix before t
 The baseline is also invalid when coverage is incomplete, any path is
 unreachable, latency or network-MTU anomalies exist, or an unexplained local DF
 probe error occurs. A DF-only local send error is treated as a consequence of
-the measured path failure only when the same row contains at least three lost
-ordinary RTT probes and no other local error.
+the measured path failure only when the same path and socket batch contains at
+least three lost ordinary RTT probes across the complete observation window and
+no other local error. Loss on another path or ECMP socket batch does not qualify.
 
 `mtu_or_fragmentation_suspect` is deliberately a symptom label, not a confirmed
 MTU root cause. In particular, an isolated DF-only symptom during link flapping
