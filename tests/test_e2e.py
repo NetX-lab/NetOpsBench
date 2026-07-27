@@ -909,8 +909,8 @@ episode:
         assert scored[0].score == 1.0
 
     @pytest.mark.parametrize("fault_type", ["packet_loss", "packet_corruption", "high_latency", "mtu_mismatch"])
-    def test_score_scenario_interface_symmetric_fault_accepts_peer_endpoint(self, fault_type):
-        """Interface-level faults should accept the link-peer endpoint as an equivalent answer."""
+    def test_score_scenario_unidirectional_fault_rejects_peer_endpoint_equivalence(self, fault_type):
+        """Single-ended impairment injection must only accept its actual target."""
         from netopsbench.platform.session.scoring import build_episode_ground_truth
 
         episode_info = {
@@ -925,12 +925,7 @@ episode:
 
             gt = build_episode_ground_truth(episode_info, topology_dir=tmpdir)
 
-        assert (
-            "equivalent_locations" in gt
-        ), f"{fault_type} should produce equivalent_locations for symmetric interface fault"
-        peer = gt["equivalent_locations"][0]
-        assert peer["device"] == "spine1"
-        assert peer["interface"] == "Ethernet0"
+        assert "equivalent_locations" not in gt
 
 
 class TestEndToEnd:

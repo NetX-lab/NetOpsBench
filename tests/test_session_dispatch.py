@@ -138,6 +138,12 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
         ),
     )
     monkeypatch.setattr(dispatch, "load_topology_metadata", lambda _topology_dir: None)
+    validated = []
+    monkeypatch.setattr(
+        dispatch,
+        "require_scenario_topology",
+        lambda scenario, topology_dir: validated.append((scenario.id, Path(topology_dir).name)),
+    )
 
     result = execute_on_runtime_pool(
         scenarios=scenarios,
@@ -152,6 +158,7 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
     assert {item.evaluator_id for item in result.evaluations} == {1, 2}
     assert [summary["worker_id"] for summary in result.workers] == ["worker-1", "worker-2"]
     assert _FakeRunner.closed == 2
+    assert sorted(validated) == [("scenario-1", "worker-1"), ("scenario-2", "worker-2")]
 
 
 def test_execute_on_runtime_pool_rejects_scenario_scale_mismatch(tmp_path):
@@ -244,6 +251,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
         ),
     )
     monkeypatch.setattr(dispatch, "load_topology_metadata", lambda _topology_dir: None)
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda _scenario, _topology_dir: None)
 
     result = execute_on_runtime_pool(
         scenarios=scenarios,

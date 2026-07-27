@@ -19,6 +19,7 @@ from netopsbench.platform.runtime.manager import RuntimeManager, RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
 from netopsbench.platform.scenario.observation import baseline_gate_errors
+from netopsbench.platform.scenario.validator import require_scenario_topology
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
 logger = get_logger(__name__)
@@ -224,6 +225,13 @@ class RuntimeEpisodeBackend:
         worker = self.record.runtime.workers[0]
         self.topology_dir = str(worker.topology_dir)
         try:
+            require_scenario_topology(scenario, self.topology_dir)
+        except Exception:
+            record = self.record
+            self.record = None
+            self.leases.release(record)
+            raise
+        try:
             recovery = runner._recover_fault()
             if any(not item.get("recovered", False) for item in recovery):
                 raise RuntimeError(f"Runtime recovery failed: {recovery}")
@@ -231,7 +239,7 @@ class RuntimeEpisodeBackend:
                 runner.sleep(runner.post_recovery_wait_seconds)
                 self.record.baseline_signature = None
                 self.record.baseline = None
-            errors = self._health_errors(self.record, refresh=True)
+            errors = self._health_errors(self.record)
             if errors:
                 raise RuntimeError("Runtime health check failed: " + "; ".join(errors))
             traffic_is_complete = (
@@ -327,10 +335,10 @@ class RuntimeEpisodeBackend:
             "duration_seconds": validation["duration_seconds"],
         }
 
-    def _health_errors(self, record: WarmRuntime, *, refresh: bool) -> list[str]:
+    def _health_errors(self, record: WarmRuntime) -> list[str]:
         worker = record.runtime.workers[0]
         errors = check_worker_health(worker, scale_registry=self.registry)
-        if not errors or not refresh:
+        if not errors:
             return errors
         ensure_worker_observability(worker)
         ensure_worker_client_agent(worker)

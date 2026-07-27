@@ -346,15 +346,15 @@ class ScenarioExecutor:
             else:
                 scenario_result["case_valid"] = True
                 episode_result = backend.episode_result or {}
-                session = incident.open_session(
-                    SimulatorConfig(
-                        max_tool_calls=1_000,
-                        max_agent_seconds=86_400,
-                        max_tool_result_bytes=64 * 1024 * 1024,
-                        orphan_lease_ttl_seconds=86_700,
-                    )
-                )
                 if diagnosis_callback is not None:
+                    session = incident.open_session(
+                        SimulatorConfig(
+                            max_tool_calls=1_000,
+                            max_agent_seconds=86_400,
+                            max_tool_result_bytes=64 * 1024 * 1024,
+                            orphan_lease_ttl_seconds=86_700,
+                        )
+                    )
                     try:
                         diagnosis = diagnosis_callback(
                             episode_result,

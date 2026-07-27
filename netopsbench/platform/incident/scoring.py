@@ -9,14 +9,7 @@ from netopsbench.models.topology import DeviceRole
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
 from netopsbench.platform.utils.interface_names import are_interfaces_equivalent, to_sonic_interface
 
-_INTERFACE_SYMMETRIC_FAULT_TYPES = {
-    "link_down",
-    "link_flapping",
-    "packet_loss",
-    "packet_corruption",
-    "high_latency",
-    "mtu_mismatch",
-}
+_INTERFACE_SYMMETRIC_FAULT_TYPES = {"link_down", "link_flapping"}
 
 
 def _find_link_peer_locations(

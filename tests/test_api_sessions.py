@@ -22,7 +22,7 @@ class DummyAgent:
             verdict="fault_detected",
             findings={
                 "fault_type": "link_down",
-                "location": {"device": "leaf1", "interface": "Ethernet1"},
+                "location": {"device": "leaf1", "interface": "Ethernet0"},
                 "evidence": ["fake-evidence"],
             },
             confidence=0.9,
@@ -96,7 +96,7 @@ def _install_real_runtime_mocks(monkeypatch):
                             "episode_id": "ep1",
                             "fault_type": "link_down",
                             "target_device": "leaf1",
-                            "target_interface": "Ethernet1",
+                            "target_interface": "Ethernet0",
                         },
                         "observations": {"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
                     },
@@ -144,7 +144,7 @@ def _install_real_runtime_mocks(monkeypatch):
                         "episode_id": "ep1",
                         "fault_type": "link_down",
                         "target_device": "leaf1",
-                        "target_interface": "Ethernet1",
+                        "target_interface": "Ethernet0",
                     },
                     "diagnosis": diagnosis,
                 },
@@ -155,6 +155,11 @@ def _install_real_runtime_mocks(monkeypatch):
 
     monkeypatch.setattr(dispatch_mod, "ScenarioExecutor", FakeScenarioExecutor)
     monkeypatch.setattr(dispatch_mod, "load_topology_metadata", lambda _topology_dir: None)
+    monkeypatch.setattr(
+        dispatch_mod,
+        "require_scenario_topology",
+        lambda _scenario, _topology_dir: None,
+    )
     monkeypatch.setattr(dispatch_mod, "_create_evaluator", _FakeEvaluator)
     monkeypatch.setattr(
         dispatch_mod,
@@ -205,7 +210,7 @@ def _make_scenario(*, scenario_id: str, scale: str = "xs"):
             "episode_id": f"{scenario_id}-ep1",
             "fault_type": "link_down",
             "target_device": "leaf1",
-            "target_interface": "Ethernet1",
+            "target_interface": "Ethernet0",
         },
         metadata={"difficulty": "easy"},
     )

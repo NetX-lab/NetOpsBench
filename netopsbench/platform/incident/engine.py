@@ -36,7 +36,6 @@ class IncidentState(StrEnum):
 class SessionState(StrEnum):
     ACTIVE = "active"
     TERMINAL = "terminal"
-    BROKEN = "broken"
 
 
 class FailureDomain(StrEnum):

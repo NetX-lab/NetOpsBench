@@ -183,8 +183,16 @@ def validate_scenario_topology(scenario, topology_dir: str) -> dict:
     }
 
 
+def require_scenario_topology(scenario: ScenarioSpec, topology_dir: str) -> None:
+    """Reject a scenario that cannot run correctly on a prepared topology."""
+    result = validate_scenario_topology(scenario, topology_dir)
+    if result["status"] != "pass":
+        raise ValueError("Scenario is incompatible with the runtime topology: " + "; ".join(result["errors"]))
+
+
 __all__ = [
     "supported_scenario_faults",
+    "require_scenario_topology",
     "validate_scenario",
     "validate_scenario_topology",
 ]

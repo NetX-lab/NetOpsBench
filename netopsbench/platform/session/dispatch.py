@@ -17,6 +17,7 @@ from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.manager import RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
+from netopsbench.platform.scenario.validator import require_scenario_topology
 from netopsbench.platform.session.context import build_worker_execution_context
 from netopsbench.platform.session.diagnosis import build_runtime_diagnosis_callback
 from netopsbench.platform.session.reporting import load_topology_metadata
@@ -127,6 +128,8 @@ def _run_worker(
     scenarios: list[ScenarioSpec],
 ) -> WorkerRunResult:
     worker_context = build_worker_execution_context(worker, worker.topology_dir)
+    for scenario in scenarios:
+        require_scenario_topology(scenario, str(worker_context.topology_dir))
     worker_raw_dir = raw_dir / worker.worker_id
     worker_raw_dir.mkdir(parents=True, exist_ok=True)
     runner = _build_scenario_executor(

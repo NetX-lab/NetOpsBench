@@ -664,11 +664,18 @@ def test_simulator_rebuilds_missing_traffic_once_and_invalidates_baseline(monkey
 
     monkeypatch.setattr(backend, "_ensure_baseline", ensure_baseline)
     monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
+    validated = []
+    monkeypatch.setattr(
+        simulator_runtime_module,
+        "require_scenario_topology",
+        lambda scenario, topology_dir: validated.append((scenario.id, topology_dir)),
+    )
 
     result = backend.prepare(_scenario(healthy=True))
 
     assert result == {"case_id": "case-test"}
     assert events[:4] == ["verify", "stop", ("setup", "xs", "standard"), "baseline"]
+    assert validated == [("scenario-1", "unused")]
 
 
 def test_simulator_rebuilds_baseline_after_recovering_lingering_fault(monkeypatch):
@@ -716,6 +723,11 @@ def test_simulator_rebuilds_baseline_after_recovering_lingering_fault(monkeypatc
         or pytest.fail("lingering-fault recovery must invalidate the cached baseline"),
     )
     monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
+    monkeypatch.setattr(
+        simulator_runtime_module,
+        "require_scenario_topology",
+        lambda _scenario, _topology_dir: None,
+    )
 
     assert backend.prepare(_scenario(healthy=True)) == {"case_id": "case-test"}
 
@@ -756,6 +768,11 @@ def test_simulator_quarantines_when_traffic_rebuild_is_incomplete(monkeypatch):
 
     backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
     monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        simulator_runtime_module,
+        "require_scenario_topology",
+        lambda _scenario, _topology_dir: None,
+    )
 
     incident = IncidentEngine(lambda: backend).prepare(_scenario(healthy=True))
 
@@ -763,3 +780,38 @@ def test_simulator_quarantines_when_traffic_rebuild_is_incomplete(monkeypatch):
     assert incident.state is IncidentState.BROKEN
     assert incident.failure is not None
     assert incident.failure.message == "Background traffic matrix incomplete"
+
+
+def test_simulator_invalid_topology_releases_lease_without_quarantine(monkeypatch):
+    events = []
+    runner = SimpleNamespace(topology_dir="unused")
+    worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
+    record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
+
+    class Leases:
+        @staticmethod
+        def acquire(_scale):
+            events.append("acquire")
+            return record
+
+        @staticmethod
+        def release(_record):
+            events.append("release")
+
+        @staticmethod
+        def quarantine(_record):
+            events.append("quarantine")
+
+    monkeypatch.setattr(
+        simulator_runtime_module,
+        "require_scenario_topology",
+        lambda _scenario, _topology_dir: (_ for _ in ()).throw(ValueError("invalid scenario")),
+    )
+    backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
+
+    incident = IncidentEngine(lambda: backend).prepare(_scenario(healthy=True))
+
+    assert incident.state is IncidentState.BROKEN
+    assert incident.failure is not None
+    assert incident.failure.message == "invalid scenario"
+    assert events == ["acquire", "release"]

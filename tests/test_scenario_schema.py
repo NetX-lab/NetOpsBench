@@ -607,7 +607,7 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
         name="No Persist",
         description="test",
         topology_scale="xs",
-        episode=EpisodeSpec(episode_id="diagnosis", fault_type="none", duration_seconds=1),
+        episode=EpisodeSpec(episode_id="diagnosis", fault_type="none", duration_seconds=7),
     )
 
     result = runner.run_scenario(scenario)
