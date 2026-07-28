@@ -65,8 +65,5 @@ class FabricPlan:
             if device_plan.bgp_asn is None or device_plan.bgp_router_id is None:
                 raise ValueError(f"switch {device_plan.name} must define BGP identity")
 
-    def device_plan(self, name: str) -> DevicePlan | None:
-        return next((device_plan for device_plan in self.device_plans if device_plan.name == name), None)
-
 
 __all__ = ["BGPNeighborPlan", "DevicePlan", "FabricPlan", "RenderSettings"]

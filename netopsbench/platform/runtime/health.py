@@ -15,13 +15,19 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 
 from netopsbench.config import config
 from netopsbench.logging_utils import get_logger
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
-from netopsbench.models.topology import DeviceRole, TopologyManifest
+from netopsbench.models.topology import Device, DeviceRole, TopologyManifest
+from netopsbench.platform.client_agent.contract import (
+    HEARTBEAT_MAX_AGE_SECONDS,
+    PINGMESH_CONTROL_PORT,
+)
+from netopsbench.platform.client_agent.control import request_agent
 from netopsbench.platform.topology.topology_utils import (
     clab_container_name,
     coerce_topology_manifest,
@@ -140,18 +146,22 @@ def _expected_bgp_neighbor_count(topo: TopologyManifest | dict, device: str) -> 
     return 0
 
 
-def _active_interface_coverage_error(
-    container: str,
-    device: str,
-    active_interfaces: set[str],
-    expected_count: int,
-) -> str | None:
-    if expected_count <= 0 or len(active_interfaces) >= expected_count:
-        return None
-    return (
-        f"active interface coverage too low on {container}: "
-        f"active={len(active_interfaces)} expected>={expected_count}"
+def _convergence_targets(topo: TopologyManifest, *, all_routing_devices: bool) -> list[Device]:
+    routed = topo.routing_devices()
+    if all_routing_devices:
+        return routed
+    if not routed:
+        return []
+    edge_switches = topo.edge_devices()
+    names = [routed[0].name]
+    role_groups = (
+        (topo.devices_by_role(DeviceRole.AGG), edge_switches) if topo.family == "fat-tree" else (edge_switches,)
     )
+    for group in role_groups:
+        if group:
+            names.extend([group[0].name, group[-1].name])
+    target_names = set(names)
+    return [device for device in routed if device.name in target_names]
 
 
 def check_worker_health(
@@ -161,6 +171,9 @@ def check_worker_health(
     influxdb_org: str | None = None,
     health_retries: int | None = None,
     health_delay: int | None = None,
+    scale_registry: ScaleRegistry | None = None,
+    require_client_agent: bool = True,
+    all_routing_devices: bool = False,
 ) -> list[str]:
     """Run all health checks and return a list of error messages (empty = healthy).
 
@@ -193,7 +206,7 @@ def check_worker_health(
     influxdb_token = influxdb_token or config.influxdb_token
     influxdb_org = influxdb_org or config.influxdb_org
 
-    profile = get_scale_profile(topo.scale)
+    profile = get_scale_profile(topo.scale, scale_registry)
     delay = HEALTH_POLL_INTERVAL_SECONDS if health_delay is None else health_delay
     retries = health_retries or max(1, ceil(profile.health_timeout_seconds / max(1, delay)))
 
@@ -229,74 +242,60 @@ def check_worker_health(
         )
         return errors
 
-    # [3/5] BGP convergence
     bgp_device = routed[0].name if routed else "spine1"
-    logger.info("[3/5] Checking BGP convergence on %s...", bgp_device)
-    bgp_container = clab_container_name(lab_name, bgp_device)
-    expected_bgp = _expected_bgp_neighbor_count(topo, bgp_device)
-    established = 0
-    for _ in range(retries):
-        ret = _docker_exec(bgp_container, "vtysh", "-c", "show ip bgp summary")
-        established = _parse_bgp_established(ret.stdout or "")
-        if established >= expected_bgp:
+    convergence_targets = _convergence_targets(topo, all_routing_devices=all_routing_devices)
+
+    logger.info(
+        "[3/5] Checking BGP and interface convergence on %s routing devices...",
+        len(convergence_targets),
+    )
+
+    def network_state(device) -> tuple[str, int, int, int, int]:
+        container = clab_container_name(lab_name, device.name)
+        bgp = _docker_exec(container, "vtysh", "-c", "show ip bgp summary")
+        interfaces = _docker_exec(container, "bash", "-lc", "show interfaces status")
+        return (
+            device.name,
+            _parse_bgp_established(bgp.stdout or ""),
+            _expected_bgp_neighbor_count(topo, device.name),
+            len(_parse_active_interfaces(interfaces.stdout or "")),
+            _expected_active_interface_count(topo, device.name),
+        )
+
+    pending: dict[str, tuple[int, int, int, int]] = {}
+    pending_devices = list(convergence_targets)
+    for attempt in range(retries):
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(pending_devices)))) as network_executor:
+            network_states = list(network_executor.map(network_state, pending_devices))
+        pending = {
+            device: (established, expected_bgp, active, expected_active)
+            for device, established, expected_bgp, active, expected_active in network_states
+            if established < expected_bgp or active < expected_active
+        }
+        if not pending:
             break
-        time.sleep(delay)
-    if established < expected_bgp:
-        errors.append(f"BGP not converged on {bgp_container}: " f"established={established} expected>={expected_bgp}")
+        pending_devices = [device for device in pending_devices if device.name in pending]
+        if attempt + 1 < retries:
+            time.sleep(delay)
+    if pending:
+        details = ", ".join(
+            f"{device}(bgp={state[0]}/{state[1]},if={state[2]}/{state[3]})"
+            for device, state in sorted(pending.items())[:12]
+        )
+        errors.append(f"network not converged on {len(pending)} routing devices: {details}")
         return errors
 
-    logger.info("[3b/5] Checking active interface coverage...")
-    coverage_targets = [bgp_device]
-    if topo.family == "fat-tree":
-        for role_devices in (topo.devices_by_role(DeviceRole.AGG), edge_switches):
-            if role_devices:
-                name = role_devices[0].name
-                if name and name not in coverage_targets:
-                    coverage_targets.append(name)
-        if edge_switches:
-            last_edge = edge_switches[-1].name
-            if last_edge and last_edge not in coverage_targets:
-                coverage_targets.append(last_edge)
-    elif edge_switches:
-        first_edge = edge_switches[0].name
-        if first_edge and first_edge not in coverage_targets:
-            coverage_targets.append(first_edge)
-        last_edge = edge_switches[-1].name
-        if last_edge and last_edge not in coverage_targets:
-            coverage_targets.append(last_edge)
-    for device in coverage_targets:
-        expected_count = _expected_active_interface_count(topo, device)
-        if expected_count <= 0:
-            continue
-        container = clab_container_name(lab_name, device)
-        active_ifaces: set[str] = set()
-        for _ in range(retries):
-            ret = _docker_exec(container, "bash", "-lc", "show interfaces status")
-            active_ifaces = _parse_active_interfaces(ret.stdout or "")
-            if len(active_ifaces) >= expected_count:
-                break
-            time.sleep(delay)
-        coverage_error = _active_interface_coverage_error(
-            container=container,
-            device=device,
-            active_interfaces=active_ifaces,
-            expected_count=expected_count,
-        )
-        if coverage_error:
-            errors.append(coverage_error)
-            return errors
-
-    # [4/5] Client connectivity + Pingmesh agent
-    logger.info("[4/5] Checking client connectivity and Pingmesh agent...")
+    # [4/5] Client connectivity + native Pingmesh process
+    logger.info("[4/5] Checking client connectivity and native Pingmesh process...")
     src_client = clients[0]
     src_name = str(src_client.get("name", ""))
-    src_leaf = str(src_client.get("leaf", ""))
+    src_attached_switch = str(src_client.get("attached_switch", ""))
     dst_ip = ""
     # Prefer cross-rack destination
     for other in clients[1:]:
         other_ip = str(other.get("data_ip", "")).strip()
-        other_leaf = str(other.get("leaf", "")).strip()
-        if other_leaf != src_leaf and other_ip:
+        other_attached_switch = str(other.get("attached_switch", "")).strip()
+        if other_attached_switch != src_attached_switch and other_ip:
             dst_ip = other_ip
             break
         if not dst_ip and other_ip:
@@ -317,16 +316,43 @@ def check_worker_health(
         errors.append(f"client connectivity failed from {src_container} to {dst_ip}")
         return errors
 
-    agent_running = False
-    for _ in range(retries):
-        ret = _docker_exec(src_container, "ps", "aux")
-        if "netopsbench.platform.pingmesh.cli" in (ret.stdout or ""):
-            agent_running = True
-            break
-        time.sleep(delay)
-    if not agent_running:
-        errors.append(f"Pingmesh agent is not running in {src_container}")
-        return errors
+    if require_client_agent:
+        agent_targets = clients if all_routing_devices else [src_client]
+
+        def agent_state(client: dict) -> tuple[str, bool]:
+            name = str(client.get("name", "")).strip()
+            management_ip = str(client.get("mgmt_ip", "")).strip()
+            if not management_ip:
+                return name, False
+            try:
+                response = request_agent(management_ip, PINGMESH_CONTROL_PORT, "status")
+            except (OSError, RuntimeError, ValueError):
+                response = {}
+            status = response.get("status") or {}
+            heartbeat_ns = int(status.get("heartbeat_unix_ns", 0) or 0)
+            heartbeat_age = time.time() - heartbeat_ns / 1_000_000_000
+            return name, bool(
+                response.get("ok") is True
+                and status.get("ready") is True
+                and 0 <= heartbeat_age <= HEARTBEAT_MAX_AGE_SECONDS
+            )
+
+        pending_agents = list(agent_targets)
+        failed_agents: list[str] = []
+        for attempt in range(retries):
+            with ThreadPoolExecutor(max_workers=min(32, max(1, len(pending_agents)))) as agent_executor:
+                agent_states = list(agent_executor.map(agent_state, pending_agents))
+            failed_agents = [name for name, ready in agent_states if not ready]
+            if not failed_agents:
+                break
+            failed_set = set(failed_agents)
+            pending_agents = [client for client in pending_agents if str(client.get("name", "")).strip() in failed_set]
+            if attempt + 1 < retries:
+                time.sleep(delay)
+        if failed_agents:
+            preview = ", ".join(sorted(failed_agents)[:12])
+            errors.append(f"Native Pingmesh process is not ready on {len(failed_agents)} clients: {preview}")
+            return errors
 
     # [5/5] InfluxDB observability path
     logger.info("[5/5] Checking InfluxDB observability path...")
@@ -368,6 +394,7 @@ def check_worker_health(
             syslog_marker=syslog_marker,
             active_interfaces=observed_active_interfaces,
             min_active_coverage_ratio=ACTIVE_INTERFACE_COVERAGE_MIN_RATIO,
+            require_pingmesh=require_client_agent,
         )
         if not obs_errors:
             break

@@ -7,7 +7,6 @@ This documentation site follows a Harbor-Lite layout:
 - `src/lib/` - shared site logic such as source loading, layout options, and base-path helpers
 - `content/docs/` - the single source of truth for published documentation content
 - `public/assets/` - static assets served by the site at runtime
-- `_legacy/` - archived historical markdown files kept for reference only
 
 ## Rules
 
@@ -21,7 +20,6 @@ This documentation site follows a Harbor-Lite layout:
 ## Asset guidance
 
 - Use `public/assets/` for images that must be publicly addressable from pages or MDX.
-- Treat `assets/` as temporary or source-material storage only until it is fully audited.
 - If an asset is referenced via `/assets/...`, it should exist under `public/assets/`.
 
 ## Validation

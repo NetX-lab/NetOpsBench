@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 from netopsbench.models.topology import DEFAULT_LINK_MTU
 from netopsbench.platform.topology.topology_utils import coerce_topology_manifest, load_topology_manifest
 
@@ -20,8 +20,8 @@ BASE_SWITCH_PPS_LIMIT = 1000
 DEFAULT_LINK_MTU_BYTES = DEFAULT_LINK_MTU
 UDP_PAYLOAD_LEN_BYTES = 1400
 TCP_MSS_BYTES = 1360
-IPERF_SERVER_PORT_BASE = 5201
-IPERF_SERVER_PORT_POOL_SIZE = 4
+TRAFFIC_LISTENER_PORT_BASE = 5201
+TRAFFIC_LISTENER_PORT_POOL_SIZE = 4
 FLOWS_PER_CLIENT = 4
 
 
@@ -32,8 +32,8 @@ def _format_bandwidth_from_pps(pps: float, packet_size_bytes: int) -> str:
     return f"{max(int(bits_per_sec / 1_000), 100)}K"
 
 
-def _max_pps_per_client(scale: str, switch_pps_limit: int | None) -> int:
-    base = get_scale_profile(scale).traffic_max_pps_per_client
+def _max_pps_per_client(scale: str, switch_pps_limit: int | None, registry: ScaleRegistry | None = None) -> int:
+    base = get_scale_profile(scale, registry).traffic_max_pps_per_client
     if switch_pps_limit is None:
         return base
     return max(1, int(round(base * switch_pps_limit / BASE_SWITCH_PPS_LIMIT)))
@@ -65,13 +65,14 @@ def generate_traffic_config_from_topology(
     profile_type: str = "standard",
     *,
     settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> dict:
     if profile_type != "standard":
         raise ValueError(f"Only the standard traffic profile is supported, got: {profile_type}")
-    get_scale_profile(scale)
+    get_scale_profile(scale, scale_registry)
     projected = coerce_topology_manifest(topology).to_agent_topology()
-    settings = settings or TrafficSettings.from_env()
-    max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit)
+    settings = settings or TrafficSettings()
+    max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     bandwidths = _standard_bandwidths(max_pps_per_client)
     link_mtu_bytes = infer_topology_link_mtu(projected, DEFAULT_LINK_MTU_BYTES)
 
@@ -88,8 +89,8 @@ def generate_traffic_config_from_topology(
         bandwidth_by_protocol=bandwidths,
         link_mtu_bytes=link_mtu_bytes,
         switch_pps_limit=settings.switch_pps_limit,
-        iperf_server_port_base=IPERF_SERVER_PORT_BASE,
-        iperf_server_port_pool_size=IPERF_SERVER_PORT_POOL_SIZE,
+        listener_port_base=TRAFFIC_LISTENER_PORT_BASE,
+        listener_port_pool_size=TRAFFIC_LISTENER_PORT_POOL_SIZE,
         build_candidate_flow_fn=build_flow,
         estimate_flow_pps_fn=estimate_flow_pps,
         estimate_client_pps_fn=estimate_client_pps,
@@ -99,7 +100,6 @@ def generate_traffic_config_from_topology(
         {
             "udp_payload_len_bytes": UDP_PAYLOAD_LEN_BYTES,
             "tcp_mss_bytes": TCP_MSS_BYTES,
-            "tcp_payload_len_bytes_estimate": TCP_MSS_BYTES,
         }
     )
     return traffic
@@ -111,35 +111,39 @@ def generate_traffic_config(
     profile_type: str = "standard",
     *,
     settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> dict:
     return generate_traffic_config_from_topology(
         load_topology_manifest(topology_file).model_dump(mode="json"),
         scale,
         profile_type,
         settings=settings,
+        scale_registry=scale_registry,
     )
 
 
-def validate_traffic_config(config: dict, scale: str, *, settings: TrafficSettings | None = None) -> bool:
-    settings = settings or TrafficSettings.from_env()
-    max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit)
+def validate_traffic_config(
+    config: dict,
+    scale: str,
+    *,
+    settings: TrafficSettings | None = None,
+    scale_registry: ScaleRegistry | None = None,
+) -> bool:
+    settings = settings or TrafficSettings()
+    max_allowed_client_pps = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     stats = config.get("stats", {})
-    estimated_clients = stats.get("estimated_pps_per_client") or stats.get("estimated_udp_pps_per_client", {})
-    max_client_pps = stats.get("estimated_max_pps_per_client") or stats.get("estimated_max_udp_pps_per_client", 0.0)
+    estimated_clients = stats.get("estimated_pps_per_client", {})
+    max_client_pps = stats.get("estimated_max_pps_per_client", 0.0)
     switch_pps = stats.get("estimated_switch_pps", {})
-    max_leaf_pps = switch_pps.get("max_leaf_pps", 0.0)
-    max_spine_pps = switch_pps.get("max_spine_pps", 0.0)
+    max_switch_pps = switch_pps.get("max_switch_pps", 0.0)
     if max_client_pps > max_allowed_client_pps:
         raise ValueError(
             f"Estimated PPS per client too high ({max_client_pps:.2f} > {max_allowed_client_pps}). "
             f"Details: {estimated_clients}"
         )
-    if settings.switch_pps_limit is not None and (
-        max_leaf_pps > settings.switch_pps_limit or max_spine_pps > settings.switch_pps_limit
-    ):
+    if settings.switch_pps_limit is not None and max_switch_pps > settings.switch_pps_limit:
         raise ValueError(
-            f"Estimated switch PPS too high (leaf max={max_leaf_pps:.2f}, spine max={max_spine_pps:.2f}, "
-            f"limit={settings.switch_pps_limit})."
+            f"Estimated switch PPS too high (switch max={max_switch_pps:.2f}, " f"limit={settings.switch_pps_limit})."
         )
     return True
 
@@ -147,8 +151,8 @@ def validate_traffic_config(config: dict, scale: str, *, settings: TrafficSettin
 __all__ = [
     "BASE_SWITCH_PPS_LIMIT",
     "FLOWS_PER_CLIENT",
-    "IPERF_SERVER_PORT_BASE",
-    "IPERF_SERVER_PORT_POOL_SIZE",
+    "TRAFFIC_LISTENER_PORT_BASE",
+    "TRAFFIC_LISTENER_PORT_POOL_SIZE",
     "estimate_client_pps",
     "estimate_flow_pps",
     "estimate_switch_pps",

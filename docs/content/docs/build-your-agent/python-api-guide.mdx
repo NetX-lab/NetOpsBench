@@ -39,6 +39,13 @@ print(run.report_path)
 
 `bench.agents.wrap(...)` is recommended for provider-backed or asynchronous agents because it gives the SDK one lifecycle boundary to close resources.
 
+:::note NetOpsBench 0.2
+Session calls are synchronous. The placeholder `RunHandle.cancel()` method and ignored
+`wait(timeout=...)` argument were removed; use `run.wait()` after a session call returns.
+Runtime objects are SDK facades—use `status()` or `describe()` instead of private platform
+payload methods.
+:::
+
 ## Session APIs
 
 | API | Use when | Runtime ownership |
@@ -65,7 +72,7 @@ When `artifacts_dir` is omitted, session artifacts are written under the workspa
 - `report.json` for the final `BenchmarkReport`;
 - `metadata.json` for run-level metadata;
 - `raw/` for worker-local scenario outputs.
-- `traces/` for per-case agent runtime traces, including ATIF v1.7 `trajectory.atif.json`, run-level `index.jsonl`, and scoring sidecar `results.jsonl`.
+- `traces/` for per-attempt agent runtime traces, including uniquely named ATIF v1.7 `trajectory-<trace-id>.atif.json` files, run-level `index.jsonl`, and scoring sidecar `results.jsonl`.
 
 The `scenario_summaries[*].raw_result_path` fields point to raw JSON files for case-level debugging.
 
@@ -103,15 +110,39 @@ NetOpsBench validates exported `job/result.json` and `trial/result.json` with Ha
 
 | Manager | Use |
 |---|---|
-| `bench.scenarios` | Load generated scenario files and handles. |
+| `bench.scales` | Inspect the resolved scale registry and custom profiles. |
+| `bench.scenarios` | Create, load, validate, and save canonical scenarios. |
 | `bench.agents` | Wrap or manage objects implementing `diagnose(context)`. |
 | `bench.sessions` | Run scenarios and suites. |
 | `bench.runtimes` | Provision, attach, list, and tear down runtime pools. |
 | `bench.faults` | Register or inspect fault definitions. |
-| `bench.evaluators` | Score `DiagnosisResult` objects and produce reports. |
+| `bench.evaluators` | Score `DiagnosisResult` objects and produce canonical reports. |
+| `bench.simulators` | Create interactive diagnostic environments over benchmark scenarios. |
 | `bench.artifacts` | Resolve run artifacts and report files. |
 
 The stable external boundary is `netopsbench.sdk`, documented example scripts, and documented CLI commands such as `benchmark prepare`, `scenario validate`, `result show`, and `runtime teardown`.
+
+## Migrating to 0.2
+
+Version 0.2 uses one canonical episode per scenario. Replace an `episodes:` list
+with a singular `episode:` object; legacy multi-episode YAML now fails with an
+explicit migration error. `ScenarioManager.create()` likewise accepts only
+`episode=` and returns `ScenarioSpec` directly.
+
+Reports now use only the canonical `id`, `summary`, `scenario_summaries`,
+`detailed_results`, `artifact_paths`, and `raw` fields. The 0.1
+`ScenarioHandle`, `PlatformDefaults`, `ScenarioEvaluator`, `report_id`, and
+`payload` compatibility names are not part of the 0.2 SDK.
+
+Fat-tree topology payloads now expose only the real `cores`, `aggs`, `edges`,
+and `clients` groups. The former compatibility projection that duplicated
+cores as `spines`, edges as `leafs`, and a client's edge as `leaf` was
+incorrect and has been removed. CLOS payloads continue to expose
+`spines`, `leafs`, and `clients`.
+
+Raw Pingmesh and BGP measurements are internal observability contracts, so
+0.2 also removes fields that had no detector, tool, dashboard, or health
+consumer.
 
 ## Runtime ownership
 

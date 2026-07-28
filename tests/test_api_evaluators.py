@@ -7,13 +7,10 @@ from netopsbench.sdk.types import DiagnosisResult, DiagnosticContext
 class CustomScenarioEvaluator:
     def evaluate_scenario(self, *, scenario, diagnosis_results, evaluator="default"):
         return BenchmarkReport(
-            report_id=f"custom:{scenario.id}",
-            payload={
-                "evaluator": evaluator,
-                "scenario_id": scenario.id,
-                "summary": {"total_cases": len(diagnosis_results), "average_score": 0.25},
-                "results": [{"agent": diagnosis_results[0].agent_name, "score": 0.25}],
-            },
+            id=f"custom:{scenario.id}",
+            summary={"total_cases": len(diagnosis_results), "average_score": 0.25},
+            detailed_results=[{"agent": diagnosis_results[0].agent_name, "score": 0.25}],
+            raw={"evaluator": evaluator, "scenario_id": scenario.id},
         )
 
 
@@ -39,14 +36,12 @@ def _make_scenario(*, scenario_id, device, interface, fault_type="link_down"):
         id=scenario_id,
         name=f"Scenario {scenario_id}",
         scale="xs",
-        episodes=[
-            {
-                "episode_id": f"{scenario_id}-ep1",
-                "fault_type": fault_type,
-                "target_device": device,
-                "target_interface": interface,
-            }
-        ],
+        episode={
+            "episode_id": f"{scenario_id}-ep1",
+            "fault_type": fault_type,
+            "target_device": device,
+            "target_interface": interface,
+        },
         metadata={"expected_diagnosis": fault_type, "difficulty": "easy"},
     )
 
@@ -84,12 +79,12 @@ def test_default_evaluator_accepts_public_diagnosis_results_and_returns_benchmar
     )
 
     assert isinstance(report, BenchmarkReport)
-    assert report.report_id == "scenario:scenario-1"
-    assert report.payload["evaluator"] == "default"
-    assert report.payload["summary"]["total_cases"] == 1
-    assert report.payload["summary"]["average_score"] == 1.0
-    assert report.payload["detailed_results"][0]["correct_fault_type"] is True
-    assert report.payload["detailed_results"][0]["correct_device"] is True
+    assert report.id == "scenario:scenario-1"
+    assert report.raw["evaluator"] == "default"
+    assert report.summary["total_cases"] == 1
+    assert report.summary["average_score"] == 1.0
+    assert report.detailed_results[0]["correct_fault_type"] is True
+    assert report.detailed_results[0]["correct_device"] is True
 
 
 def test_register_returns_normalized_public_evaluator_adapter_and_get_returns_it():
@@ -112,8 +107,8 @@ def test_register_returns_normalized_public_evaluator_adapter_and_get_returns_it
     )
 
     assert isinstance(report, BenchmarkReport)
-    assert report.report_id == "custom:scenario-custom"
-    assert report.payload["results"][0]["agent"] == "custom-agent"
+    assert report.id == "custom:scenario-custom"
+    assert report.detailed_results[0]["agent"] == "custom-agent"
 
 
 def test_evaluate_only_evaluator_is_normalized_to_public_report_output():
@@ -133,10 +128,10 @@ def test_evaluate_only_evaluator_is_normalized_to_public_report_output():
     )
 
     assert isinstance(report, BenchmarkReport)
-    assert report.report_id == "scenario:scenario-eval-only"
-    assert report.payload["evaluator"] == "simple"
-    assert report.payload["summary"]["average_score"] == 0.4
-    assert report.payload["results"][0] == {
+    assert report.id == "scenario:scenario-eval-only"
+    assert report.raw["evaluator"] == "simple"
+    assert report.summary["average_score"] == 0.4
+    assert report.detailed_results[0] == {
         "scenario_id": "scenario-eval-only",
         "agent": "eval-only-agent",
         "score": 0.4,
@@ -162,11 +157,11 @@ def test_evaluate_only_evaluator_also_supports_suite_evaluation():
     )
 
     assert isinstance(report, BenchmarkReport)
-    assert report.report_id == "suite:2"
-    assert report.payload["evaluator"] == "simple"
-    assert report.payload["summary"]["total_cases"] == 2
-    assert report.payload["summary"]["average_score"] == 0.4
-    assert report.payload["results"] == [
+    assert report.id == "suite:2"
+    assert report.raw["evaluator"] == "simple"
+    assert report.summary["total_cases"] == 2
+    assert report.summary["average_score"] == 0.4
+    assert report.detailed_results == [
         {"scenario_id": "scenario-x", "agent": "agent-x", "score": 0.4},
         {"scenario_id": "scenario-y", "agent": "agent-y", "score": 0.4},
     ]
@@ -192,11 +187,11 @@ def test_evaluate_suite_uses_scenario_evaluation_fallback_when_suite_method_miss
     )
 
     assert isinstance(report, BenchmarkReport)
-    assert report.report_id == "suite:2"
-    assert report.payload["evaluator"] == "scenario-only"
-    assert report.payload["summary"]["total_cases"] == 2
-    assert report.payload["summary"]["average_score"] == 0.5
-    assert report.payload["results"] == [
+    assert report.id == "suite:2"
+    assert report.raw["evaluator"] == "scenario-only"
+    assert report.summary["total_cases"] == 2
+    assert report.summary["average_score"] == 0.5
+    assert report.detailed_results == [
         {"scenario_id": "scenario-a", "score": 1.0},
         {"scenario_id": "scenario-b", "score": 0.0},
     ]

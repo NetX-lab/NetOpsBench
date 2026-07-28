@@ -19,6 +19,19 @@ from netopsbench.platform.topology.topology_utils import (
     load_topology_manifest,
 )
 
+_SONIC_PID1_COMMAND = "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
+
+
+@pytest.mark.parametrize(
+    "scale",
+    ["xs", "small", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"],
+)
+def test_every_builtin_scale_uses_terminable_sonic_pid1(tmp_path, scale):
+    result = generate_topology(scale, str(tmp_path / scale))
+    rendered = yaml.safe_load(Path(result["yaml_file"]).read_text(encoding="utf-8"))
+
+    assert rendered["topology"]["kinds"]["sonic-vs"]["cmd"] == _SONIC_PID1_COMMAND
+
 
 @pytest.mark.parametrize(
     ("scale", "roles", "clients", "links"),
@@ -51,6 +64,19 @@ def test_renderer_persists_only_canonical_schema_v3_devices(tmp_path, scale, rol
         assert "edge" not in client
 
 
+def test_renderer_atomically_removes_stale_device_artifacts(tmp_path):
+    output = tmp_path / "topology"
+    generate_topology("small", str(output))
+    assert (output / "configs" / "sonic" / "leaf4").is_dir()
+
+    generate_topology("xs", str(output))
+
+    assert not (output / "configs" / "sonic" / "leaf4").exists()
+    assert not (output / "configs" / "frr" / "leaf4.conf").exists()
+    assert not list(tmp_path.glob(".topology.staging-*"))
+    assert not (tmp_path / ".topology.backup").exists()
+
+
 def test_clos_builder_returns_complete_fabric_plan_without_writing(tmp_path):
     output_dir = tmp_path / "not-rendered"
     plan = build_clos_plan(TopologyConfig(scale_name="xs"))
@@ -58,13 +84,11 @@ def test_clos_builder_returns_complete_fabric_plan_without_writing(tmp_path):
     assert isinstance(plan, FabricPlan)
     assert not output_dir.exists()
     assert len(plan.device_plans) == 6
-    spine1 = plan.device_plan("spine1")
-    leaf1 = plan.device_plan("leaf1")
-    assert spine1 is not None
+    spine1 = next(device for device in plan.device_plans if device.name == "spine1")
+    leaf1 = next(device for device in plan.device_plans if device.name == "leaf1")
     assert spine1.required_ports == 2
     assert spine1.configdb_interface_cidrs["Ethernet0"] == ("10.1.1.1/30",)
     assert spine1.bgp_neighbors[0].peer_ip == "10.1.1.2"
-    assert leaf1 is not None
     assert leaf1.required_ports == 3
     assert leaf1.bgp_networks == ("192.168.101.0/30",)
     assert plan.manifest.links[0].endpoints[0].interface == "eth1"
@@ -88,7 +112,7 @@ def test_rendered_clos_artifacts_keep_preseed_and_addressing_contract(tmp_path):
     assert links[-1] == {"endpoints": ["leaf128:eth17", "client128:eth1"], "mtu": 9232}
 
     assert (tmp_path / "configs" / "sonic" / "start.sh").is_file()
-    assert (tmp_path / "configs" / "pingmesh").is_dir()
+    assert (tmp_path / "configs" / "client-agent" / "client-agent.json").is_file()
     spine = json.loads((tmp_path / "configs" / "sonic" / "spine16" / "config_db.json").read_text())
     leaf = json.loads((tmp_path / "configs" / "sonic" / "leaf128" / "config_db.json").read_text())
     assert len([name for name in spine["PORT"]]) == 128

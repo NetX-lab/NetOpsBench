@@ -10,17 +10,21 @@ from pathlib import Path
 
 from netopsbench.cli.trace import add_trace_subparser, cmd_trace
 from netopsbench.logging_utils import configure_logging
-from netopsbench.models.profiles import supported_scales
 from netopsbench.platform.scenario import generator as scenario_generator
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.sdk import NetOpsBench
-
-SUPPORTED_SCALES = supported_scales()
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="NetOpsBench CLI")
     parser.add_argument("--workspace", default=".", help="Workspace directory for runtime metadata")
+    parser.add_argument(
+        "--scale-profile",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Load an additional scale profile YAML (repeatable)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("status", help="Show SDK-visible platform status")
@@ -34,11 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     teardown_target = runtime_teardown.add_mutually_exclusive_group(required=True)
     teardown_target.add_argument("name", nargs="?", default=None, help="Runtime name")
     teardown_target.add_argument("--all", dest="teardown_all", action="store_true", help="Tear down all runtimes")
-
     topology_parser = subparsers.add_parser("topology", help="Topology generation operations")
     topology_sub = topology_parser.add_subparsers(dest="topology_action", required=True)
     topology_generate = topology_sub.add_parser("generate", help="Generate topology metadata for one scale")
-    topology_generate.add_argument("--scale", required=True, choices=SUPPORTED_SCALES, help="Topology scale")
+    topology_generate.add_argument("--scale", required=True, help="Topology scale")
     topology_generate.add_argument("--out", help="Output directory (default: lab-topology/generated_topology_<scale>)")
 
     scenario_parser = subparsers.add_parser("scenario", help="Scenario query and generation operations")
@@ -48,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_validate = scenario_sub.add_parser("validate", help="Validate one scenario YAML")
     scenario_validate.add_argument("file", help="Scenario YAML file")
     scenario_generate = scenario_sub.add_parser("generate", help="Generate scenario YAML for one scale")
-    scenario_generate.add_argument("--scale", required=True, choices=SUPPORTED_SCALES, help="Topology scale")
+    scenario_generate.add_argument("--scale", required=True, help="Topology scale")
     scenario_generate.add_argument("--spec", help="Scenario generation spec file (default: packaged campaign)")
     scenario_generate.add_argument(
         "--topology-dir", help="Generated topology directory (default: lab-topology/generated_topology_<scale>)"
@@ -59,7 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     result_parser = subparsers.add_parser("result", help="Inspect benchmark results")
     result_sub = result_parser.add_subparsers(dest="result_action", required=True)
     result_list = result_sub.add_parser("list", help="List result reports")
-    result_list.add_argument("--dir", default="scenario_results", help="Results directory (default: scenario_results)")
+    result_list.add_argument(
+        "--dir",
+        default=".netopsbench/runs",
+        help="Results directory (default: .netopsbench/runs)",
+    )
     result_show = result_sub.add_parser("show", help="Show a result report")
     result_show.add_argument("path", help="Path to report.json")
 
@@ -72,8 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark_prepare.add_argument(
         "--scales",
-        default=",".join(SUPPORTED_SCALES),
-        help="Comma-separated scale list (default: xs,small,medium,large)",
+        default=None,
+        help="Comma-separated scale list (default: all resolved profiles)",
     )
     benchmark_prepare.add_argument("--spec", help="Scenario generation spec file (default: packaged campaign)")
     benchmark_prepare.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation")
@@ -108,7 +115,7 @@ def _cmd_runtime(bench: NetOpsBench, args: argparse.Namespace) -> int:
         if runtime is None:
             print(f"runtime not found: {args.name}")
             return 1
-        print(json.dumps(runtime._payload(), indent=2))
+        print(json.dumps(runtime.describe(), indent=2))
         return 0
     if args.runtime_action == "teardown":
         if args.teardown_all:
@@ -143,9 +150,19 @@ def _default_scenario_output_dir(workspace: Path, scale: str) -> Path:
     return workspace / "scenarios" / "generated" / scale
 
 
-def _generate_topology(workspace: Path, *, scale: str, output_dir: Path | None = None) -> int:
+def _generate_topology(
+    bench: NetOpsBench,
+    *,
+    scale: str,
+    output_dir: Path | None = None,
+) -> int:
+    workspace = bench.workspace
     destination = Path(output_dir) if output_dir is not None else _default_topology_output_dir(workspace, scale)
-    result = generate_topology(scale=scale, output_dir=str(destination))
+    result = generate_topology(
+        scale=scale,
+        output_dir=str(destination),
+        scale_registry=bench.scales.registry,
+    )
     print(f"generated topology: scale={scale}")
     print(f"  output_dir: {destination}")
     metadata_file = result.get("metadata_file") if isinstance(result, dict) else None
@@ -180,9 +197,11 @@ def _generate_scenarios(
     return 0
 
 
-def _parse_scales(raw: str) -> list[str]:
+def _parse_scales(raw: str | None, available: tuple[str, ...]) -> list[str]:
+    if raw is None:
+        return list(available)
     values = [item.strip() for item in raw.split(",") if item.strip()]
-    invalid = [item for item in values if item not in SUPPORTED_SCALES]
+    invalid = [item for item in values if item not in available]
     if invalid:
         raise ValueError(f"unsupported scales: {', '.join(invalid)}")
     if not values:
@@ -193,7 +212,7 @@ def _parse_scales(raw: str) -> list[str]:
 def _cmd_topology(bench: NetOpsBench, args: argparse.Namespace) -> int:
     if args.topology_action == "generate":
         out = Path(args.out) if args.out else None
-        return _generate_topology(bench.workspace, scale=args.scale, output_dir=out)
+        return _generate_topology(bench, scale=args.scale, output_dir=out)
     raise AssertionError(f"unhandled topology action: {args.topology_action}")
 
 
@@ -275,7 +294,7 @@ def _cmd_result(bench: NetOpsBench, args: argparse.Namespace) -> int:
 
 def _cmd_benchmark(bench: NetOpsBench, args: argparse.Namespace) -> int:
     if args.benchmark_action == "prepare":
-        scales = _parse_scales(args.scales)
+        scales = _parse_scales(args.scales, bench.scales.names())
         spec = Path(args.spec) if args.spec else _default_scenario_spec()
         print("Preparing benchmark assets")
         print(f"  workspace: {bench.workspace}")
@@ -284,7 +303,7 @@ def _cmd_benchmark(bench: NetOpsBench, args: argparse.Namespace) -> int:
         for scale in scales:
             topo_dir = _default_topology_output_dir(bench.workspace, scale)
             scenario_dir = _default_scenario_output_dir(bench.workspace, scale)
-            _generate_topology(bench.workspace, scale=scale, output_dir=topo_dir)
+            _generate_topology(bench, scale=scale, output_dir=topo_dir)
             _generate_scenarios(
                 bench.workspace, scale=scale, spec=spec, topology_dir=topo_dir, out=scenario_dir, seed=args.seed
             )
@@ -297,7 +316,7 @@ def main() -> int:
     configure_logging()
     parser = build_parser()
     args = parser.parse_args()
-    bench = NetOpsBench(workspace=args.workspace)
+    bench = NetOpsBench(workspace=args.workspace, scale_profiles=args.scale_profile)
 
     if args.command == "status":
         return _cmd_status(bench)

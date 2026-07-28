@@ -9,6 +9,9 @@ from math import ceil
 class DetectorCoverageMixin:
     """Audit schedule coverage without consulting fault targets."""
 
+    _pingmesh_clients: list[str]
+    _pingmesh_policy: dict
+
     def summarize_coverage(self, rows: list[dict]) -> dict:
         client_count = len(self._pingmesh_clients)
         policy = self._pingmesh_policy
@@ -69,11 +72,17 @@ class DetectorCoverageMixin:
         missing_destination_batches = sorted(set(range(expected_destination_batches)) - destination_batches)
         missing_port_batches = sorted(set(range(expected_port_batches)) - port_batches)
         missing_sources = max(0, client_count - len(sources))
+        regular_loss_by_socket_batch = _regular_loss_by_socket_batch(cycle_rows)
         invalid_socket_rows = sum(
             1
             for row in cycle_rows
-            if _field_int(row, "rtt_ports_total") != port_pool_size
-            or _field_int(row, "rtt_ports_active") != ports_per_cycle
+            if not _has_valid_socket_batch(
+                row,
+                port_pool_size=port_pool_size,
+                ports_per_cycle=ports_per_cycle,
+                port_batch_count=expected_port_batches,
+                regular_loss_by_socket_batch=regular_loss_by_socket_batch,
+            )
         )
         expected_pairs = client_count * destination_count
         expected_pair_port_combinations = expected_pairs * expected_port_batches
@@ -117,3 +126,72 @@ def _field_int(row: dict, field: str) -> int | None:
         return int(row[field])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _has_valid_socket_batch(
+    row: dict,
+    *,
+    port_pool_size: int,
+    ports_per_cycle: int,
+    port_batch_count: int,
+    regular_loss_by_socket_batch: dict[tuple[str, str, int], int],
+) -> bool:
+    port_batch_index = _field_int(row, "port_batch_index")
+    if port_batch_index is None or not 0 <= port_batch_index < port_batch_count:
+        return False
+    expected_active = min(ports_per_cycle, port_pool_size - port_batch_index * ports_per_cycle)
+    return (
+        _field_int(row, "rtt_ports_total") == port_pool_size
+        and _field_int(row, "rtt_ports_active") == expected_active
+        and (
+            _field_int(row, "local_probe_errors") == 0
+            or is_explained_df_send_error(
+                row,
+                regular_loss_by_socket_batch=regular_loss_by_socket_batch,
+            )
+        )
+    )
+
+
+def _socket_batch_key(row: dict) -> tuple[str, str, int] | None:
+    source = str(row.get("src_name") or row.get("src_ip") or "")
+    destination = str(row.get("dst_name") or row.get("dst_ip") or "")
+    if not source or not destination:
+        return None
+    port_batch_index = _field_int(row, "port_batch_index")
+    return source, destination, port_batch_index if port_batch_index is not None else -1
+
+
+def _regular_loss_by_socket_batch(rows: list[dict]) -> dict[tuple[str, str, int], int]:
+    losses: dict[tuple[str, str, int], int] = {}
+    for row in rows:
+        key = _socket_batch_key(row)
+        packets_sent = _field_int(row, "packets_sent")
+        packets_lost = _field_int(row, "packets_lost")
+        if (
+            key is None
+            or packets_sent is None
+            or packets_sent <= 0
+            or packets_lost is None
+            or not 0 <= packets_lost <= packets_sent
+        ):
+            continue
+        losses[key] = losses.get(key, 0) + packets_lost
+    return losses
+
+
+def is_explained_df_send_error(
+    row: dict,
+    *,
+    regular_loss_by_socket_batch: dict[tuple[str, str, int], int],
+) -> bool:
+    """Return true when full-window RTT loss explains a DF-only send error."""
+    local_errors = _field_int(row, "local_probe_errors")
+    df_mtu_drops = _field_int(row, "df_mtu_drops")
+    key = _socket_batch_key(row)
+    return bool(
+        local_errors
+        and local_errors == df_mtu_drops
+        and key is not None
+        and regular_loss_by_socket_batch.get(key, 0) >= 3
+    )

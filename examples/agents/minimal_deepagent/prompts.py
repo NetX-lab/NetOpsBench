@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from netopsbench.sdk import build_canonical_observation
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are a production network troubleshooting expert for DCN fabrics. "
     "Use NetOpsBench MCP tools to diagnose live issues with evidence-first reasoning. "
@@ -22,75 +24,34 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def build_context_summary(context: Any) -> dict[str, Any]:
-    topology = context.topology if isinstance(getattr(context, "topology", None), dict) else {}
-    symptoms = context.symptoms if isinstance(getattr(context, "symptoms", None), dict) else {}
-    devices = topology.get("devices") or {}
-    observations = symptoms.get("observations") or {}
-    pingmesh_metrics = observations.get("pingmesh_metrics") or {}
-
-    return {
-        "scenario_id": getattr(context, "scenario_id", "unknown"),
-        "topology_counts": {
-            "spines": len(devices.get("spines") or []),
-            "leafs": len(devices.get("leafs") or []),
-            "clients": len(devices.get("clients") or []),
-            "links": len(topology.get("links") or []),
-        },
-        "symptoms_keys": sorted(symptoms.keys()),
-        "observations_keys": sorted(observations.keys()),
-        "episode": symptoms.get("episode") or {},
-        "pingmesh_query_window": symptoms.get("pingmesh_query_window") or {},
-        "pingmesh_summary": (pingmesh_metrics.get("summary") or {}) if isinstance(pingmesh_metrics, dict) else {},
-    }
-
-
-def build_compact_anomalies(context: Any, limit: int = 6) -> list[dict[str, Any]]:
-    symptoms = context.symptoms if isinstance(getattr(context, "symptoms", None), dict) else {}
-    observations = symptoms.get("observations") or {}
-    pingmesh_metrics = observations.get("pingmesh_metrics") or {}
-    anomalies = pingmesh_metrics.get("anomalies") or []
-
-    compact: list[dict[str, Any]] = []
-    for item in anomalies[:limit]:
-        if not isinstance(item, dict):
-            continue
-        compact.append(
-            {
-                "type": item.get("type"),
-                "src_name": item.get("src_name") or item.get("src"),
-                "dst_name": item.get("dst_name") or item.get("dst"),
-                "src_leaf": item.get("src_leaf"),
-                "dst_leaf": item.get("dst_leaf"),
-                "severity": item.get("severity"),
-                "window": item.get("observation_window"),
-                "value": item.get("value") or item.get("loss_pct") or item.get("current_loss"),
-            }
-        )
-    return compact
-
-
 def build_user_prompt(context: Any) -> str:
-    summary = build_context_summary(context)
-    anomalies = build_compact_anomalies(context)
+    metadata = getattr(context, "metadata", {}) or {}
+    observation = metadata.get("canonical_observation")
+    if not isinstance(observation, dict):
+        observation = build_canonical_observation(
+            case_id=str(getattr(context, "scenario_id", "unknown")),
+            topology=dict(getattr(context, "topology", {}) or {}),
+            symptoms=dict(getattr(context, "symptoms", {}) or {}),
+        )
     return (
         "Diagnose the current network state and return the final structured diagnosis.\n\n"
-        f"SCENARIO_SUMMARY: {json.dumps(summary, ensure_ascii=False)}\n"
-        f"OBSERVED_ANOMALIES: {json.dumps(anomalies, ensure_ascii=False)}\n\n"
+        f"CANONICAL_OBSERVATION: {json.dumps(observation, ensure_ascii=False, sort_keys=True)}\n\n"
         "Requirements:\n"
         "1) Start with topology/Pingmesh-oriented MCP tools before concluding.\n"
         "2) Gather evidence with tools instead of relying on the summary alone.\n"
         "3) If a fault exists, identify fault_type and the most likely network-side location.\n"
         "4) Keep reasoning concise and tied to tool evidence.\n"
-        "5) If you call an MCP tool, first explain in normal assistant text what evidence you need and why.\n"
-        "6) Do not reveal hidden chain-of-thought; keep investigation notes observable and evidence-oriented.\n"
-        "7) When done, include exactly one fenced ```json block with fields: "
+        "5) Device logs are valid evidence only inside the observation start_time/end_time. "
+        "Pass both timestamps to get_device_logs and ignore entries outside that window.\n"
+        "6) If you call an MCP tool, first explain in normal assistant text what evidence you need and why.\n"
+        "7) Do not reveal hidden chain-of-thought; keep investigation notes observable and evidence-oriented.\n"
+        "8) When done, include exactly one fenced ```json block with fields: "
         "verdict, fault_type, location, evidence, confidence, reasoning.\n"
-        "8) The JSON verdict MUST be exactly one of fault_detected, network_healthy, or inconclusive.\n"
-        "9) The JSON location MUST be an object, never a string: "
+        "9) The JSON verdict MUST be exactly one of fault_detected, network_healthy, or inconclusive.\n"
+        "10) The JSON location MUST be an object, never a string: "
         '{"device": "leaf1", "interface": "Ethernet8"}. '
         'Use {"device": null, "interface": null} when location is unknown or not applicable.\n'
-        "10) Final JSON shape example:\n"
+        "11) Final JSON shape example:\n"
         "```json\n"
         '{"verdict":"fault_detected","fault_type":"link_down",'
         '"location":{"device":"leaf1","interface":"Ethernet8"},'

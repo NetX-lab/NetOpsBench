@@ -30,7 +30,7 @@ def _inject_packet_loss_episode(injector, episode):
     return injector.inject_packet_loss(
         episode.target_device,
         episode.target_interface or "eth1",
-        loss_pct=episode_param(episode, "loss_pct", 10),
+        loss_pct=episode_param(episode, "loss_pct", 30),
     )
 
 

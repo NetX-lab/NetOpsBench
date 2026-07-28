@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from netopsbench.platform.utils.interface_names import to_linux_interface, to_sonic_interface
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from .command_runner import CommandRunner
     from .sonic_runtime import SonicRuntime
 
@@ -20,7 +20,7 @@ SONIC_DEFAULT_INTERFACE_MTU = 9100
 class InterfaceRuntime:
     """Interface naming resolution and MTU management."""
 
-    def __init__(self, cmd: CommandRunner, sonic: SonicRuntime, ctx: FaultContext) -> None:
+    def __init__(self, cmd: CommandRunner, sonic: SonicRuntime, ctx: FaultRuntimeContext) -> None:
         self._cmd = cmd
         self._sonic = sonic
         self._ctx = ctx
@@ -76,20 +76,20 @@ class InterfaceRuntime:
         container = self._ctx.container_names.get(device)
         if not container:
             raise ValueError(f"Unknown device: {device}")
+        result = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", sonic_interface])
+        live_mtu = self.parse_link_mtu(result.stdout if result.returncode == 0 else "")
+        if live_mtu is not None:
+            return live_mtu
+
         result = self._cmd.docker_exec(
             container, ["sonic-db-cli", "CONFIG_DB", "hget", f"PORT|{sonic_interface}", "mtu"]
         )
         raw = (result.stdout or "").strip()
         if self.is_valid_sonic_mtu(raw):
             return int(raw)
-
-        result = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", sonic_interface])
-        live_mtu = self.parse_link_mtu(result.stdout if result.returncode == 0 else "")
-        if live_mtu is not None:
-            return live_mtu
         return self.get_common_port_mtu(device, exclude_interface=sonic_interface)
 
     def resolve_recovery_mtu(self, device: str, sonic_interface: str, original_mtu: int | None) -> int:
-        if self.is_valid_sonic_mtu(original_mtu):
-            return int(original_mtu)
+        if original_mtu is not None and self.is_valid_sonic_mtu(original_mtu):
+            return original_mtu
         return self.get_common_port_mtu(device, exclude_interface=sonic_interface)

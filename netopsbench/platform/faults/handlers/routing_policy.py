@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.routing_runtime import RoutingRuntime
     from ..services.sonic_runtime import SonicRuntime
     from ..services.tracking import FaultTracker
@@ -19,12 +20,56 @@ class RoutePolicyHandler:
         sonic: SonicRuntime,
         routing: RoutingRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._sonic = sonic
         self._routing = routing
         self._tracker = tracker
         self._ctx = ctx
+
+    def _running_config(self, device: str) -> str | None:
+        result = self._sonic.vtysh(device, ["show running-config"])
+        if result.returncode != 0:
+            return None
+        return result.stdout or ""
+
+    def _bgp_prefix_present(self, device: str, prefix: str) -> bool | None:
+        result = self._sonic.vtysh(device, [f"show ip bgp {prefix}"])
+        if result.returncode != 0:
+            return None
+        output = result.stdout or ""
+        lowered = output.lower()
+        if "network not in table" in lowered or "not found" in lowered:
+            return False
+        return prefix in output
+
+    def _wait_for_bgp_prefix(self, device: str, prefix: str, *, present: bool) -> bool:
+        for attempt in range(10):
+            state = self._bgp_prefix_present(device, prefix)
+            if state is present:
+                return True
+            if attempt < 9:
+                time.sleep(1)
+        return False
+
+    def _track_failed_compensation(
+        self,
+        fault_info: dict[str, Any],
+        rollback: dict[str, Any],
+    ) -> None:
+        if rollback.get("recovered") is True:
+            return
+        error = "; ".join(
+            filter(
+                None,
+                [
+                    str(fault_info.get("error") or ""),
+                    str(rollback.get("error") or "route-policy compensation failed"),
+                ],
+            )
+        )
+        fault_info["error"] = error
+        self._tracker.track_residual(fault_info, error)
 
     def inject_route_policy_misconfig(
         self,
@@ -51,7 +96,7 @@ class RoutePolicyHandler:
             raise RuntimeError(f"Unable to determine local BGP ASN for target device: device={device}")
 
         effective_route_map = route_map or network.get("route_map")
-        fault_info = {
+        fault_info: dict[str, Any] = {
             "type": "route_policy_misconfig",
             "device": device,
             "target_prefix": prefix,
@@ -95,12 +140,41 @@ class RoutePolicyHandler:
             return fault_info
 
         result = self._sonic.vtysh(device, commands)
-        fault_info["success"] = result.returncode == 0
-        fault_info["error"] = result.stderr if result.returncode != 0 else None
+        running = self._running_config(device)
+        if misconfig_kind == "network_statement_missing":
+            state_matches = (
+                running is not None
+                and network_statement not in running
+                and self._wait_for_bgp_prefix(device, prefix, present=False)
+            )
+        else:
+            state_matches = (
+                running is not None
+                and f"route-map {fault_info['route_map']} deny {fault_info['sequence']}" in running
+                and f"ip prefix-list {fault_info['prefix_list_name']}" in running
+                and self._wait_for_bgp_prefix(device, prefix, present=True)
+            )
+        fault_info["success"] = result.returncode == 0 and state_matches
+        fault_info["error"] = (
+            None
+            if fault_info["success"]
+            else result.stderr or "route policy state did not match the injected configuration"
+        )
 
         if fault_info["success"]:
             self._tracker.track(fault_info)
+            return fault_info
 
+        rollback = self.recover_route_policy_misconfig(
+            device,
+            prefix,
+            misconfig_kind,
+            route_map=fault_info.get("route_map"),
+            network_statement=fault_info.get("network_statement"),
+            prefix_list_name=fault_info.get("prefix_list_name"),
+            sequence=fault_info.get("sequence"),
+        )
+        self._track_failed_compensation(fault_info, rollback)
         return fault_info
 
     def recover_route_policy_misconfig(
@@ -150,18 +224,36 @@ class RoutePolicyHandler:
             raise ValueError(f"Unsupported route_policy misconfig_kind: {misconfig_kind}")
 
         result = self._sonic.vtysh(device, commands)
-
-        self._tracker.remove_faults(
-            lambda fault: fault["type"] == "route_policy_misconfig"
-            and fault["device"] == device
-            and fault.get("target_prefix") == target_prefix
-        )
+        running = self._running_config(device)
+        if misconfig_kind == "network_statement_missing":
+            recovered = (
+                result.returncode == 0
+                and running is not None
+                and statement in running
+                and self._wait_for_bgp_prefix(device, target_prefix, present=True)
+            )
+        else:
+            recovered = (
+                result.returncode == 0
+                and running is not None
+                and (
+                    f"route-map {route_map} deny {int(sequence or 5)}" not in running
+                    and f"ip prefix-list {prefix_list_name}" not in running
+                    and self._wait_for_bgp_prefix(device, target_prefix, present=True)
+                )
+            )
+        if recovered:
+            self._tracker.remove_faults(
+                lambda fault: fault["type"] == "route_policy_misconfig"
+                and fault["device"] == device
+                and fault.get("target_prefix") == target_prefix
+            )
 
         return {
             "type": "route_policy_misconfig",
             "device": device,
             "target_prefix": target_prefix,
             "misconfig_kind": misconfig_kind,
-            "recovered": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "recovered": recovered,
+            "error": None if recovered else result.stderr or "route policy recovery was not observed",
         }

@@ -19,14 +19,19 @@ The agent returns a `DiagnosisResult` with verdict, findings, confidence, eviden
 
 ## Test suite
 
-All topologies use a spine-leaf fabric. Scale increases both switch count and Pingmesh endpoint density.
+The CLOS profiles use a spine-leaf fabric. The fat-tree profiles use distinct
+core, aggregation, and edge tiers. Scale increases both switch count and
+Pingmesh endpoint density.
 
-| Scale | Spines | Leafs | Clients | Network devices |
-|---|---:|---:|---:|---:|
-| XS | 2 | 2 | 2 | 4 |
-| Small | 2 | 4 | 8 | 6 |
-| Medium | 4 | 8 | 16 | 12 |
-| Large | 4 | 16 | 64 | 20 |
+| Scale | Family | Fabric devices | Clients |
+|---|---|---:|---:|
+| XS | CLOS | 2 spine + 2 leaf | 2 |
+| Small | CLOS | 2 spine + 4 leaf | 8 |
+| Medium | CLOS | 4 spine + 8 leaf | 16 |
+| Large | CLOS | 4 spine + 16 leaf | 64 |
+| XLarge | CLOS | 16 spine + 128 leaf | 128 |
+| Fat-tree K8 | Fat-tree | 16 core + 32 aggregation + 32 edge | 128 |
+| Fat-tree K12 | Fat-tree | 36 core + 72 aggregation + 72 edge | 144 |
 
 The benchmark covers twelve canonical fault types:
 
@@ -46,8 +51,54 @@ Each scale combines fault cases with healthy negative samples:
 | Small | 12 | 3 | 15 |
 | Medium | 24 | 4 | 28 |
 | Large | 48 | 4 | 52 |
+| XLarge | 66 | 4 | 70 |
+| Fat-tree K8 | 66 | 4 | 70 |
+| Fat-tree K12 | 66 | 4 | 70 |
 
 Scenarios are generated from the packaged canonical campaign spec. Running `netopsbench benchmark prepare --scales <scale>` materializes YAML files under `scenarios/generated/<scale>/`; `--spec` can select a custom campaign.
+
+## Observation validity
+
+Pingmesh compares an explicit healthy baseline with the fault observation
+window. A path is reported as a latency spike when its median `rtt_avg`
+increases by at least 20 ms across the complete observation window. Peaks and
+individual ECMP port batches do not qualify. Packet loss requires both the
+configured percentage increase and at least three lost probes on that path;
+loss elsewhere in the same rack does not amplify weak evidence. Jitter remains
+available in the raw RTT samples but is not a formal anomaly. These rules are
+shared by built-in and custom topologies.
+
+The canonical packet-loss campaign applies 30% loss on one selected egress
+member. On redundant fabrics, ECMP can dilute the endpoint-visible symptom;
+the benchmark reports only the evidence actually measured and does not lower
+detector thresholds to force an anomaly. Large profiles use a three-second
+probe cycle so complete ECMP coverage is spread over 102 seconds (xlarge/K8)
+or 114 seconds (K12) instead of being emitted in a host-scheduling burst.
+
+Background traffic must start its complete topology-derived flow matrix before the baseline is captured. A partial matrix is an infrastructure-invalid case, rather than a degraded observation presented to the agent.
+The baseline is also invalid when coverage is incomplete, any path is
+unreachable, latency or network-MTU anomalies exist, or an unexplained local DF
+probe error occurs. A DF-only local send error is treated as a consequence of
+the measured path failure only when the same path and socket batch contains at
+least three lost ordinary RTT probes across the complete observation window and
+no other local error. Loss on another path or ECMP socket batch does not qualify.
+
+`mtu_or_fragmentation_suspect` is deliberately a symptom label, not a confirmed
+MTU root cause. In particular, an isolated DF-only symptom during link flapping
+still requires interface-MTU or multi-path evidence before an agent should
+diagnose `mtu_mismatch`.
+
+Each topology sends native Pingmesh batches through its topology-local
+Telegraf listener. Multiple warm topologies may therefore keep observability
+active together; readiness and complete coverage remain mandatory for every
+case. Host capacity is not hidden by a longer timeout or a topology-specific
+detector threshold.
+
+The 0.2 collector polls BGP every 10 seconds. On topologies with more than 128
+routing devices, every poll writes the collection index, state transitions,
+and all non-Established neighbors; stable complete-neighbor snapshots are
+written every 60 seconds. Use the tool's reported data freshness when
+interpreting BGP evidence.
 
 ## Scoring dimensions
 

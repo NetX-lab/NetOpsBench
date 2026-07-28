@@ -6,15 +6,15 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
-    from .topology_runtime import TopologyRuntime
+    from ..context import FaultRuntimeContext
+    from .sonic_runtime import SonicRuntime
 
 
 class RoutingRuntime:
     """BGP config parsing, neighbor selection, and route-policy helpers."""
 
-    def __init__(self, topo_rt: TopologyRuntime, ctx: FaultContext) -> None:
-        self._topo_rt = topo_rt
+    def __init__(self, sonic: SonicRuntime, ctx: FaultRuntimeContext) -> None:
+        self._sonic = sonic
         self._ctx = ctx
 
     def get_bgp_config_snapshot(self, device: str) -> dict[str, Any]:
@@ -23,7 +23,9 @@ class RoutingRuntime:
         networks: list[dict[str, Any]] = []
         seen_networks = set()
 
-        for raw_line in self._topo_rt.load_device_config_lines(device):
+        result = self._sonic.vtysh(device, ["show running-config"])
+        config_lines = (result.stdout or "").splitlines() if result.returncode == 0 else []
+        for raw_line in config_lines:
             line = raw_line.strip()
 
             match = re.match(r"^router bgp (\d+)$", line)

@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from netopsbench.sdk.agents import DiagnosisResult
 from netopsbench.sdk.core import NetOpsBench
 from netopsbench.sdk.reports import BenchmarkReport, RunHandle
@@ -20,7 +22,7 @@ class DummyAgent:
             verdict="fault_detected",
             findings={
                 "fault_type": "link_down",
-                "location": {"device": "leaf1", "interface": "Ethernet1"},
+                "location": {"device": "leaf1", "interface": "Ethernet0"},
                 "evidence": ["fake-evidence"],
             },
             confidence=0.9,
@@ -60,33 +62,29 @@ class _FakeEvaluator:
 
 
 def _install_real_runtime_mocks(monkeypatch):
-    import netopsbench.platform.session.diagnosis as diagnosis_mod
     import netopsbench.platform.session.dispatch as dispatch_mod
     import netopsbench.platform.session.orchestrator as sessions_mod
-
-    class FakeToolkit:
-        def set_pingmesh_time_window(self, start_time, end_time):
-            self.pingmesh_window = (start_time, end_time)
 
     class FakeScenarioExecutor:
         def __init__(
             self,
             topology_dir,
             topology_metadata=None,
-            baseline_wait_seconds=5,
+            minimum_baseline_seconds=5,
             post_recovery_wait_seconds=2,
-            skip_none_episodes=False,
             influxdb_url=None,
             influxdb_token=None,
             influxdb_org=None,
             influxdb_bucket=None,
             topology_id=None,
-            persist_results=True,
             fault_registry=None,
+            scale_registry=None,
+            evaluator=None,
+            runtime_worker=None,
         ):
             self.topology_dir = topology_dir
             self.topology_metadata = topology_metadata
-            self.results_dir = None
+            self.evaluator = evaluator
 
         def run_scenario(self, scenario, diagnosis_callback=None):
             diagnosis = None
@@ -98,42 +96,77 @@ def _install_real_runtime_mocks(monkeypatch):
                             "episode_id": "ep1",
                             "fault_type": "link_down",
                             "target_device": "leaf1",
-                            "target_interface": "Ethernet1",
+                            "target_interface": "Ethernet0",
                         },
                         "observations": {"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
-                    }
+                    },
+                    diagnostic_session=SimpleNamespace(),
+                    diagnostic_payload={
+                        "case_id": "case-test",
+                        "topology": {"devices": {}, "links": []},
+                        "symptoms": {
+                            "episode": {
+                                "episode_id": "ep1",
+                            },
+                            "observations": {
+                                "start_time": "2026-01-01T00:00:00Z",
+                                "end_time": "2026-01-01T00:01:00Z",
+                            },
+                            "pingmesh_query_window": {},
+                        },
+                        "canonical_observation": {
+                            "case_id": "case-test",
+                            "topology_summary": {
+                                "family": "unknown",
+                                "spines": 0,
+                                "leafs": 0,
+                                "cores": 0,
+                                "aggs": 0,
+                                "edges": 0,
+                                "clients": 0,
+                                "links": 0,
+                            },
+                            "symptoms": {
+                                "episode": {"episode_id": "ep1"},
+                                "observations": {
+                                    "start_time": "2026-01-01T00:00:00Z",
+                                    "end_time": "2026-01-01T00:01:00Z",
+                                },
+                                "pingmesh_query_window": {},
+                            },
+                        },
+                    },
                 )
             return {
                 "success": True,
-                "result_file": str(Path(self.results_dir or ".") / f"{scenario.scenario_id}.json"),
-                "episodes": [
-                    {
-                        "episode": {
-                            "episode_id": "ep1",
-                            "fault_type": "link_down",
-                            "target_device": "leaf1",
-                            "target_interface": "Ethernet1",
-                        },
-                        "diagnosis": diagnosis,
-                    }
-                ],
+                "episode": {
+                    "episode": {
+                        "episode_id": "ep1",
+                        "fault_type": "link_down",
+                        "target_device": "leaf1",
+                        "target_interface": "Ethernet0",
+                    },
+                    "diagnosis": diagnosis,
+                },
             }
+
+        def close(self):
+            return None
 
     monkeypatch.setattr(dispatch_mod, "ScenarioExecutor", FakeScenarioExecutor)
     monkeypatch.setattr(dispatch_mod, "load_topology_metadata", lambda _topology_dir: None)
+    monkeypatch.setattr(
+        dispatch_mod,
+        "require_scenario_topology",
+        lambda _scenario, _topology_dir: None,
+    )
     monkeypatch.setattr(dispatch_mod, "_create_evaluator", _FakeEvaluator)
     monkeypatch.setattr(
         dispatch_mod,
-        "score_scenario_fault_episodes",
+        "score_scenario_episode",
         lambda *args, **kwargs: [_FakeEvalResult(1.0)],
     )
     monkeypatch.setattr(sessions_mod, "Evaluator", _FakeEvaluator)
-    monkeypatch.setattr(diagnosis_mod, "_build_toolkit_for_topology", lambda topology_dir: FakeToolkit())
-    monkeypatch.setattr(
-        diagnosis_mod,
-        "build_topology_snapshot",
-        lambda toolkit: {"devices": {"spines": [], "leafs": [], "clients": []}, "links": []},
-    )
 
 
 def _install_platform_runtime_mocks(monkeypatch):
@@ -145,7 +178,7 @@ def _install_platform_runtime_mocks(monkeypatch):
     def fake_provision(self, *, scale, workers=1, name=None, root_dir=None):
         runtime = self._build_runtime(scale=scale, workers=workers, name=name, root_dir=root_dir)
         runtime.metadata["provisioning_mode"] = "worker_pool"
-        runtime.state = "deployed"
+        runtime.state = "warm"
         for worker in runtime.workers:
             worker_dir = Path(worker.topology_dir or worker.root_dir)
             worker_dir.mkdir(parents=True, exist_ok=True)
@@ -173,15 +206,13 @@ def _make_scenario(*, scenario_id: str, scale: str = "xs"):
         id=scenario_id,
         name=f"Scenario {scenario_id}",
         scale=scale,
-        episodes=[
-            {
-                "episode_id": f"{scenario_id}-ep1",
-                "fault_type": "link_down",
-                "target_device": "leaf1",
-                "target_interface": "Ethernet1",
-            }
-        ],
-        metadata={"expected_diagnosis": "link_down", "difficulty": "easy"},
+        episode={
+            "episode_id": f"{scenario_id}-ep1",
+            "fault_type": "link_down",
+            "target_device": "leaf1",
+            "target_interface": "Ethernet0",
+        },
+        metadata={"difficulty": "easy"},
     )
 
 
@@ -252,6 +283,7 @@ def test_run_on_runtime_scenario_supports_handle_and_path_without_teardown(tmp_p
     scenario_path = tmp_path / "runtime-scenario.yaml"
     ScenarioManager().save(scenario, scenario_path)
     runtime = bench.runtimes.create(scale="xs", workers=1, name="existing-runtime")
+    runtime._runtime.state = "warm"
 
     first = bench.sessions.run_on_runtime_scenario(
         scenario=scenario,
@@ -276,6 +308,7 @@ def test_run_on_runtime_suite_does_not_teardown_user_runtime(tmp_path, monkeypat
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="shared-runtime")
+    runtime._runtime.state = "warm"
     scenario_dir = tmp_path / "suite"
     scenario_dir.mkdir()
     ScenarioManager().save(_make_scenario(scenario_id="suite-1"), scenario_dir / "suite-1.yaml")
@@ -300,10 +333,49 @@ def test_run_on_runtime_suite_does_not_teardown_user_runtime(tmp_path, monkeypat
     assert report.raw["execution"] == "real_runtime_runner"
 
 
+def test_empty_suite_fails_before_runtime_provision(tmp_path, monkeypatch):
+    from netopsbench.sdk import NetOpsBench, ScenarioValidationError
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+    provisioned = []
+    monkeypatch.setattr(
+        bench.sessions._executor,
+        "_provision_runtime",
+        lambda **_kwargs: provisioned.append(True),
+    )
+
+    with pytest.raises(ScenarioValidationError, match="at least one"):
+        bench.sessions.run_suite(scenarios=[], agent=object())
+
+    assert provisioned == []
+
+
+def test_mixed_scale_suite_fails_before_runtime_provision(tmp_path, monkeypatch):
+    from netopsbench.sdk import NetOpsBench, ScenarioValidationError
+
+    bench = NetOpsBench(workspace=str(tmp_path))
+    scenarios = [
+        _make_scenario(scenario_id="xs-case"),
+        _make_scenario(scenario_id="small-case").model_copy(update={"topology_scale": "small"}),
+    ]
+    provisioned = []
+    monkeypatch.setattr(
+        bench.sessions._executor,
+        "_provision_runtime",
+        lambda **_kwargs: provisioned.append(True),
+    )
+
+    with pytest.raises(ScenarioValidationError, match="same topology scale"):
+        bench.sessions.run_suite(scenarios=scenarios, agent=object())
+
+    assert provisioned == []
+
+
 def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, monkeypatch):
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="ctx-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="ctx-scenario")
 
     class CaptureAgent:
@@ -330,7 +402,7 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     )
     assert run.status == "completed"
     assert agent.context is not None
-    assert agent.context.ground_truth is None
+    assert not hasattr(agent.context, "ground_truth")
     assert agent.context.scenario_id.startswith("case-")
     assert "link_down" not in agent.context.scenario_id
 
@@ -339,12 +411,29 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert "target_device" not in episode_payload
     assert "target_interface" not in episode_payload
     assert (agent.context.symptoms or {}).get("observations") is not None
+    canonical = agent.context.metadata["canonical_observation"]
+    assert canonical["case_id"] == agent.context.scenario_id
+    assert set(canonical["symptoms"]) == {"episode", "observations", "pingmesh_query_window"}
+    assert canonical["symptoms"]["episode"] == agent.context.symptoms["episode"]
+    assert canonical["symptoms"]["pingmesh_query_window"] == agent.context.symptoms["pingmesh_query_window"]
+    assert set(canonical["symptoms"]["observations"]) <= set(agent.context.symptoms["observations"])
+    assert canonical["topology_summary"] == {
+        "family": "unknown",
+        "spines": 0,
+        "leafs": 0,
+        "cores": 0,
+        "aggs": 0,
+        "edges": 0,
+        "clients": 0,
+        "links": 0,
+    }
 
 
 def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypatch):
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="trace-scenario")
 
     class TraceAgent:
@@ -377,7 +466,7 @@ def test_runtime_trace_metadata_is_persisted_only_as_sidecar(tmp_path, monkeypat
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert "trace" not in diagnosis["metadata"]
     assert "trajectory" not in diagnosis["metadata"]
@@ -400,10 +489,11 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
                 "details": {"scenario_id": "failure-scenario", "episode_id": "ep1"},
             }
 
-    monkeypatch.setattr(dispatch_mod, "score_scenario_fault_episodes", lambda *args, **kwargs: [LinkedEvalResult()])
+    monkeypatch.setattr(dispatch_mod, "score_scenario_episode", lambda *args, **kwargs: [LinkedEvalResult()])
 
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-failure-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="failure-scenario")
 
     class FailingAgent:
@@ -424,7 +514,7 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert diagnosis["success"] is False
     assert diagnosis["error"] == "agent exploded"
@@ -452,6 +542,7 @@ def test_runtime_trace_false_disables_trace_artifacts_and_recorder_capture(tmp_p
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="trace-off-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="trace-off-scenario")
 
     class TraceOffAgent:
@@ -500,7 +591,7 @@ def test_runtime_trace_false_disables_trace_artifacts_and_recorder_capture(tmp_p
     report = run.report()
     raw_result_path = Path(report.scenario_summaries[0]["raw_result_path"])
     raw_result = json.loads(raw_result_path.read_text(encoding="utf-8"))
-    diagnosis = raw_result["episodes"][0]["diagnosis"]
+    diagnosis = raw_result["episode"]["diagnosis"]
 
     assert agent.trace_enabled is False
     assert "trace" not in diagnosis
@@ -514,10 +605,10 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
     _install_real_runtime_mocks(monkeypatch)
     bench = NetOpsBench(workspace=str(tmp_path))
     runtime = bench.runtimes.create(scale="xs", workers=1, name="env-runtime")
+    runtime._runtime.state = "warm"
     scenario = _make_scenario(scenario_id="env-scenario")
 
     monkeypatch.setenv("NETOPSBENCH_TOPOLOGY_DIR", "outer-topology-dir")
-    monkeypatch.setenv("NETOPSBENCH_TOPOLOGY_ID", "outer-topology-id")
     monkeypatch.setenv("NETOPSBENCH_INFLUXDB_BUCKET", "outer-bucket")
 
     class EnvCaptureAgent:
@@ -527,7 +618,6 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
         def diagnose(self, context):
             self.captured = {
                 "topology_dir": os.environ.get("NETOPSBENCH_TOPOLOGY_DIR"),
-                "topology_id": os.environ.get("NETOPSBENCH_TOPOLOGY_ID"),
                 "bucket": os.environ.get("NETOPSBENCH_INFLUXDB_BUCKET"),
             }
             return DiagnosisResult(
@@ -550,7 +640,6 @@ def test_runtime_session_does_not_override_process_env_during_diagnosis(tmp_path
     assert run.status == "completed"
     assert agent.captured == {
         "topology_dir": "outer-topology-dir",
-        "topology_id": "outer-topology-id",
         "bucket": "outer-bucket",
     }
 
@@ -605,7 +694,7 @@ def test_session_manager_signatures_match_public_surface_without_provider_or_mod
             assert forbidden not in sig.parameters
 
 
-def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
+def test_run_handle_exposes_synchronous_report_wait_and_refresh_contract(tmp_path):
     report = BenchmarkReport(
         id="run:run-0009",
         summary={"status": "completed", "mode": "scenario"},
@@ -633,7 +722,6 @@ def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
     refreshed = run.refresh()
     assert refreshed.status == "completed"
     assert isinstance(refreshed.completed_at, datetime)
-    assert refreshed.cancel() is None
     assert refreshed.status == "completed"
 
     pending = RunHandle(
@@ -648,10 +736,7 @@ def test_run_handle_exposes_report_wait_refresh_and_cancel_contract(tmp_path):
         report_path=tmp_path / "missing" / "report.json",
     )
     assert pending.report() is None
-    assert pending.cancel() is None
-    assert pending.status == "cancelled"
-    assert isinstance(pending.completed_at, datetime)
-    assert pending.completed_at.tzinfo is not None
+    assert pending.report() is None
 
 
 def test_keep_runtime_false_tears_down_runtime_and_true_preserves_it(tmp_path, monkeypatch):
@@ -721,4 +806,4 @@ def test_run_scenario_does_not_leak_fault_ground_truth_into_agent_context(tmp_pa
     assert "fault_type" not in episode
     assert "target_device" not in episode
     assert "target_interface" not in episode
-    assert context.ground_truth is None
+    assert not hasattr(context, "ground_truth")

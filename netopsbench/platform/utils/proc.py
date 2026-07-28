@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -15,6 +16,16 @@ logger = logging.getLogger(__name__)
 # operations (lab deploy, telegraf install) should pass an explicit larger
 # timeout or ``None``.
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 120
+_SECRET_ASSIGNMENT = re.compile(r"""(?ix)
+    \b([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY)[A-Z0-9_]*)
+    =
+    (?:'[^']*'|"[^"]*"|[^\s;]+)
+    """)
+
+
+def _redacted_command(cmd: Sequence[str]) -> str:
+    rendered = " ".join(str(part) for part in cmd)
+    return _SECRET_ASSIGNMENT.sub(r"\1=<redacted>", rendered)
 
 
 def sudo_prefix() -> list[str]:
@@ -54,7 +65,7 @@ def safe_run(
     check: bool = False,
     capture_output: bool = True,
     text: bool = True,
-    cwd: str | None = None,
+    cwd: str | os.PathLike[str] | None = None,
     env: dict | None = None,
     input: str | None = None,
     stdout=None,
@@ -125,6 +136,6 @@ def safe_run(
         logger.error(
             "subprocess timed out after %ss: %s",
             timeout,
-            " ".join(str(part) for part in cmd_list),
+            _redacted_command(cmd_list),
         )
         raise

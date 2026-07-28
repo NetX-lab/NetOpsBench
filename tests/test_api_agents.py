@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from netopsbench.sdk.agents import AgentHandle, AgentManager
+from netopsbench.sdk.exceptions import AgentDiagnosisError, AgentTimeoutError
 from netopsbench.sdk.types import DiagnosisResult, DiagnosticContext
 
 
@@ -40,6 +41,11 @@ class ProcessOnlyAgent:
         )
 
 
+class TimeoutAgent:
+    def diagnose(self, context):
+        raise TimeoutError("provider timed out")
+
+
 def _make_context() -> DiagnosticContext:
     return DiagnosticContext(
         scenario_id="scenario-1",
@@ -71,7 +77,14 @@ def test_agent_handle_supports_async_diagnose_agents():
 def test_agent_handle_rejects_legacy_process_only_agents():
     handle = AgentHandle(ProcessOnlyAgent(), name="legacy")
 
-    with pytest.raises(AttributeError, match=r"diagnose\(\)"):
+    with pytest.raises(AgentDiagnosisError, match=r"diagnose\(\)"):
+        asyncio.run(handle.diagnose(_make_context()))
+
+
+def test_agent_handle_preserves_timeout_as_public_timeout_error():
+    handle = AgentHandle(TimeoutAgent(), name="timeout")
+
+    with pytest.raises(AgentTimeoutError, match="provider timed out"):
         asyncio.run(handle.diagnose(_make_context()))
 
 

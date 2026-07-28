@@ -5,12 +5,16 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from math import ceil
+from typing import Any
 
-_MIN_LATENCY_ABS_THRESHOLD_MS = 2.0
-_HIGH_IMPACT_LATENCY_INCREASE_MS = 20.0
-_SUSTAINED_SAMPLE_FRACTION = 0.75
-_BASELINE_UNREACHABLE_LOSS_PCT = 95.0
+from netopsbench.platform.pingmesh._detector_coverage import (
+    _regular_loss_by_socket_batch,
+    is_explained_df_send_error,
+)
+
+_MIN_LATENCY_DELTA_MS = 20.0
+_MIN_PATH_LOST_PROBES = 3
+_MIN_CONFIRMED_DF_PROBES = 16
 
 
 def _utcnow_iso() -> str:
@@ -34,12 +38,25 @@ def _group_by_path(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     return paths
 
 
-def _loss_stats(rows: list[dict], *, prefix: str = "", drop_unreachable: bool = False) -> dict | None:
+def _group_by_path_port_batch(rows: list[dict]) -> dict[tuple[str, str, str], list[dict]]:
+    """Group DF evidence by the ECMP source-port batch that produced it."""
+    paths: dict[tuple[str, str, str], list[dict]] = {}
+    for row in rows:
+        key = (
+            str(row.get("src_ip", "")),
+            str(row.get("dst_ip", "")),
+            str(row.get("port_batch_index", "")),
+        )
+        paths.setdefault(key, []).append(row)
+    for points in paths.values():
+        points.sort(key=lambda point: str(point.get("_time") or point.get("time") or ""))
+    return paths
+
+
+def _loss_stats(rows: list[dict], *, prefix: str = "") -> dict | None:
     sent_field = f"{prefix}packets_sent"
     lost_field = f"{prefix}packets_lost"
-    pct_field = "packet_loss" if not prefix else f"{prefix}loss_pct"
     counted: list[tuple[float, float]] = []
-    percentages: list[float] = []
     sample_count = 0
     mtu_drops = 0.0
 
@@ -47,31 +64,21 @@ def _loss_stats(rows: list[dict], *, prefix: str = "", drop_unreachable: bool = 
         sent = _as_float(row.get(sent_field))
         lost = _as_float(row.get(lost_field))
         if sent > 0:
-            loss_pct = (lost / sent) * 100.0
-            if drop_unreachable and loss_pct >= _BASELINE_UNREACHABLE_LOSS_PCT:
-                continue
             counted.append((sent, lost))
-            sample_count += 1
-        elif row.get(pct_field) is not None:
-            loss_pct = _as_float(row.get(pct_field))
-            if drop_unreachable and loss_pct >= _BASELINE_UNREACHABLE_LOSS_PCT:
-                continue
-            percentages.append(loss_pct)
             sample_count += 1
         if prefix:
             mtu_drops += _as_float(row.get("df_mtu_drops"))
 
-    if not counted and not percentages:
+    if not counted:
         return None
     total_sent = sum(sent for sent, _lost in counted)
     total_lost = sum(lost for _sent, lost in counted)
-    loss_pct = (total_lost / total_sent) * 100.0 if total_sent > 0 else statistics.mean(percentages)
+    loss_pct = (total_lost / total_sent) * 100.0
     return {
         "loss_pct": loss_pct,
         "sent": total_sent,
         "lost": total_lost,
         "samples": sample_count,
-        "has_counts": bool(counted),
         "mtu_drops": mtu_drops,
     }
 
@@ -83,6 +90,11 @@ class SnapshotAnalysis:
 
 
 class DetectorAnalysisMixin:
+    client_to_leaf: dict[str, str]
+    loss_pct_threshold: float
+    loss_pct_delta: float
+    _anomaly_type: Any
+
     def _resolve_leaf(self, leaf_tag: str, client_name: str) -> str:
         if isinstance(leaf_tag, str) and leaf_tag:
             return leaf_tag
@@ -97,12 +109,6 @@ class DetectorAnalysisMixin:
             if increase >= 50.0:
                 return "high"
             if increase >= 10.0:
-                return "medium"
-            return "low"
-        if anomaly_type == "jitter_spike":
-            if increase >= 20.0:
-                return "high"
-            if increase >= 5.0:
                 return "medium"
             return "low"
         if threshold == 0:
@@ -139,7 +145,7 @@ class DetectorAnalysisMixin:
             baseline=baseline,
             threshold=threshold,
             severity=severity or self._signal_severity(anomaly_type, value, baseline, threshold),
-            timestamp=_utcnow_iso(),
+            timestamp=str(point.get("_time") or point.get("time") or _utcnow_iso()),
             samples_sent=samples_sent,
             samples_lost=samples_lost,
             sample_count=sample_count,
@@ -157,83 +163,22 @@ class DetectorAnalysisMixin:
             current_values = [value for value in current_values if value > 0]
             if not current_values or not baseline_values:
                 continue
-            baseline = statistics.mean(baseline_values)
-            baseline_stddev = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0.0
-            current = statistics.mean(current_values)
-            threshold = max(baseline + 3 * baseline_stddev, baseline + _MIN_LATENCY_ABS_THRESHOLD_MS)
-            min_multiplier = 1.3
-            min_abs_increase = 0.0
-            if len(baseline_values) < 3 or len(current_values) < 2:
-                min_multiplier = 1.5
-                min_abs_increase = 2.0
-            elevated = [
-                value
-                for value in current_values
-                if value > threshold and value > baseline * min_multiplier and value - baseline >= min_abs_increase
-            ]
-            required = ceil(len(current_values) * _SUSTAINED_SAMPLE_FRACTION)
-            sustained = len(elevated) >= required
-            peak = max(current_values)
-            high_impact = peak > threshold and peak - baseline >= _HIGH_IMPACT_LATENCY_INCREASE_MS
-            if (current > threshold and sustained) or high_impact:
-                value = peak if high_impact and not sustained else current
-                anomalies.append(
-                    self._new_anomaly(
-                        "latency_spike",
-                        current_points[0],
-                        value=value,
-                        baseline=baseline,
-                        threshold=threshold,
-                        severity=(
-                            self._signal_severity("latency_spike", value, baseline, threshold)
-                            if len(elevated) == len(current_values) or high_impact
-                            else "low"
-                        ),
-                        sample_count=len(current_values),
-                    )
-                )
-        return anomalies
-
-    def _detect_jitter_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> list:
-        baseline_paths = _group_by_path(baseline_rows)
-        current_paths = _group_by_path(current_rows)
-        anomalies = []
-        for path_key, current_points in current_paths.items():
-            baseline_points = baseline_paths.get(path_key, [])
-            baseline_values = [
-                _as_float(point.get("rtt_max")) - _as_float(point.get("rtt_min"))
-                for point in baseline_points
-                if _as_float(point.get("rtt_max")) > 0 and _as_float(point.get("rtt_min")) > 0
-            ]
-            current_values = [
-                _as_float(point.get("rtt_max")) - _as_float(point.get("rtt_min"))
-                for point in current_points
-                if _as_float(point.get("rtt_max")) > 0 and _as_float(point.get("rtt_min")) > 0
-            ]
-            if not baseline_values or not current_values:
+            baseline = statistics.median(baseline_values)
+            current = statistics.median(current_values)
+            threshold = baseline + _MIN_LATENCY_DELTA_MS
+            sample_count = len(current_values)
+            if current < threshold:
                 continue
-            baseline = statistics.mean(baseline_values)
-            current = statistics.mean(current_values)
-            baseline_std = statistics.stdev(baseline_values) if len(baseline_values) > 1 else 0.0
-            threshold = max(baseline + 3 * baseline_std, baseline + 2.0)
-            elevated = [value for value in current_values if value > threshold and value > baseline * 2.0]
-            required = ceil(len(current_values) * _SUSTAINED_SAMPLE_FRACTION)
-            if current > threshold and current > baseline * 2.0 and len(elevated) >= required:
-                anomalies.append(
-                    self._new_anomaly(
-                        "jitter_spike",
-                        current_points[0],
-                        value=current,
-                        baseline=baseline,
-                        threshold=threshold,
-                        severity=(
-                            self._signal_severity("jitter_spike", current, baseline, threshold)
-                            if len(current_values) >= 4 and len(elevated) == len(current_values)
-                            else "low"
-                        ),
-                        sample_count=len(current_values),
-                    )
+            anomalies.append(
+                self._new_anomaly(
+                    "latency_spike",
+                    current_points[0],
+                    value=current,
+                    baseline=baseline,
+                    threshold=threshold,
+                    sample_count=sample_count,
                 )
+            )
         return anomalies
 
     def _detect_loss_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> tuple[list, int]:
@@ -245,12 +190,12 @@ class DetectorAnalysisMixin:
             current = _loss_stats(current_points)
             if current is None or current["sent"] <= 0:
                 continue
-            baseline = _loss_stats(baseline_paths.get(path_key, []), drop_unreachable=True)
+            baseline = _loss_stats(baseline_paths.get(path_key, []))
             if baseline is None:
                 insufficient_baseline += 1
                 continue
             threshold = max(self.loss_pct_threshold, baseline["loss_pct"] + self.loss_pct_delta)
-            if current["has_counts"] and current["sent"] > 0 and current["lost"] >= current["sent"]:
+            if current["lost"] >= current["sent"]:
                 anomalies.append(
                     self._new_anomaly(
                         "path_unreachable",
@@ -264,7 +209,7 @@ class DetectorAnalysisMixin:
                         sample_count=int(current["samples"]),
                     )
                 )
-            elif current["loss_pct"] >= threshold:
+            elif current["loss_pct"] >= threshold and current["lost"] >= _MIN_PATH_LOST_PROBES:
                 anomalies.append(
                     self._new_anomaly(
                         "packet_loss",
@@ -280,38 +225,41 @@ class DetectorAnalysisMixin:
         return anomalies, insufficient_baseline
 
     def _detect_df_from_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> list:
-        baseline_paths = _group_by_path(baseline_rows)
-        current_paths = _group_by_path(current_rows)
-        anomalies = []
-        for path_key, current_points in current_paths.items():
-            baseline_points = baseline_paths.get(path_key, [])
-            baseline_df = _loss_stats(baseline_points, prefix="df_", drop_unreachable=True)
+        baseline_batches = _group_by_path_port_batch(baseline_rows)
+        current_batches = _group_by_path_port_batch(current_rows)
+        anomalies_by_path: dict[tuple[str, str], Any] = {}
+        for batch_key, current_points in current_batches.items():
+            baseline_points = baseline_batches.get(batch_key, [])
+            baseline_df = _loss_stats(baseline_points, prefix="df_")
             current_df = _loss_stats(current_points, prefix="df_")
-            baseline_rtt = _loss_stats(baseline_points, drop_unreachable=True)
+            baseline_rtt = _loss_stats(baseline_points)
             current_rtt = _loss_stats(current_points)
             if baseline_df is None or current_df is None or baseline_rtt is None or current_rtt is None:
                 continue
             rtt_threshold = max(self.loss_pct_threshold, baseline_rtt["loss_pct"] + self.loss_pct_delta)
-            rtt_healthy = current_rtt["sent"] > 0 and current_rtt["loss_pct"] < rtt_threshold
+            rtt_healthy = (
+                current_rtt["sent"] > 0 and current_rtt["loss_pct"] < rtt_threshold and current_rtt["lost"] == 0
+            )
             df_loss_signal = (
-                current_df["loss_pct"] >= 20.0 and (current_df["loss_pct"] - baseline_df["loss_pct"]) >= 15.0
+                current_df["sent"] >= _MIN_CONFIRMED_DF_PROBES
+                and current_df["lost"] >= current_df["sent"]
+                and (current_df["loss_pct"] - baseline_df["loss_pct"]) >= 15.0
             )
-            if not rtt_healthy or not (df_loss_signal or current_df["mtu_drops"] > 0):
+            if not rtt_healthy or not df_loss_signal or current_df["mtu_drops"] > 0:
                 continue
-            anomalies.append(
-                self._new_anomaly(
-                    "mtu_or_fragmentation_suspect",
-                    current_points[0],
-                    value=current_df["loss_pct"],
-                    baseline=baseline_df["loss_pct"],
-                    threshold=max(20.0, baseline_df["loss_pct"] + 15.0),
-                    severity="high" if current_df["loss_pct"] >= 50.0 else "medium",
-                    samples_sent=int(current_df["sent"]),
-                    samples_lost=int(current_df["lost"]),
-                    sample_count=int(current_df["samples"]),
-                )
+            path_key = batch_key[:2]
+            anomalies_by_path[path_key] = self._new_anomaly(
+                "mtu_or_fragmentation_suspect",
+                current_points[0],
+                value=current_df["loss_pct"],
+                baseline=baseline_df["loss_pct"],
+                threshold=max(20.0, baseline_df["loss_pct"] + 15.0),
+                severity="high",
+                samples_sent=int(current_df["sent"]),
+                samples_lost=int(current_df["lost"]),
+                sample_count=int(current_df["samples"]),
             )
-        return anomalies
+        return list(anomalies_by_path.values())
 
     def analyze_snapshot_rows(self, baseline_rows: list[dict], current_rows: list[dict]) -> SnapshotAnalysis:
         loss_anomalies, insufficient_baseline = self._detect_loss_from_rows(baseline_rows, current_rows)
@@ -319,11 +267,44 @@ class DetectorAnalysisMixin:
             *self._detect_latency_from_rows(baseline_rows, current_rows),
             *loss_anomalies,
             *self._detect_df_from_rows(baseline_rows, current_rows),
-            *self._detect_jitter_from_rows(baseline_rows, current_rows),
         ]
         baseline_paths = _group_by_path(baseline_rows)
         current_paths = _group_by_path(current_rows)
+        absolute_unreachable_paths = 0
+        absolute_loss_paths = 0
+        absolute_mtu_paths: set[tuple[str, str]] = set()
+        for current_points in current_paths.values():
+            regular = _loss_stats(current_points)
+            if regular is None:
+                continue
+            if regular["sent"] > 0 and regular["lost"] >= regular["sent"]:
+                absolute_unreachable_paths += 1
+            elif regular["loss_pct"] >= self.loss_pct_threshold and regular["lost"] >= _MIN_PATH_LOST_PROBES:
+                absolute_loss_paths += 1
+
+        for batch_key, current_points in _group_by_path_port_batch(current_rows).items():
+            regular = _loss_stats(current_points)
+            df = _loss_stats(current_points, prefix="df_")
+            if (
+                regular is not None
+                and df is not None
+                and regular["sent"] > 0
+                and regular["lost"] == 0
+                and df["sent"] >= _MIN_CONFIRMED_DF_PROBES
+                and df["lost"] >= df["sent"]
+                and df["mtu_drops"] == 0
+            ):
+                absolute_mtu_paths.add(batch_key[:2])
         anomalies.sort(key=lambda item: (item.type, item.src_ip, item.dst_ip))
+        regular_loss_by_socket_batch = _regular_loss_by_socket_batch(current_rows)
+        unexplained_local_error_rows = [
+            row
+            for row in current_rows
+            if not is_explained_df_send_error(
+                row,
+                regular_loss_by_socket_batch=regular_loss_by_socket_batch,
+            )
+        ]
         return SnapshotAnalysis(
             anomalies=anomalies,
             quality={
@@ -331,5 +312,14 @@ class DetectorAnalysisMixin:
                 "current_paths_observed": len(current_paths),
                 "not_observed_paths": len(set(baseline_paths) - set(current_paths)),
                 "insufficient_baseline_paths": insufficient_baseline,
+                "absolute_unreachable_paths": absolute_unreachable_paths,
+                "absolute_packet_loss_paths": absolute_loss_paths,
+                "absolute_network_mtu_paths": len(absolute_mtu_paths),
+                "local_df_mtu_drops": int(
+                    sum(_as_float(row.get("df_mtu_drops")) for row in unexplained_local_error_rows)
+                ),
+                "local_probe_errors": int(
+                    sum(_as_float(row.get("local_probe_errors")) for row in unexplained_local_error_rows)
+                ),
             },
         )

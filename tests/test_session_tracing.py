@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from harbor.viewer.scanner import JobScanner
@@ -158,10 +159,10 @@ def test_trace_writer_persists_atif_and_index_with_redaction(tmp_path):
         trace_recorder=recorder,
     )
 
-    atif = json.loads((tmp_path / "traces" / "worker-1" / "case-123" / "trajectory.atif.json").read_text())
+    atif = json.loads(Path(result.atif_path).read_text())
     index = load_trace_index(tmp_path)
 
-    assert result.atif_path.endswith("trajectory.atif.json")
+    assert Path(result.atif_path).name.startswith("trajectory-")
     assert not (tmp_path / "traces" / "worker-1" / "case-123" / "trace.json").exists()
     assert atif["schema_version"] == "ATIF-v1.7"
     assert atif["trajectory_id"] == result.trace_id
@@ -189,7 +190,7 @@ def test_trace_writer_falls_back_to_agent_display_metadata_on_early_failure(tmp_
     agent = SimpleNamespace(name="agent-x", vendor="deepseek", model="deepseek-v4-pro")
     diagnosis = SimpleNamespace(agent_name="agent-x", success=False, findings={"error": "missing key"}, metadata={})
 
-    writer.write_case_trace(
+    result = writer.write_case_trace(
         case_id="case-123",
         scenario_id="scenario-1",
         episode_result={"episode": {"episode_id": "ep1"}},
@@ -206,7 +207,7 @@ def test_trace_writer_falls_back_to_agent_display_metadata_on_early_failure(tmp_
         error="missing key",
     )
 
-    atif = json.loads((tmp_path / "traces" / "worker-1" / "case-123" / "trajectory.atif.json").read_text())
+    atif = json.loads(Path(result.atif_path).read_text())
     index = load_trace_index(tmp_path)
 
     assert index[0]["provider"] == "deepseek"
@@ -214,6 +215,47 @@ def test_trace_writer_falls_back_to_agent_display_metadata_on_early_failure(tmp_
     assert index[0]["topology_scale"] == "small"
     assert atif["agent"]["model_name"] == "deepseek-v4-pro"
     assert atif["agent"]["extra"]["provider"] == "deepseek"
+
+
+def test_trace_writer_does_not_overwrite_repeated_case_attempts(tmp_path):
+    writer = TraceWriter(tmp_path / "traces", run_id="run-0001")
+    context = DiagnosticContext(scenario_id="case-123", topology={}, symptoms={})
+    diagnosis = SimpleNamespace(agent_name="agent-x", success=True, findings={}, metadata={})
+    arguments = {
+        "case_id": "case-123",
+        "scenario_id": "scenario-1",
+        "episode_result": {"episode": {"episode_id": "ep1"}},
+        "worker": "worker-1",
+        "topology_id": "topo-1",
+        "runtime_id": "runtime-1",
+        "agent": SimpleNamespace(name="agent-x"),
+        "diagnostic_context": context,
+        "diagnosis": diagnosis,
+        "diagnosis_payload": {"verdict": "network_healthy", "metadata": {}},
+        "started_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "ended_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+
+    first = writer.write_case_trace(**arguments)
+    second = writer.write_case_trace(**arguments)
+
+    assert first.trace_id != second.trace_id
+    assert first.atif_path != second.atif_path
+    assert Path(first.atif_path).exists()
+    assert Path(second.atif_path).exists()
+
+    class _Evaluation:
+        def to_dict(self):
+            return {
+                "testcase_id": "scenario-1:ep1",
+                "score": 1.0,
+                "details": {"scenario_id": "scenario-1", "episode_id": "ep1"},
+            }
+
+    writer.write_evaluation_results(evaluation_results=[_Evaluation()], scenario_result={})
+    result_row = json.loads(writer.results_path.read_text().splitlines()[-1])
+    assert result_row["trace_id"] == second.trace_id
+    assert result_row["atif_path"] == second.atif_path
 
 
 def test_export_traces_writes_harbor_jobs_directory(tmp_path):
@@ -241,18 +283,16 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
         ended_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {
-                    "trace": {
-                        "trace_id": trace_result.trace_id,
-                        "case_id": trace_result.case_id,
-                        "atif_path": trace_result.atif_path,
-                    }
-                },
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {
+                "trace": {
+                    "trace_id": trace_result.trace_id,
+                    "case_id": trace_result.case_id,
+                    "atif_path": trace_result.atif_path,
+                }
+            },
+        }
     }
     writer.write_evaluation_results(
         evaluation_results=[
@@ -273,7 +313,9 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
 
     output = export_traces(tmp_path / "run-0001", output=tmp_path / "harbor-jobs")
     job_dir = output / "netopsbench-run-0001"
-    trial_dir = job_dir / "scenario-1__case-1"
+    trace_suffix = trace_result.trace_id.rsplit(":", 1)[-1]
+    trial_name = f"scenario-1__case-1__{trace_suffix}"
+    trial_dir = job_dir / trial_name
 
     job_result = json.loads((job_dir / "result.json").read_text())
     job_config = json.loads((job_dir / "config.json").read_text())
@@ -283,7 +325,7 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
 
     assert job_result["n_total_trials"] == 1
     assert job_result["stats"]["n_completed_trials"] == 1
-    assert job_result["trial_results"][0]["trial_name"] == "scenario-1__case-1"
+    assert job_result["trial_results"][0]["trial_name"] == trial_name
     eval_stats = next(iter(job_result["stats"]["evals"].values()))
     assert eval_stats["metrics"][0]["reward"] == 1.0
     assert eval_stats["metrics"][0]["score"] == 1.0
@@ -299,11 +341,43 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
     assert trajectory["schema_version"] == "ATIF-v1.7"
     scanner = JobScanner(output)
     job_result_model = scanner.get_job_result("netopsbench-run-0001")
-    trial_result_model = scanner.get_trial_result("netopsbench-run-0001", "scenario-1__case-1")
+    trial_result_model = scanner.get_trial_result("netopsbench-run-0001", trial_name)
     assert job_result_model is not None
     assert job_result_model.n_total_trials == 1
     assert trial_result_model is not None
     assert trial_result_model.verifier_result.rewards == {"reward": 1.0, "score": 1.0}
+
+
+def test_export_traces_keeps_duplicate_case_attempts_distinct(tmp_path):
+    run_dir = tmp_path / "run-0001"
+    writer = TraceWriter(run_dir / "traces", run_id="run-0001")
+    context = DiagnosticContext(scenario_id="case-1", topology={}, symptoms={})
+    arguments = {
+        "case_id": "case-1",
+        "scenario_id": "scenario-1",
+        "episode_result": {"episode": {"episode_id": "ep1"}},
+        "worker": "worker-1",
+        "topology_id": "topo",
+        "runtime_id": "runtime",
+        "agent": SimpleNamespace(name="agent"),
+        "diagnostic_context": context,
+        "diagnosis": SimpleNamespace(agent_name="agent", success=True, findings={}, metadata={}),
+        "diagnosis_payload": {"verdict": "network_healthy", "metadata": {}},
+        "started_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "ended_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    first = writer.write_case_trace(**arguments)
+    second = writer.write_case_trace(**arguments)
+
+    output = export_traces(run_dir, output=tmp_path / "harbor-jobs")
+    job_dir = output / "netopsbench-run-0001"
+    first_dir = job_dir / f"scenario-1__case-1__{first.trace_id.rsplit(':', 1)[-1]}"
+    second_dir = job_dir / f"scenario-1__case-1__{second.trace_id.rsplit(':', 1)[-1]}"
+
+    assert first_dir.is_dir()
+    assert second_dir.is_dir()
+    assert json.loads((first_dir / "agent" / "trajectory.json").read_text())["trajectory_id"] == first.trace_id
+    assert json.loads((second_dir / "agent" / "trajectory.json").read_text())["trajectory_id"] == second.trace_id
 
 
 def test_atif_builds_steps_from_trace_recorder_events(tmp_path):
@@ -346,7 +420,7 @@ def test_atif_builds_steps_from_trace_recorder_events(tmp_path):
         provider="openai",
     )
 
-    writer.write_case_trace(
+    result = writer.write_case_trace(
         case_id="case-123",
         scenario_id="scenario-1",
         episode_result={"episode": {"episode_id": "ep1"}},
@@ -362,7 +436,7 @@ def test_atif_builds_steps_from_trace_recorder_events(tmp_path):
         trace_recorder=recorder,
     )
 
-    atif = json.loads((tmp_path / "traces" / "worker-1" / "case-123" / "trajectory.atif.json").read_text())
+    atif = json.loads(Path(result.atif_path).read_text())
 
     assert [step["source"] for step in atif["steps"]] == ["user", "agent", "agent", "agent"]
     assert atif["steps"][1]["tool_calls"][0]["function_name"] == "get_topology"
@@ -395,7 +469,7 @@ def test_trace_writer_ignores_manual_metadata_trace_payloads(tmp_path):
         model="gpt-test",
     )
 
-    writer.write_case_trace(
+    result = writer.write_case_trace(
         case_id="case-123",
         scenario_id="scenario-1",
         episode_result={"episode": {"episode_id": "ep1"}},
@@ -411,7 +485,7 @@ def test_trace_writer_ignores_manual_metadata_trace_payloads(tmp_path):
         trace_recorder=recorder,
     )
 
-    atif = json.loads((tmp_path / "traces" / "worker-1" / "case-123" / "trajectory.atif.json").read_text())
+    atif = json.loads(Path(result.atif_path).read_text())
 
     assert "manual trace should be ignored" not in json.dumps(atif)
     assert any(step.get("message") == "recorder wins" for step in atif["steps"])
@@ -427,7 +501,7 @@ def test_trace_writer_falls_back_to_tool_calls_without_trace(tmp_path):
         metadata={"tool_calls": [{"tool": "get_pingmesh_summary", "args": {"time_range_minutes": 5}}]},
     )
 
-    writer.write_case_trace(
+    result = writer.write_case_trace(
         case_id="case-123",
         scenario_id="scenario-1",
         episode_result={"episode": {"episode_id": "ep1"}},
@@ -442,7 +516,7 @@ def test_trace_writer_falls_back_to_tool_calls_without_trace(tmp_path):
         ended_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
-    atif = json.loads((tmp_path / "traces" / "worker-1" / "case-123" / "trajectory.atif.json").read_text())
+    atif = json.loads(Path(result.atif_path).read_text())
 
     assert len(atif["steps"]) == 3
     assert atif["steps"][1]["tool_calls"][0]["function_name"] == "get_pingmesh_summary"
@@ -469,18 +543,16 @@ def test_trace_writer_persists_evaluation_results_and_failures(tmp_path):
         ended_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {
-                    "trace": {
-                        "trace_id": trace_result.trace_id,
-                        "case_id": trace_result.case_id,
-                        "atif_path": trace_result.atif_path,
-                    }
-                },
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {
+                "trace": {
+                    "trace_id": trace_result.trace_id,
+                    "case_id": trace_result.case_id,
+                    "atif_path": trace_result.atif_path,
+                }
+            },
+        }
     }
     writer.write_evaluation_results(
         evaluation_results=[
@@ -532,12 +604,10 @@ def test_trace_writer_links_results_from_index_when_raw_diagnosis_lacks_trace(tm
         error="boom",
     )
     scenario_result = {
-        "episodes": [
-            {
-                "episode": {"episode_id": "ep1"},
-                "diagnosis": {"error": "boom", "success": False},
-            }
-        ]
+        "episode": {
+            "episode": {"episode_id": "ep1"},
+            "diagnosis": {"error": "boom", "success": False},
+        }
     }
 
     writer.write_evaluation_results(

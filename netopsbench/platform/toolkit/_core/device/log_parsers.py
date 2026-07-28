@@ -38,7 +38,10 @@ def parse_influx_syslog_rows(csv_text: str) -> list[dict[str, Any]]:
 
 
 def parse_local_syslog_lines(
-    text: str, cutoff: datetime | None = None, severity: str | None = None
+    text: str,
+    cutoff: datetime | None = None,
+    end_time: datetime | None = None,
+    severity: str | None = None,
 ) -> list[dict[str, Any]]:
     if not text:
         return []
@@ -78,6 +81,8 @@ def parse_local_syslog_lines(
         log_dt = naive_dt.replace(tzinfo=UTC)
         if cutoff and log_dt < cutoff:
             continue
+        if end_time and log_dt >= end_time:
+            continue
         log_severity = match.group("severity").lower()
         if severity_filter and log_severity != severity_filter:
             continue
@@ -96,11 +101,16 @@ def parse_local_syslog_lines(
 
 
 def get_device_logs_fallback(
-    toolkit, device: str, time_range_minutes: int, severity: str | None = None
+    toolkit,
+    device: str,
+    time_range_minutes: int,
+    severity: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> list[dict[str, Any]]:
     container = toolkit._resolve_container(device)
     safe_minutes = max(1, min(int(time_range_minutes), 24 * 60))
-    cutoff = datetime.now(UTC) - timedelta(minutes=safe_minutes)
+    cutoff = start_time or (datetime.now(UTC) - timedelta(minutes=safe_minutes))
     candidate_files = ["/var/log/syslog"]
     if is_network_device_name(str(device)):
         candidate_files.append("/var/log/frr/frr.log")
@@ -117,4 +127,4 @@ def get_device_logs_fallback(
     result = toolkit._docker_exec(container, ["bash", "-lc", command], timeout=30)
     if result.returncode != 0:
         return []
-    return parse_local_syslog_lines(result.stdout, cutoff=cutoff, severity=severity)
+    return parse_local_syslog_lines(result.stdout, cutoff=cutoff, end_time=end_time, severity=severity)

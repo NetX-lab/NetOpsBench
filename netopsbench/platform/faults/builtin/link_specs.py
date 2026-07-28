@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..models import FaultSpec
-from .common import episode_param, recover_background_process_fault
+from .common import episode_param
 
 
 def _inject_link_down_episode(injector, episode):
@@ -11,7 +11,13 @@ def _inject_link_down_episode(injector, episode):
 
 
 def _recover_link_down_fault(injector, fault):
-    return injector.recover_link_down(fault["device"], fault["interface"])
+    return injector.recover_link_down(
+        fault["device"],
+        fault["interface"],
+        peer_device=fault.get("peer_device"),
+        peer_interface=fault.get("peer_interface"),
+        route_snapshots=fault.get("route_snapshots"),
+    )
 
 
 def _inject_link_flapping_episode(injector, episode):
@@ -21,6 +27,17 @@ def _inject_link_flapping_episode(injector, episode):
         iterations=episode_param(episode, "iterations", 10),
         down_time=episode_param(episode, "down_time", 2),
         up_time=episode_param(episode, "up_time", 3),
+    )
+
+
+def _recover_link_flapping_fault(injector, fault):
+    return injector.recover_link_flapping(
+        fault["device"],
+        fault["interface"],
+        task_id=fault.get("task_id"),
+        peer_device=fault.get("peer_device"),
+        peer_interface=fault.get("peer_interface"),
+        route_snapshots=fault.get("route_snapshots"),
     )
 
 
@@ -35,6 +52,6 @@ def build_link_fault_specs() -> list[FaultSpec]:
         FaultSpec(
             name="link_flapping",
             inject_episode=_inject_link_flapping_episode,
-            recover_active_fault=recover_background_process_fault,
+            recover_active_fault=_recover_link_flapping_fault,
         ),
     ]

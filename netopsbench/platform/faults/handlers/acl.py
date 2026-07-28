@@ -17,7 +17,7 @@ from netopsbench.logging_utils import get_logger
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.command_runner import CommandRunner
     from ..services.routing_runtime import RoutingRuntime
     from ..services.sonic_runtime import SonicRuntime
@@ -49,7 +49,7 @@ class AclHandler:
         sonic: SonicRuntime,
         routing: RoutingRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._cmd = cmd
         self._sonic = sonic
@@ -64,6 +64,50 @@ class AclHandler:
     def _acl_name(self, device: str, prefix: str) -> str:
         safe = prefix.replace("/", "_").replace(".", "-")
         return f"{self._ACL_NAME_PREFIX}_{device}_{safe}"
+
+    @staticmethod
+    def _iptables_rule_args(target_prefix: str, acl_name: str) -> list[str]:
+        return [
+            "FORWARD",
+            "-d",
+            target_prefix,
+            "-j",
+            "DROP",
+            "-m",
+            "comment",
+            "--comment",
+            f"{_IPTABLES_TAG}:{acl_name}",
+        ]
+
+    def _acl_state_present(self, container: str, target_prefix: str, acl_name: str) -> bool:
+        rule = self._cmd.docker_exec(
+            container,
+            ["iptables", "-C", *self._iptables_rule_args(target_prefix, acl_name)],
+        )
+        table = self._cmd.docker_exec(
+            container,
+            ["sonic-db-cli", "CONFIG_DB", "exists", f"ACL_TABLE|{acl_name}"],
+        )
+        acl_rule = self._cmd.docker_exec(
+            container,
+            ["sonic-db-cli", "CONFIG_DB", "exists", f"ACL_RULE|{acl_name}|RULE_1"],
+        )
+        return rule.returncode == 0 and (table.stdout or "").strip() == "1" and (acl_rule.stdout or "").strip() == "1"
+
+    def _acl_state_absent(self, container: str, target_prefix: str, acl_name: str) -> bool:
+        rule = self._cmd.docker_exec(
+            container,
+            ["iptables", "-C", *self._iptables_rule_args(target_prefix, acl_name)],
+        )
+        table = self._cmd.docker_exec(
+            container,
+            ["sonic-db-cli", "CONFIG_DB", "exists", f"ACL_TABLE|{acl_name}"],
+        )
+        acl_rule = self._cmd.docker_exec(
+            container,
+            ["sonic-db-cli", "CONFIG_DB", "exists", f"ACL_RULE|{acl_name}|RULE_1"],
+        )
+        return rule.returncode == 1 and (table.stdout or "").strip() == "0" and (acl_rule.stdout or "").strip() == "0"
 
     @staticmethod
     def _validate_prefix(prefix: str) -> str:
@@ -107,19 +151,10 @@ class AclHandler:
 
         # Resolve interface (for vtysh breadcrumb; iptables rule is global FORWARD)
         if not interface:
-            topo = self._ctx.topology_metadata
-            links = topo.get("links", [])
-            for link in links:
-                endpoints = link.get("endpoints", [])
-                interfaces = link.get("interfaces", [])
-                for idx, ep in enumerate(endpoints):
-                    # endpoints can be strings ("spine1") or dicts ({"device": "spine1", "interface": "Ethernet0"})
-                    ep_device = ep.get("device") if isinstance(ep, dict) else ep
-                    if ep_device == device:
-                        if isinstance(ep, dict) and ep.get("interface"):
-                            interface = ep["interface"]
-                        elif interfaces and idx < len(interfaces):
-                            interface = interfaces[idx]
+            for link in self._ctx.manifest.links:
+                for endpoint in link.endpoints:
+                    if endpoint.device == device:
+                        interface = endpoint.interface
                         break
                 if interface:
                     break
@@ -160,56 +195,47 @@ class AclHandler:
             [
                 "iptables",
                 "-I",
-                "FORWARD",
-                "-d",
-                target_prefix,
-                "-j",
-                "DROP",
-                "-m",
-                "comment",
-                "--comment",
-                f"{_IPTABLES_TAG}:{acl_name}",
+                *self._iptables_rule_args(target_prefix, acl_name),
             ],
         )
-
-        if iptables_result.returncode != 0:
-            raise RuntimeError(f"iptables failed on {device}: {iptables_result.stderr}")
 
         # --- 2. CONFIG_DB breadcrumb: visible via 'show acl table/rule' ---
-        stage = "ingress" if direction == "in" else "egress"
-        self._cmd.docker_exec(
-            container,
-            [
-                "sonic-db-cli",
-                "CONFIG_DB",
-                "hset",
-                f"ACL_TABLE|{acl_name}",
-                "policy_desc",
-                f"netopsbench injected deny {target_prefix}",
-                "type",
-                "L3",
-                "stage",
-                stage,
-                "ports@",
-                interface,
-            ],
-        )
-        self._cmd.docker_exec(
-            container,
-            [
-                "sonic-db-cli",
-                "CONFIG_DB",
-                "hset",
-                f"ACL_RULE|{acl_name}|RULE_1",
-                "PRIORITY",
-                "999",
-                "PACKET_ACTION",
-                "DROP",
-                "DST_IP",
-                target_prefix,
-            ],
-        )
+        if iptables_result.returncode == 0:
+            stage = "ingress" if direction == "in" else "egress"
+            self._cmd.docker_exec(
+                container,
+                [
+                    "sonic-db-cli",
+                    "CONFIG_DB",
+                    "hset",
+                    f"ACL_TABLE|{acl_name}",
+                    "policy_desc",
+                    f"netopsbench injected deny {target_prefix}",
+                    "type",
+                    "L3",
+                    "stage",
+                    stage,
+                    "ports@",
+                    interface,
+                ],
+            )
+            self._cmd.docker_exec(
+                container,
+                [
+                    "sonic-db-cli",
+                    "CONFIG_DB",
+                    "hset",
+                    f"ACL_RULE|{acl_name}|RULE_1",
+                    "PRIORITY",
+                    "999",
+                    "PACKET_ACTION",
+                    "DROP",
+                    "DST_IP",
+                    target_prefix,
+                ],
+            )
 
+        state_present = self._acl_state_present(container, target_prefix, acl_name)
         fault_info: dict[str, Any] = {
             "type": "acl_misconfig",
             "device": device,
@@ -217,11 +243,38 @@ class AclHandler:
             "interface": interface,
             "direction": direction,
             "acl_name": acl_name,
-            "success": True,
-            "error": None,
+            "success": state_present,
+            "error": (
+                None
+                if state_present
+                else (iptables_result.stderr or iptables_result.stdout or "").strip()
+                or "ACL data-plane and CONFIG_DB state did not agree"
+            ),
         }
 
-        self._tracker.track(fault_info)
+        if state_present:
+            self._tracker.track(fault_info)
+            return fault_info
+
+        rollback = self.recover_acl_misconfig(
+            device,
+            target_prefix,
+            interface=interface,
+            direction=direction,
+            acl_name=acl_name,
+        )
+        if not rollback["recovered"]:
+            error = "; ".join(
+                filter(
+                    None,
+                    [
+                        str(fault_info.get("error") or ""),
+                        str(rollback.get("error") or "ACL compensation failed"),
+                    ],
+                )
+            )
+            fault_info["error"] = error
+            self._tracker.track_residual(fault_info, error)
         return fault_info
 
     # ------------------------------------------------------------------
@@ -250,15 +303,7 @@ class AclHandler:
             [
                 "iptables",
                 "-D",
-                "FORWARD",
-                "-d",
-                target_prefix,
-                "-j",
-                "DROP",
-                "-m",
-                "comment",
-                "--comment",
-                f"{_IPTABLES_TAG}:{acl_name}",
+                *self._iptables_rule_args(target_prefix, acl_name),
             ],
         )
 
@@ -282,11 +327,13 @@ class AclHandler:
             ],
         )
 
-        self._tracker.remove_faults(
-            lambda fault: fault["type"] == "acl_misconfig"
-            and fault["device"] == device
-            and fault.get("target_prefix") == target_prefix
-        )
+        recovered = self._acl_state_absent(container, target_prefix, acl_name)
+        if recovered:
+            self._tracker.remove_faults(
+                lambda fault: fault["type"] == "acl_misconfig"
+                and fault["device"] == device
+                and fault.get("target_prefix") == target_prefix
+            )
 
         return {
             "type": "acl_misconfig",
@@ -294,6 +341,6 @@ class AclHandler:
             "target_prefix": target_prefix,
             "interface": interface,
             "acl_name": acl_name,
-            "recovered": iptables_result.returncode == 0,
-            "error": iptables_result.stderr if iptables_result.returncode != 0 else None,
+            "recovered": recovered,
+            "error": None if recovered else iptables_result.stderr or "ACL state remained after recovery",
         }

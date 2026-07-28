@@ -10,7 +10,7 @@ def _inject_device_down_episode(injector, episode):
 
 
 def _recover_device_down_fault(injector, fault):
-    return injector.recover_device_down(fault["device"], fault.get("interfaces"))
+    return injector.recover_device_down(fault["device"])
 
 
 def build_system_fault_specs() -> list[FaultSpec]:

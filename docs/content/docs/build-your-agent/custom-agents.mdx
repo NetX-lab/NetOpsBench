@@ -47,7 +47,6 @@ with NetOpsBench(workspace=".") as bench:
 | `symptoms` | Episode observations, including Pingmesh summaries when available. |
 | `tools` | Optional runtime or MCP-backed tool access. |
 | `metadata` | Runtime metadata such as worker-specific environment values. |
-| `ground_truth` | Optional ground truth. Benchmark agents should not use it for diagnosis. |
 
 The reference LLM agent builds a compact prompt from topology size, symptom keys, episode data, Pingmesh windows, and high-signal anomalies. A custom agent may instead use rules, symbolic logic, retrieval, additional tool calls, or another model wrapper.
 
@@ -68,7 +67,7 @@ The reference LLM agent builds a compact prompt from topology size, symptom keys
 
 Return structured fields rather than only natural language. Free-form explanations are useful for review, but scoring depends on verdict, fault type, and location fields.
 
-For reproducibility, NetOpsBench saves a per-case runtime trace beside the raw scenario result. The bundled reference agent captures private LLM and tool events by attaching `context.trace.langchain_callback()` to its LangChain-compatible runtime. Custom non-LangChain agents can use advanced manual recorder methods such as `context.trace.record_llm_request(...)` and `context.trace.record_llm_response(...)` when they need private model calls in the trace. The harness writes ATIF v1.7 `trajectory.atif.json` artifacts for Harbor-style inspection while keeping ground truth out of the agent trajectory; scoring details are linked separately through `traces/results.jsonl`. Use `netopsbench trace view` to sync trace-enabled runs into the local Harbor viewer cache, or `netopsbench trace view <run_id>` to ensure a specific saved run is available in the viewer.
+For reproducibility, NetOpsBench saves a per-attempt runtime trace beside the raw scenario result. The bundled reference agent captures private LLM and tool events by attaching `context.trace.langchain_callback()` to its LangChain-compatible runtime. Custom non-LangChain agents can use advanced manual recorder methods such as `context.trace.record_llm_request(...)` and `context.trace.record_llm_response(...)` when they need private model calls in the trace. The harness writes uniquely named ATIF v1.7 `trajectory-<trace-id>.atif.json` artifacts for Harbor-style inspection while keeping ground truth out of the agent trajectory; scoring details are linked separately through `traces/results.jsonl`. Use `netopsbench trace view` to sync trace-enabled runs into the local Harbor viewer cache, or `netopsbench trace view <run_id>` to ensure a specific saved run is available in the viewer.
 
 Trace storage preserves visible agent-environment interactions with secret redaction and per-field size limits. NetOpsBench does not monkeypatch arbitrary LLM SDKs, so fully private model prompts and responses are captured only when the agent uses a supported framework callback or the manual recorder methods.
 
@@ -90,18 +89,17 @@ NetOpsBench scores the returned result along these dimensions:
 
 | Dimension | What must be correct |
 |---|---|
-| Detection | Faulted cases should return `fault_detected`; healthy negative samples should return `network_healthy`. |
+| Detection | Faulted cases should return `fault_detected`; healthy cases should return `network_healthy`. |
 | Device localization | `findings.location.device` should match the ground-truth device or an accepted equivalent location. |
 | Interface localization | `findings.location.interface` should match when interface-level ground truth exists. |
 | Fault type | `findings.fault_type` should match the canonical fault label, or a semantically equivalent label when the optional judge is enabled. |
 | Efficiency | Reports may include diagnosis time, tool calls, and token usage from metadata. |
 
-For interface-applicable faults, localization score is split between device and interface correctness. Healthy negative samples receive credit only for the correct `network_healthy` verdict.
+For interface-applicable faults, localization score is split between device and interface correctness. Healthy cases receive credit only for the correct `network_healthy` verdict.
 
 ## Practical checklist
 
 - Use exact verdict strings: `fault_detected`, `network_healthy`, `inconclusive`.
 - Include device and interface when the evidence supports localization.
 - Prefer canonical fault names from the built-in fault catalog.
-- Treat `ground_truth` as evaluator data, not as diagnosis input.
 - Return `success=False` and an `inconclusive` verdict when the agent runtime fails.

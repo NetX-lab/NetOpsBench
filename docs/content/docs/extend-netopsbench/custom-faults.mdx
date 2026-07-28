@@ -11,8 +11,8 @@ Scenario YAML references faults by `fault_type`.
 
 | Fault type | Category | Requires interface | Notes |
 |---|---|:---:|---|
-| `link_down` | Link | yes | Brings the target interface down. |
-| `link_flapping` | Link | no | Repeatedly toggles a link. Parameters: `iterations`, `down_time`, `up_time`. |
+| `link_down` | Link | yes | Brings both physical endpoints of the selected link down. |
+| `link_flapping` | Link | no | Repeatedly toggles both endpoints of a link. Parameters: `iterations`, `down_time`, `up_time`. |
 | `mtu_mismatch` | Impairment | yes | Changes interface MTU to break path MTU. |
 | `packet_loss` | Impairment | no | Adds tc-based loss on the target device. |
 | `packet_corruption` | Impairment | no | Adds tc-based corruption. |
@@ -21,7 +21,7 @@ Scenario YAML references faults by `fault_type`.
 | `static_route_misconfig` | Routing (Static) | no | Installs an incorrect static route. Alias: `static_route_misconfiguration`. |
 | `blackhole_route` | Routing (Static) | no | Installs a route pointing to a null next-hop. Requires `target_prefix`. |
 | `route_policy_misconfig` | Routing (Policy) | no | Misconfigures a prefix list or route-map. |
-| `device_down` | System | no | Brings the target device offline. |
+| `device_down` | System | no | Stops the target SONiC container, making its management, control, and data planes unavailable until recovery restarts it. |
 | `acl_misconfig` | ACL | no | Adds an ACL that blocks expected traffic. Alias: `acl_misconfiguration`. |
 
 Common scenario fields:

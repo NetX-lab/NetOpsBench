@@ -146,29 +146,29 @@ class TestPingmeshIntegration:
 
 @pytest.mark.real
 class TestTrafficGenerationLive:
-    """TrafficController against real client containers (clab-dcn-*)."""
+    """TrafficController against native processes in a real lab."""
 
     def test_traffic_controller_basic(self):
-        container_names = {
-            "client1": "clab-dcn-client1",
-            "client2": "clab-dcn-client2",
-        }
-
-        controller = TrafficController(container_names)
+        toolkit = _toolkit_or_skip()
+        clients = [device for device in toolkit.topology_metadata.get("devices", []) if device.get("role") == "client"][
+            :2
+        ]
+        if len(clients) < 2 or any(not client.get("mgmt_ip") for client in clients):
+            pytest.skip("real traffic test requires two clients with management IPs")
+        controller = TrafficController({client["name"]: client["mgmt_ip"] for client in clients})
 
         flow = TrafficFlow(
-            src="client1",
-            dst="client2",
-            dst_ip="192.168.2.2",
-            bandwidth="100M",
-            duration=5,
+            src=clients[0]["name"],
+            dst=clients[1]["name"],
+            dst_ip=clients[1]["data_ip"],
+            bandwidth="1M",
         )
 
         [flow_id] = controller.start_matrix([flow])
         assert flow_id == flow.flow_id
         assert flow_id in controller.active_flows
 
-        time.sleep(6)
+        time.sleep(1)
 
         controller.stop_all()
         assert flow_id not in controller.active_flows

@@ -43,6 +43,15 @@ def test_safe_run_timeout_raises():
         safe_run(["sleep", "5"], timeout=0.1)
 
 
+def test_safe_run_timeout_redacts_secret_assignments():
+    rendered = proc._redacted_command(["sh", "-c", "API_TOKEN=super-secret OTHER_SECRET='secret with spaces' sleep 5"])
+
+    assert "super-secret" not in rendered
+    assert "secret with spaces" not in rendered
+    assert "API_TOKEN=<redacted>" in rendered
+    assert "OTHER_SECRET=<redacted>" in rendered
+
+
 def test_safe_run_accepts_none_timeout():
     # Just ensure passing timeout=None is wired through; use a fast command.
     result = safe_run(["true"], timeout=None)

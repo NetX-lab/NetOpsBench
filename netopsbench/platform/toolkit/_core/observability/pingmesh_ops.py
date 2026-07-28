@@ -32,7 +32,6 @@ from(bucket: "{self.influxdb_bucket}")
   |> aggregateWindow(every: 30s, fn: mean, createEmpty: false)
   |> last()
 """
-
             rows = self._query_influx_rows(query)
             summary: dict[str, dict[str, float | None]] = {}
             for row in rows:
@@ -88,7 +87,6 @@ from(bucket: "{self.influxdb_bucket}")
   |> sort(columns: ["packet_loss", "rtt_p99"], desc: true)
   |> limit(n: {safe_limit})
 """
-
             rows = self._query_influx_rows(query, require_value=False)
             hotspots = []
             for row in rows:

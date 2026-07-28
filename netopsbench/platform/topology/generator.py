@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from netopsbench.models.profiles import get_scale_profile
+from netopsbench.models.profiles import ScaleRegistry, get_scale_profile
 
 from .clos_builder import build_clos_plan
 from .config import (
@@ -25,8 +25,9 @@ def _clos_config(
     mgmt_subnet: str | None,
     mgmt_network: str | None,
     collector_ip: str | None,
+    scale_registry: ScaleRegistry | None,
 ) -> TopologyConfig:
-    config = config_for_scale(scale)
+    config = config_for_scale(scale, scale_registry)
     if not isinstance(config, TopologyConfig):
         raise ValueError(f"Scale {scale!r} is not a CLOS topology")
     config.name = name or config.name
@@ -44,8 +45,9 @@ def _fat_tree_config(
     mgmt_subnet: str | None,
     mgmt_network: str | None,
     collector_ip: str | None,
+    scale_registry: ScaleRegistry | None,
 ) -> FatTreeConfig:
-    config = config_for_scale(scale)
+    config = config_for_scale(scale, scale_registry)
     if not isinstance(config, FatTreeConfig):
         raise ValueError(f"Scale {scale!r} is not a fat-tree topology")
     config.name = name or config.name
@@ -63,9 +65,10 @@ def generate_topology(
     mgmt_subnet: str | None = None,
     mgmt_network: str | None = None,
     collector_ip: str | None = None,
+    scale_registry: ScaleRegistry | None = None,
 ) -> dict:
     """Generate one supported CLOS or fat-tree scale."""
-    profile = get_scale_profile(scale)
+    profile = get_scale_profile(scale, scale_registry)
     if profile.family == "clos":
         plan = build_clos_plan(
             _clos_config(
@@ -74,6 +77,7 @@ def generate_topology(
                 mgmt_subnet=mgmt_subnet,
                 mgmt_network=mgmt_network,
                 collector_ip=collector_ip,
+                scale_registry=scale_registry,
             )
         )
     else:
@@ -84,6 +88,7 @@ def generate_topology(
                 mgmt_subnet=mgmt_subnet,
                 mgmt_network=mgmt_network,
                 collector_ip=collector_ip,
+                scale_registry=scale_registry,
             )
         )
     return render_fabric_plan(plan, output_dir or default_output_dir())

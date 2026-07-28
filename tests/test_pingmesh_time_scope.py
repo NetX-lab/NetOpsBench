@@ -1,3 +1,4 @@
+import inspect
 import json
 import tempfile
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from netopsbench.models.topology import (
     TopologyFacts,
     TopologyManifest,
 )
+from netopsbench.platform.pingmesh._detector_analysis import DetectorAnalysisMixin
 from netopsbench.platform.pingmesh._detector_query import SnapshotQueryResult
 from netopsbench.platform.pingmesh.detector import Anomaly, AnomalyDetector
 from netopsbench.platform.scenario.observation import wait_and_observe
@@ -38,7 +40,7 @@ def _toolkit_with_captured_queries(monkeypatch):
     return toolkit, captured
 
 
-def _coverage_detector(client_count=144):
+def _coverage_detector(client_count=144, *, rtt_ports_per_cycle=4):
     clients = [
         Device(name=f"client{i}", role=DeviceRole.CLIENT, attached_switch="leaf1") for i in range(1, client_count + 1)
     ]
@@ -62,7 +64,7 @@ def _coverage_detector(client_count=144):
         pingmesh=PingmeshPolicy(
             destination_batch_size=16,
             rtt_port_pool_size=16,
-            rtt_ports_per_cycle=4,
+            rtt_ports_per_cycle=rtt_ports_per_cycle,
             cycle_interval_seconds=2,
         ),
     )
@@ -76,10 +78,11 @@ def _coverage_detector(client_count=144):
     )
 
 
-def _rtt_rows(values, *, ranges=None):
+def _rtt_rows(values, *, ranges=None, port_batches=None):
     ranges = ranges or [0.2] * len(values)
-    return [
-        {
+    rows = []
+    for index, value in enumerate(values):
+        row = {
             "_time": f"2026-01-01T00:00:{index:02d}Z",
             "_field": "rtt_avg",
             "value": value,
@@ -93,8 +96,10 @@ def _rtt_rows(values, *, ranges=None):
             "src_leaf": "edge1",
             "dst_leaf": "edge2",
         }
-        for index, value in enumerate(values)
-    ]
+        if port_batches is not None:
+            row["port_batch_index"] = port_batches[index]
+        rows.append(row)
+    return rows
 
 
 def _snapshot_sequence(monkeypatch, detector, responses):
@@ -109,33 +114,28 @@ def _snapshot_sequence(monkeypatch, detector, responses):
     return calls
 
 
-def test_jitter_detector_uses_per_cycle_rtt_range():
-    detector = _coverage_detector(client_count=2)
-    anomalies = detector.analyze_snapshot_rows(
-        _rtt_rows([10.0, 10.1, 9.9, 10.0], ranges=[0.2, 0.3, 0.2, 0.3]),
-        _rtt_rows([10.0, 10.1, 9.9, 10.0], ranges=[6.0, 7.0, 6.0, 7.0]),
-    ).anomalies
-    jitter = [item for item in anomalies if item.type == "jitter_spike"]
+def test_detector_analysis_has_no_case_or_fault_metadata_dependency():
+    source = inspect.getsource(DetectorAnalysisMixin)
 
-    assert len(jitter) == 1
-    assert jitter[0].type == "jitter_spike"
+    for forbidden in ("fault_type", "target_device", "target_interface", "scenario_id", "topology_scale"):
+        assert forbidden not in source
 
 
-def test_jitter_detector_ignores_stable_per_cycle_rtt_range():
+def test_rtt_range_is_retained_but_not_promoted_to_an_anomaly():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
         _rtt_rows([10.0, 10.2, 9.9, 10.1], ranges=[0.2, 0.3, 0.2, 0.3]),
         _rtt_rows([10.1, 9.9, 10.2, 10.0], ranges=[0.3, 0.2, 0.3, 0.2]),
     ).anomalies
 
-    assert not [item for item in anomalies if item.type == "jitter_spike"]
+    assert anomalies == []
 
 
-def test_latency_detector_reports_sustained_increase():
+def test_latency_detector_reports_sustained_twenty_millisecond_increase():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
         _rtt_rows([1.0, 1.2, 0.9, 1.1, 1.0]),
-        _rtt_rows([8.0, 8.2, 7.9, 8.1, 8.0]),
+        _rtt_rows([26.0, 26.2, 25.9, 26.1, 26.0]),
     ).anomalies
     latency = [item for item in anomalies if item.type == "latency_spike"]
 
@@ -143,29 +143,67 @@ def test_latency_detector_reports_sustained_increase():
     assert latency[0].type == "latency_spike"
 
 
-def test_latency_detector_preserves_one_high_impact_ecmp_sample():
+def test_latency_detector_ignores_one_high_impact_sample_when_path_median_is_stable():
     detector = _coverage_detector(client_count=2)
     anomalies = detector.analyze_snapshot_rows(
         _rtt_rows([1.0, 1.2, 0.9, 1.1]),
         _rtt_rows([1.0, 1.1, 1.0, 101.0]),
     ).anomalies
-    latency = [item for item in anomalies if item.type == "latency_spike"]
 
-    assert len(latency) == 1
-    assert latency[0].value == 101.0
-    assert latency[0].severity == "high"
+    assert not [item for item in anomalies if item.type == "latency_spike"]
 
 
-def test_jitter_partial_consensus_is_advisory_low_severity():
+def test_latency_detector_uses_twenty_millisecond_median_delta_boundary():
     detector = _coverage_detector(client_count=2)
-    anomalies = detector.analyze_snapshot_rows(
-        _rtt_rows([10.0] * 4, ranges=[0.2] * 4),
-        _rtt_rows([10.0] * 4, ranges=[6.0, 6.0, 6.0, 0.2]),
-    ).anomalies
-    jitter = [item for item in anomalies if item.type == "jitter_spike"]
 
-    assert len(jitter) == 1
-    assert jitter[0].severity == "low"
+    below = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0, 1.0, 1.0, 1.0]),
+        _rtt_rows([20.9, 20.9, 20.9, 20.9]),
+    ).anomalies
+    at_boundary = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0, 1.0, 1.0, 1.0]),
+        _rtt_rows([21.0, 21.0, 21.0, 21.0]),
+    ).anomalies
+
+    assert not [item for item in below if item.type == "latency_spike"]
+    latency = [item for item in at_boundary if item.type == "latency_spike"]
+    assert len(latency) == 1
+    assert latency[0].baseline == 1.0
+    assert latency[0].value == 21.0
+    assert latency[0].threshold == 21.0
+    assert latency[0].timestamp == "2026-01-01T00:00:00Z"
+
+
+def test_latency_detector_keeps_ecmp_diluted_sustained_path_signal():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([2.0, 2.1, 1.9, 2.0]),
+        _rtt_rows([27.0, 27.1, 26.9, 27.0]),
+    ).anomalies
+
+    assert [item.type for item in anomalies] == ["latency_spike"]
+
+
+def test_latency_detector_ignores_one_elevated_ecmp_port_batch():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0] * 4, port_batches=[0, 1, 2, 3]),
+        _rtt_rows([26.0, 1.0, 1.0, 1.0], port_batches=[0, 1, 2, 3]),
+    ).anomalies
+
+    assert not [item for item in anomalies if item.type == "latency_spike"]
+
+
+def test_latency_detector_does_not_promote_two_elevated_ecmp_port_batches():
+    detector = _coverage_detector(client_count=2)
+
+    anomalies = detector.analyze_snapshot_rows(
+        _rtt_rows([1.0] * 4, port_batches=[0, 1, 2, 3]),
+        _rtt_rows([26.0, 26.0, 1.0, 1.0], port_batches=[0, 1, 2, 3]),
+    ).anomalies
+    assert not [item for item in anomalies if item.type == "latency_spike"]
 
 
 def _probe_sample(
@@ -192,7 +230,6 @@ def _probe_sample(
         "packet_loss": (lost / sent) * 100.0,
         "df_packets_sent": float(df_sent),
         "df_packets_lost": float(df_lost),
-        "df_loss_pct": (df_lost / df_sent) * 100.0,
         "df_mtu_drops": 0.0,
     }
 
@@ -221,6 +258,43 @@ def test_actual_complete_probe_loss_is_path_unreachable():
     assert analysis.anomalies[0].samples_lost == 4
 
 
+def test_single_counted_probe_loss_is_not_a_packet_loss_anomaly():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=1)])
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
+def test_two_counted_probe_losses_are_not_a_packet_loss_anomaly():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=2)])
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
+def test_distributed_background_loss_does_not_create_a_path_anomaly():
+    detector = _coverage_detector(client_count=62)
+    baseline = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 63)]
+    current = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 63)]
+    current[0] = _probe_sample(dst_ip="192.0.2.2", lost=2)
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
+def test_endpoint_concentration_does_not_amplify_single_loss_paths():
+    detector = _coverage_detector(client_count=11)
+    baseline = [_probe_sample(dst_ip=f"192.0.2.{index}") for index in range(2, 12)]
+    current = [_probe_sample(dst_ip=f"192.0.2.{index}", lost=1) for index in range(2, 12)]
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+
+
 def test_df_loss_is_suppressed_when_rtt_is_also_lost():
     detector = _coverage_detector(client_count=2)
 
@@ -232,14 +306,146 @@ def test_df_loss_is_suppressed_when_rtt_is_also_lost():
 def test_df_only_loss_is_mtu_suspect():
     detector = _coverage_detector(client_count=2)
 
-    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(lost=0, df_lost=4)])
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=0, df_sent=16, df_lost=16)],
+    )
 
     assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 1
+
+
+def test_df_loss_with_any_counted_small_probe_loss_is_not_mtu():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=1, df_sent=16, df_lost=16)],
+    )
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 0
+
+
+def test_nine_probe_random_loss_burst_is_not_mtu_evidence():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows(
+        [_probe_sample(df_sent=1)],
+        [_probe_sample(lost=0, df_sent=9, df_lost=9)],
+    )
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 0
+
+
+def test_confirmed_df_loss_is_scoped_to_one_ecmp_port_batch():
+    detector = _coverage_detector(client_count=2)
+    baseline = []
+    current = []
+    for batch in range(4):
+        baseline_row = _probe_sample(timestamp=f"2026-01-01T00:00:0{batch}Z", df_sent=1)
+        baseline_row["port_batch_index"] = batch
+        baseline.append(baseline_row)
+        current_row = _probe_sample(
+            timestamp=f"2026-01-01T00:01:0{batch}Z",
+            df_sent=16 if batch == 2 else 1,
+            df_lost=16 if batch == 2 else 0,
+        )
+        current_row["port_batch_index"] = batch
+        current.append(current_row)
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert [item.type for item in analysis.anomalies] == ["mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 1
+
+
+def test_df_baseline_losses_are_not_discarded_as_unreachable_samples():
+    detector = _coverage_detector(client_count=2)
+    baseline = [
+        _probe_sample(timestamp=f"2026-01-01T00:00:{index:02d}Z", df_sent=1, df_lost=int(index < 15))
+        for index in range(16)
+    ]
+    current = [_probe_sample(timestamp=f"2026-01-01T00:01:{index:02d}Z", df_sent=1, df_lost=1) for index in range(16)]
+
+    analysis = detector.analyze_snapshot_rows(baseline, current)
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+    assert analysis.quality["absolute_network_mtu_paths"] == 1
+
+
+def test_absolute_quality_exposes_persistent_loss_hidden_from_delta():
+    detector = _coverage_detector(client_count=2)
+    persistent = [_probe_sample(sent=4, lost=3)]
+
+    analysis = detector.analyze_snapshot_rows(persistent, persistent)
+
+    assert not [item for item in analysis.anomalies if item.type == "packet_loss"]
+    assert analysis.quality["absolute_packet_loss_paths"] == 1
+
+
+def test_single_counted_df_probe_loss_is_not_an_mtu_suspect():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(df_lost=1)])
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+
+
+def test_two_counted_df_probe_losses_are_not_an_mtu_suspect():
+    detector = _coverage_detector(client_count=2)
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [_probe_sample(df_lost=2)])
+
+    assert not [item for item in analysis.anomalies if item.type == "mtu_or_fragmentation_suspect"]
+
+
+def test_local_df_mtu_drop_is_probe_quality_failure_not_network_anomaly():
+    detector = _coverage_detector(client_count=2)
+    current = _probe_sample(df_lost=1)
+    current["df_mtu_drops"] = 1.0
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [current])
+
+    assert analysis.anomalies == []
+    assert analysis.quality["local_df_mtu_drops"] == 1
+
+
+def test_df_send_error_is_quality_neutral_when_socket_batch_has_full_window_loss_evidence():
+    detector = _coverage_detector(client_count=2)
+    transition = _probe_sample(
+        timestamp="2026-01-01T00:00:00Z",
+        sent=4,
+        lost=1,
+        df_sent=0,
+        df_lost=0,
+    )
+    transition["df_mtu_drops"] = 15
+    transition["local_probe_errors"] = 15
+    sustained_loss = _probe_sample(
+        timestamp="2026-01-01T00:00:03Z",
+        sent=4,
+        lost=2,
+        df_sent=0,
+        df_lost=0,
+    )
+
+    analysis = detector.analyze_snapshot_rows([_probe_sample()], [transition, sustained_loss])
+
+    assert [item.type for item in analysis.anomalies] == ["packet_loss"]
+    assert analysis.quality["local_df_mtu_drops"] == 0
+    assert analysis.quality["local_probe_errors"] == 0
 
 
 def test_generate_report_queries_each_snapshot_once(monkeypatch):
     detector = _coverage_detector(client_count=2)
     calls = _snapshot_sequence(monkeypatch, detector, [[_probe_sample()], [_probe_sample()]])
+    monkeypatch.setattr(
+        detector,
+        "summarize_coverage",
+        lambda _rows: {"status": "ok", "coverage_status": "complete", "expected_epoch_cycles": 4},
+    )
 
     report = detector.generate_windowed_anomaly_report(
         baseline_start="2026-01-01T00:00:00Z",
@@ -254,6 +460,30 @@ def test_generate_report_queries_each_snapshot_once(monkeypatch):
         ("2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"),
         ("2026-01-01T00:01:00Z", "2026-01-01T00:01:01Z"),
     ]
+
+
+def test_generate_report_keeps_baseline_coverage_separate_from_current(monkeypatch):
+    detector = _coverage_detector(client_count=2)
+    _snapshot_sequence(monkeypatch, detector, [[_probe_sample()], [_probe_sample()]])
+    audits = iter(
+        [
+            {"status": "ok", "coverage_status": "incomplete", "expected_epoch_cycles": 4},
+            {"status": "ok", "coverage_status": "complete", "expected_epoch_cycles": 4},
+        ]
+    )
+    monkeypatch.setattr(detector, "summarize_coverage", lambda _rows: next(audits))
+
+    report = detector.generate_windowed_anomaly_report(
+        baseline_start="2026-01-01T00:00:00Z",
+        baseline_end="2026-01-01T00:00:01Z",
+        current_start="2026-01-01T00:01:00Z",
+        current_end="2026-01-01T00:01:01Z",
+        windows=[],
+        include_internal_health=True,
+    )
+
+    assert report["_baseline_coverage"]["coverage_status"] == "incomplete"
+    assert report["coverage"]["coverage_status"] == "complete"
 
 
 def test_snapshot_query_failure_is_not_reported_as_healthy(monkeypatch):
@@ -310,7 +540,7 @@ def test_window_slice_handles_fractional_timestamps_at_boundaries():
     assert [row["value"] for row in selected] == ["inside"]
 
 
-def test_window_merge_promotes_unreachable_and_marks_persistence():
+def test_window_merge_keeps_full_window_classification_and_marks_persistence():
     detector = _coverage_detector(client_count=2)
     common = dict(
         src_ip="192.0.2.1",
@@ -324,21 +554,23 @@ def test_window_merge_promotes_unreachable_and_marks_persistence():
         severity="high",
         timestamp="2026-01-01T00:00:00Z",
     )
-    early = Anomaly(type="packet_loss", value=50.0, **common)
-    steady = Anomaly(type="path_unreachable", value=100.0, **common)
+    full = Anomaly(type="packet_loss", value=25.0, **common)
+    early = Anomaly(type="path_unreachable", value=100.0, **common)
+    steady = Anomaly(type="packet_loss", value=50.0, **common)
 
-    merged = detector._merge_window_anomalies([("early", [early]), ("steady", [steady])])
+    merged = detector._merge_window_anomalies([("full", [full]), ("early", [early]), ("steady", [steady])])
 
     assert len(merged) == 1
-    assert merged[0].type == "path_unreachable"
-    assert merged[0].windows_observed == ["early", "steady"]
+    assert merged[0].type == "packet_loss"
+    assert merged[0].value == 25.0
+    assert merged[0].windows_observed == ["early", "full", "steady"]
     assert merged[0].persistence == "persistent"
 
 
 def test_window_merge_does_not_promote_short_window_statistical_noise():
     detector = _coverage_detector(client_count=2)
     anomaly = Anomaly(
-        type="jitter_spike",
+        type="latency_spike",
         src_ip="192.0.2.1",
         src_name="client1",
         dst_ip="192.0.2.2",
@@ -396,6 +628,7 @@ def test_pingmesh_coverage_summary_reports_complete_epoch():
                         "dst_name": f"client{((source + offset - 1) % 144) + 1}",
                         "rtt_ports_active": 4,
                         "rtt_ports_total": 16,
+                        "local_probe_errors": 0,
                     }
                 )
     audit = detector.summarize_coverage(rows)
@@ -447,6 +680,7 @@ def test_xlarge_and_k8_coverage_counts_all_pairs_and_port_batches():
                         "dst_name": f"client{destination}",
                         "rtt_ports_active": 4,
                         "rtt_ports_total": 16,
+                        "local_probe_errors": 0,
                     }
                 )
 
@@ -469,6 +703,7 @@ def test_coverage_rejects_incomplete_socket_pool():
             "dst_name": destination,
             "rtt_ports_active": 4,
             "rtt_ports_total": 0 if source == "client1" and port_batch == 0 else 16,
+            "local_probe_errors": 0,
         }
         for source, destination in (("client1", "client2"), ("client2", "client1"))
         for port_batch in range(4)
@@ -478,6 +713,148 @@ def test_coverage_rejects_incomplete_socket_pool():
 
     assert audit["coverage_status"] == "incomplete"
     assert audit["invalid_socket_rows"] == 1
+
+
+def test_coverage_accepts_smaller_final_port_batch():
+    detector = _coverage_detector(2, rtt_ports_per_cycle=6)
+    rows = [
+        {
+            "probe_cycle": float(port_batch),
+            "destination_batch_index": 0.0,
+            "port_batch_index": float(port_batch),
+            "src_name": source,
+            "dst_name": destination,
+            "rtt_ports_active": 4 if port_batch == 2 else 6,
+            "rtt_ports_total": 16,
+            "local_probe_errors": 0,
+        }
+        for source, destination in (("client1", "client2"), ("client2", "client1"))
+        for port_batch in range(3)
+    ]
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "complete"
+    assert audit["port_batches_observed"] == [0, 1, 2]
+    assert audit["invalid_socket_rows"] == 0
+
+
+def _coverage_row(source: str, destination: str, port_batch: int, *, probe_cycle: int | None = None) -> dict:
+    return {
+        "probe_cycle": float(port_batch if probe_cycle is None else probe_cycle),
+        "destination_batch_index": 0.0,
+        "port_batch_index": float(port_batch),
+        "src_name": source,
+        "dst_name": destination,
+        "rtt_ports_active": 4,
+        "rtt_ports_total": 16,
+        "packets_sent": 4,
+        "packets_lost": 0,
+        "df_mtu_drops": 0,
+        "local_probe_errors": 0,
+    }
+
+
+def _complete_coverage_rows(overrides: dict[tuple[str, int], dict] | None = None) -> list[dict]:
+    rows = []
+    for source, destination in (("client1", "client2"), ("client2", "client1")):
+        for port_batch in range(4):
+            row = _coverage_row(source, destination, port_batch)
+            row.update((overrides or {}).get((source, port_batch), {}))
+            rows.append(row)
+    return rows
+
+
+def test_coverage_rejects_local_probe_errors():
+    detector = _coverage_detector(2)
+    rows = _complete_coverage_rows({("client1", 0): {"local_probe_errors": 1}})
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "incomplete"
+    assert audit["invalid_socket_rows"] == 1
+
+
+def test_coverage_accepts_df_send_error_explained_by_strong_rtt_loss():
+    detector = _coverage_detector(2)
+    rows = _complete_coverage_rows(
+        {
+            ("client1", 0): {
+                "packets_lost": 3,
+                "df_mtu_drops": 15,
+                "local_probe_errors": 15,
+            }
+        }
+    )
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "complete"
+    assert audit["invalid_socket_rows"] == 0
+
+
+def test_coverage_accepts_transition_df_error_with_full_window_socket_batch_loss():
+    detector = _coverage_detector(2)
+    rows = _complete_coverage_rows(
+        {
+            ("client1", 0): {
+                "packets_lost": 1,
+                "df_mtu_drops": 15,
+                "local_probe_errors": 15,
+            }
+        }
+    )
+    followup = _coverage_row("client1", "client2", 0, probe_cycle=4)
+    followup["packets_lost"] = 2
+    rows.append(followup)
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "complete"
+    assert audit["invalid_socket_rows"] == 0
+
+
+def test_coverage_does_not_use_loss_from_another_socket_batch_to_explain_df_error():
+    detector = _coverage_detector(2)
+    rows = _complete_coverage_rows(
+        {
+            ("client1", 0): {
+                "packets_lost": 1,
+                "df_mtu_drops": 15,
+                "local_probe_errors": 15,
+            },
+            ("client1", 1): {"packets_lost": 4},
+        }
+    )
+
+    audit = detector.summarize_coverage(rows)
+
+    assert audit["coverage_status"] == "incomplete"
+    assert audit["invalid_socket_rows"] == 1
+
+
+def test_coverage_rejects_df_send_error_without_strong_rtt_loss():
+    detector = _coverage_detector(2)
+
+    def audit_for(*, lost: int, local_errors: int, df_mtu_drops: int) -> dict:
+        rows = _complete_coverage_rows(
+            {
+                ("client1", 0): {
+                    "packets_lost": lost,
+                    "df_mtu_drops": df_mtu_drops,
+                    "local_probe_errors": local_errors,
+                }
+            }
+        )
+        return detector.summarize_coverage(rows)
+
+    for audit in (
+        audit_for(lost=2, local_errors=15, df_mtu_drops=15),
+        audit_for(lost=0, local_errors=15, df_mtu_drops=15),
+        audit_for(lost=3, local_errors=16, df_mtu_drops=15),
+    ):
+        assert audit["coverage_status"] == "incomplete"
+        assert audit["invalid_socket_rows"] == 1
 
 
 def test_pingmesh_coverage_summary_reports_missing_batches():
@@ -542,6 +919,35 @@ def test_pingmesh_hotspots_applies_global_loss_first_limit(monkeypatch):
     assert '|> pivot(rowKey: ["src_leaf", "dst_leaf"]' in query
     assert '|> group()\n  |> sort(columns: ["packet_loss", "rtt_p99"], desc: true)' in query
     assert "|> limit(n: 7)" in query
+
+
+def test_pingmesh_summary_queries_only_raw_measurement(monkeypatch):
+    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
+
+    result = toolkit.get_pingmesh_summary(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+    )
+
+    assert result.success is True
+    assert 'r._measurement == "pingmesh"' in captured["query"]
+    assert "aggregateWindow(every: 30s" in captured["query"]
+    assert "pingmesh_path_type_30s" not in captured["query"]
+
+
+def test_pingmesh_hotspots_queries_only_raw_leaf_pair_data(monkeypatch):
+    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
+
+    result = toolkit.get_pingmesh_hotspots(
+        start_time="2026-01-02T00:00:00Z",
+        end_time="2026-01-02T00:01:00Z",
+        limit=3,
+    )
+
+    assert result.success is True
+    assert 'r._measurement == "pingmesh"' in captured["query"]
+    assert '|> group(columns: ["src_leaf", "dst_leaf", "_field"])' in captured["query"]
+    assert "pingmesh_leaf_pair_30s" not in captured["query"]
 
 
 def test_pingmesh_time_scope_uses_context_file_before_env(monkeypatch, tmp_path):
@@ -626,24 +1032,28 @@ def test_builtin_mcp_config_passes_netopsbench_env(monkeypatch):
     assert config["netopsbench"]["env"]["NETOPSBENCH_PINGMESH_CONTEXT_FILE"] == "/tmp/window.json"
 
 
-def test_pingmesh_detector_builds_spine_map_from_canonical_links(tmp_path):
-    topology = generate_topology("xs", str(tmp_path))["metadata"]
+def test_pingmesh_aggregation_keeps_endpoint_counts_without_transit_attribution():
+    detector = _coverage_detector(client_count=2)
+    anomaly = Anomaly(
+        type="packet_loss",
+        src_ip="192.0.2.1",
+        src_name="client1",
+        dst_ip="192.0.2.2",
+        dst_name="client2",
+        src_leaf="leaf1",
+        dst_leaf="leaf2",
+        value=25.0,
+        baseline=0.0,
+        threshold=5.0,
+        severity="high",
+        timestamp="2026-01-01T00:00:00Z",
+    )
 
-    detector = AnomalyDetector("http://influxdb:8086", "token", "org", "bucket", topology_metadata=topology)
+    aggregated = detector._aggregate_anomalies([anomaly])
 
-    assert detector.leaf_to_spines == {
-        "leaf1": ["spine1", "spine2"],
-        "leaf2": ["spine1", "spine2"],
-    }
-
-
-def test_pingmesh_detector_projects_canonical_fat_tree_metadata(tmp_path):
-    topology = generate_topology("fat-tree-k8", str(tmp_path))["metadata"]
-
-    detector = AnomalyDetector("http://influxdb:8086", "token", "org", "bucket", topology_metadata=topology)
-
-    assert set(detector.leaf_to_spines["edge1"]) == {f"core{index}" for index in range(1, 17)}
-    assert "core17" not in detector.leaf_to_spines["edge1"]
+    assert set(aggregated) == {"by_src_leaf", "by_dst_leaf"}
+    assert aggregated["by_src_leaf"]["leaf1"]["drop_count"] == 1
+    assert aggregated["by_dst_leaf"]["leaf2"]["drop_count"] == 1
 
 
 def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monkeypatch):
@@ -673,7 +1083,11 @@ def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monke
         topology_metadata=topology,
     )
 
-    observations = wait_and_observe(runner, duration=0)
+    observations = wait_and_observe(
+        runner,
+        duration=0,
+        baseline_window={"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
+    )
 
     assert observations["data_source_status"] == "ok"
     assert captured["topology_metadata"] == topology

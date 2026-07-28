@@ -62,20 +62,5 @@ class NetOpsBenchConfig:
     topology_dir: str | None = field(default_factory=lambda: os.environ.get("NETOPSBENCH_TOPOLOGY_DIR"))
     fault_type_judge_config: FaultTypeJudgeConfig = field(default_factory=FaultTypeJudgeConfig)
 
-    # ------------------------------------------------------------------
-    # Convenience accessors
-    # ------------------------------------------------------------------
-
-    def reload(self) -> NetOpsBenchConfig:
-        """Re-read all values from the current process environment.
-
-        Returns ``self`` for chaining. Useful when test fixtures patch
-        ``os.environ`` after the module has been imported.
-        """
-        fresh = NetOpsBenchConfig()
-        for key in self.__dataclass_fields__:
-            setattr(self, key, getattr(fresh, key))
-        return self
-
 
 config = NetOpsBenchConfig()

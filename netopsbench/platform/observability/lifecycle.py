@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 
 from netopsbench.config import config
+from netopsbench.logging_utils import get_logger
 from netopsbench.models.runtime import RuntimeIdentity
-from netopsbench.platform.observability.influxdb import ensure_bucket
-from netopsbench.platform.observability.telegraf import update_telegraf_config
+from netopsbench.platform.observability.bgp_collector import (
+    DEFAULT_BGP_COLLECTOR_PARALLELISM,
+    DEFAULT_BGP_POLL_INTERVAL_SECONDS,
+)
+from netopsbench.platform.observability.influxdb import (
+    DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
+    ensure_bucket,
+    wait_for_influxdb_ready,
+)
+from netopsbench.platform.observability.telegraf import INTERNAL_INFLUXDB_URL, update_telegraf_config
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-BGP_POLL_INTERVAL_SECONDS = 10
-BGP_COLLECTOR_PARALLELISM = 16
-INTERNAL_INFLUXDB_URL = "http://influxdb:8086"
+TELEGRAF_IMAGE = "telegraf@sha256:9768f82ebf8bde6da0d61ba220c00161750740c3e322b507a5982b89bbfca99a"
+logger = get_logger(__name__)
 
 
 def observability_asset_root() -> Path:
@@ -48,17 +59,25 @@ def ensure_observability_core() -> None:
         check=True,
         timeout=600,
     )
+    wait_for_influxdb_ready(config.influxdb_url)
 
 
-def ensure_worker_observability(worker: RuntimeIdentity) -> None:
+def ensure_worker_observability(
+    worker: RuntimeIdentity,
+    *,
+    on_bucket_created: Callable[[str], None] | None = None,
+) -> None:
     """Reconcile the shared core, worker collector, and Telegraf sidecar."""
     ensure_observability_core()
-    ensure_bucket(
+    created = ensure_bucket(
         config.influxdb_url,
         config.influxdb_token,
         config.influxdb_org,
         worker.bucket,
+        retention_seconds=DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS,
     )
+    if created and on_bucket_created is not None:
+        on_bucket_created(worker.bucket)
     docker = [*docker_prefix(), "docker"]
     safe_run([*docker, "inspect", "influxdb"], check=True, timeout=30)
     safe_run(
@@ -106,17 +125,20 @@ def ensure_worker_telegraf(worker: RuntimeIdentity) -> None:
             "unless-stopped",
             "--network",
             worker.mgmt_network,
+            "--network-alias",
+            "telegraf",
             "--ip",
             _collector_ip(topology_file),
             "-v",
             f"{config_path}:/etc/telegraf/telegraf.conf:ro",
             "-v",
             f"{topology_dir}:/var/lib/netopsbench:ro",
-            "telegraf:latest",
+            TELEGRAF_IMAGE,
         ],
         check=True,
         timeout=600,
     )
+    _wait_for_telegraf_listener(topology_file)
 
 
 def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
@@ -141,20 +163,23 @@ def ensure_worker_bgp_collector(worker: RuntimeIdentity) -> None:
         "--output",
         str(output_file),
         "--interval",
-        str(BGP_POLL_INTERVAL_SECONDS),
+        str(DEFAULT_BGP_POLL_INTERVAL_SECONDS),
         "--parallelism",
-        str(BGP_COLLECTOR_PARALLELISM),
+        str(DEFAULT_BGP_COLLECTOR_PARALLELISM),
         "--topology-id",
         worker.topology_id,
+        "--influxdb-bucket",
+        worker.bucket,
+        "--log-file",
+        str(log_file),
     ]
-    with log_file.open("a", encoding="utf-8") as log_handle:
-        process = subprocess.Popen(
-            command,
-            cwd=topology_dir,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    process = subprocess.Popen(
+        command,
+        cwd=topology_dir,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
 
 
@@ -172,6 +197,27 @@ def _collector_ip(topology_file: Path) -> str:
     from netopsbench.platform.topology.topology_utils import load_topology_manifest
 
     return load_topology_manifest(topology_file).collector.ipv4
+
+
+def _wait_for_telegraf_listener(
+    topology_file: Path,
+    *,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Wait until the topology-local Pingmesh ingest listener accepts TCP."""
+    address = (_collector_ip(topology_file), 8186)
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: OSError | None = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(address, timeout=1.0):
+                return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.25)
+    raise RuntimeError(
+        f"Telegraf Pingmesh ingest listener did not become ready at {address[0]}:{address[1]}: {last_error}"
+    )
 
 
 __all__ = [

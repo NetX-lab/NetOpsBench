@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,15 +12,19 @@ from typing import Any
 
 from netopsbench.evaluator.fault_type_judge import create_judge_from_env
 from netopsbench.evaluator.scorer import Evaluator
+from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.runtime import RuntimeIdentity
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.manager import RuntimePool
 from netopsbench.platform.scenario.executor import ScenarioExecutor
+from netopsbench.platform.scenario.validator import require_scenario_topology
 from netopsbench.platform.session.context import build_worker_execution_context
 from netopsbench.platform.session.diagnosis import build_runtime_diagnosis_callback
 from netopsbench.platform.session.reporting import load_topology_metadata
-from netopsbench.platform.session.scoring import score_scenario_fault_episodes
+from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.session.trace_store import TraceWriter
-from netopsbench.platform.session.types import ScenarioExecutionRef, WorkerExecutionContext
+from netopsbench.platform.session.types import WorkerExecutionContext
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +39,12 @@ class PoolDispatchResult:
 
 
 def assign_scenarios_to_workers(
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
     workers: Sequence[RuntimeIdentity],
-) -> dict[str, list[ScenarioExecutionRef]]:
+) -> dict[str, list[ScenarioSpec]]:
     if not workers:
         raise ValueError("runtime pool must contain at least one worker")
-    assignments: dict[str, list[ScenarioExecutionRef]] = {worker.worker_id: [] for worker in workers}
+    assignments: dict[str, list[ScenarioSpec]] = {worker.worker_id: [] for worker in workers}
     for index, scenario in enumerate(scenarios):
         assignments[workers[index % len(workers)].worker_id].append(scenario)
     return assignments
@@ -49,8 +52,8 @@ def assign_scenarios_to_workers(
 
 def _dispatch_workers(
     workers: Sequence[RuntimeIdentity],
-    scenarios: list[ScenarioExecutionRef],
-    run_worker: Callable[[RuntimeIdentity, list[ScenarioExecutionRef]], WorkerRunResult],
+    scenarios: list[ScenarioSpec],
+    run_worker: Callable[[RuntimeIdentity, list[ScenarioSpec]], WorkerRunResult],
 ) -> PoolDispatchResult:
     if not workers:
         raise ValueError("runtime must contain at least one worker")
@@ -84,25 +87,25 @@ def _dispatch_workers(
 
 def _build_scenario_executor(
     worker_context: WorkerExecutionContext,
-    worker_raw_dir: Path,
     *,
+    worker: RuntimeIdentity,
     fault_registry: Any,
-    baseline_wait_seconds: int,
+    minimum_baseline_seconds: int,
     post_recovery_wait_seconds: int,
-    skip_none_episodes: bool,
+    scale_registry: ScaleRegistry,
 ) -> ScenarioExecutor:
     runner = ScenarioExecutor(
         topology_dir=str(worker_context.topology_dir),
         topology_metadata=load_topology_metadata(worker_context.topology_dir),
-        baseline_wait_seconds=baseline_wait_seconds,
+        minimum_baseline_seconds=minimum_baseline_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
-        skip_none_episodes=skip_none_episodes,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
-        persist_results=False,
         fault_registry=fault_registry,
+        scale_registry=scale_registry,
+        evaluator=_create_evaluator(),
+        runtime_worker=worker,
     )
-    runner.results_dir = worker_raw_dir
     return runner
 
 
@@ -118,89 +121,124 @@ def _run_worker(
     raw_dir: Path,
     trace_writer: TraceWriter | None,
     fault_registry: Any,
-    baseline_wait_seconds: int,
+    minimum_baseline_seconds: int,
     post_recovery_wait_seconds: int,
-    skip_none_episodes: bool,
+    scale_registry: ScaleRegistry,
     worker: RuntimeIdentity,
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
 ) -> WorkerRunResult:
     worker_context = build_worker_execution_context(worker, worker.topology_dir)
+    for scenario in scenarios:
+        require_scenario_topology(scenario, str(worker_context.topology_dir))
     worker_raw_dir = raw_dir / worker.worker_id
     worker_raw_dir.mkdir(parents=True, exist_ok=True)
     runner = _build_scenario_executor(
         worker_context,
-        worker_raw_dir,
+        worker=worker,
         fault_registry=fault_registry,
-        baseline_wait_seconds=baseline_wait_seconds,
+        minimum_baseline_seconds=minimum_baseline_seconds,
         post_recovery_wait_seconds=post_recovery_wait_seconds,
-        skip_none_episodes=skip_none_episodes,
+        scale_registry=scale_registry,
     )
-    evaluator = _create_evaluator()
+    evaluator = runner.evaluator
 
     evaluations: list[Any] = []
     scenario_summaries: list[dict[str, Any]] = []
     worker_success = True
 
-    for scenario in scenarios:
-        callback = build_runtime_diagnosis_callback(
-            agent,
-            str(worker_context.topology_dir),
-            scenario.id,
-            worker_context,
-            trace_writer,
-            worker.worker_id,
-            runtime.id,
-            scenario.scale,
-        )
-        parsed_scenario = scenario.to_scenario()
-        scenario_result = runner.run_scenario(parsed_scenario, diagnosis_callback=callback)
-        raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
-        try:
-            scored = score_scenario_fault_episodes(
-                parsed_scenario,
-                scenario_result,
-                evaluator,
-                topology_dir=str(worker_context.topology_dir),
+    executed_count = 0
+    try:
+        for scenario_index, scenario in enumerate(scenarios):
+            callback = build_runtime_diagnosis_callback(
+                agent,
+                str(worker_context.topology_dir),
+                scenario.id,
+                worker_context,
+                trace_writer,
+                worker.worker_id,
+                runtime.id,
+                scenario.scale,
             )
-        except Exception as exc:
-            if trace_writer is not None:
+            scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
+            executed_count += 1
+            raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
+            case_valid = bool(scenario_result.get("case_valid", scenario_result.get("success")))
+            scored: list[Any] = []
+            if case_valid:
                 try:
-                    trace_writer.write_failure_result(
-                        scenario_id=scenario.id,
-                        scenario_result=scenario_result,
-                        stage="evaluator",
-                        error=exc,
+                    scored = score_scenario_episode(
+                        scenario,
+                        scenario_result,
+                        evaluator,
+                        topology_dir=str(worker_context.topology_dir),
                     )
-                except Exception:
-                    logger.debug("failed to persist evaluator failure trace result", exc_info=True)
-            raise
-        if trace_writer is not None:
-            try:
-                trace_writer.write_evaluation_results(
-                    evaluation_results=scored,
-                    scenario_result=scenario_result,
-                )
-            except Exception:
-                logger.debug("failed to persist trace evaluation results", exc_info=True)
-        evaluations.extend(scored)
-        success = bool(scenario_result.get("success"))
-        scenario_summaries.append(
-            {
-                "scenario_id": scenario.id,
-                "status": "completed" if success else "failed",
-                "scale": scenario.scale,
-                "worker": worker.worker_id,
-                "raw_result_path": raw_result_path,
-            }
-        )
-        worker_success &= success
+                except Exception as exc:
+                    if trace_writer is not None:
+                        try:
+                            trace_writer.write_failure_result(
+                                scenario_id=scenario.id,
+                                scenario_result=scenario_result,
+                                stage="evaluator",
+                                error=exc,
+                            )
+                        except Exception:
+                            logger.debug("failed to persist evaluator failure trace result", exc_info=True)
+                    raise
+                if trace_writer is not None:
+                    try:
+                        trace_writer.write_evaluation_results(
+                            evaluation_results=scored,
+                            scenario_result=scenario_result,
+                        )
+                    except Exception:
+                        logger.debug("failed to persist trace evaluation results", exc_info=True)
+            evaluations.extend(scored)
+            cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
+            success = case_valid and bool(scenario_result.get("success")) and cleanup_success
+            if not case_valid:
+                status = "invalid"
+                failure_stage = "infrastructure"
+            elif success:
+                status = "completed"
+                failure_stage = None
+            else:
+                status = "failed"
+                failure_stage = "cleanup" if not cleanup_success else "execution"
+            scenario_summaries.append(
+                {
+                    "scenario_id": scenario.id,
+                    "status": status,
+                    "case_valid": case_valid,
+                    "scale": scenario.scale,
+                    "worker": worker.worker_id,
+                    "raw_result_path": raw_result_path,
+                    "cleanup_failed": not cleanup_success,
+                    **({"failure_stage": failure_stage} if failure_stage else {}),
+                }
+            )
+            worker_success &= success
+            if not cleanup_success:
+                for skipped in scenarios[scenario_index + 1 :]:
+                    scenario_summaries.append(
+                        {
+                            "scenario_id": skipped.id,
+                            "status": "skipped_infrastructure_failure",
+                            "scale": skipped.scale,
+                            "worker": worker.worker_id,
+                            "failure_stage": "prior_case_cleanup",
+                        }
+                    )
+                break
+    finally:
+        runner.close()
 
     worker_summary = {
         "worker_id": worker.worker_id,
         "worker_name": worker.worker_id,
         "lab_name": worker.lab_name,
         "scenario_count": len(scenarios),
-        "executed_count": len(scenarios),
+        "executed_count": executed_count,
+        "skipped_count": len(scenarios) - executed_count,
         "success": worker_success,
     }
     return evaluations, scenario_summaries, worker_summary
@@ -214,7 +252,7 @@ def _persist_raw_scenario_result(
     safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(scenario_id))
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
     result_path = worker_raw_dir / f"{safe_id}_{timestamp}.json"
-    result_path.write_text(json.dumps(scenario_result, indent=2, default=str), encoding="utf-8")
+    atomic_write_json(result_path, scenario_result, default=str)
     scenario_result["result_file"] = str(result_path)
     return str(result_path)
 
@@ -222,17 +260,24 @@ def _persist_raw_scenario_result(
 def execute_on_runtime_pool(
     *,
     runtime: RuntimePool,
-    scenarios: list[ScenarioExecutionRef],
+    scenarios: list[ScenarioSpec],
     agent: Any,
     raw_dir: Path,
     trace_writer: TraceWriter | None = None,
     fault_registry: Any = None,
-    baseline_wait_seconds: int = 60,
+    minimum_baseline_seconds: int = 60,
     post_recovery_wait_seconds: int = 2,
-    skip_none_episodes: bool = True,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
-    return _dispatch_workers(
+    if runtime.state != "warm" or bool(runtime.metadata.get("quarantined")):
+        raise RuntimeError(
+            f"Runtime {runtime.id!r} is not eligible for execution: "
+            f"state={runtime.state!r}, quarantined={bool(runtime.metadata.get('quarantined'))}"
+        )
+    mismatched = [scenario.id for scenario in scenarios if scenario.scale != runtime.scale]
+    if mismatched:
+        raise ValueError(f"Scenario scale does not match runtime scale {runtime.scale!r}: {', '.join(mismatched)}")
+    result = _dispatch_workers(
         runtime.workers,
         scenarios,
         lambda worker, assigned: _run_worker(
@@ -241,13 +286,23 @@ def execute_on_runtime_pool(
             raw_dir=raw_dir,
             trace_writer=trace_writer,
             fault_registry=fault_registry,
-            baseline_wait_seconds=baseline_wait_seconds,
+            minimum_baseline_seconds=minimum_baseline_seconds,
             post_recovery_wait_seconds=post_recovery_wait_seconds,
-            skip_none_episodes=skip_none_episodes,
+            scale_registry=runtime.scale_registry,
             worker=worker,
             scenarios=assigned,
         ),
     )
+    cleanup_failures = sorted(
+        {str(item["worker"]) for item in result.scenarios if item.get("cleanup_failed") is True and item.get("worker")}
+    )
+    if cleanup_failures:
+        runtime.state = "quarantined"
+        runtime.metadata["quarantined"] = True
+        runtime.metadata["quarantine_reason"] = "scenario_cleanup_failure"
+        runtime.metadata["quarantined_workers"] = cleanup_failures
+        runtime._write_metadata()
+    return result
 
 
 __all__ = ["PoolDispatchResult", "assign_scenarios_to_workers", "execute_on_runtime_pool"]

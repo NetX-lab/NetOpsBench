@@ -51,6 +51,27 @@ def _expected_port_count(config_file: str) -> int:
     return len(ports) if isinstance(ports, dict) else 0
 
 
+def _expected_interface_addresses(config_file: str) -> dict[str, set[str]]:
+    """Return interface addresses declared by the preseeded ConfigDB."""
+    try:
+        with open(config_file, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    interfaces = payload.get("INTERFACE")
+    if not isinstance(interfaces, dict):
+        return {}
+
+    expected: dict[str, set[str]] = {}
+    for key in interfaces:
+        if not isinstance(key, str) or "|" not in key:
+            continue
+        interface, address = key.split("|", 1)
+        if interface and address:
+            expected.setdefault(interface, set()).add(address)
+    return expected
+
+
 def _startup_wrapper_file(topology_dir: str) -> str:
     return os.path.join(topology_dir, "configs", "sonic", "start.sh")
 
@@ -250,11 +271,95 @@ def _activate_preseed_device(prefix: list[str], container: str, ecmp_hash_policy
     return ret.returncode == 0
 
 
+def _kernel_interface_addresses(prefix: list[str], container: str) -> dict[str, set[str]] | None:
+    try:
+        ret = safe_run(
+            [*prefix, "docker", "exec", container, "ip", "-j", "address", "show"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if ret.returncode != 0:
+        return None
+    try:
+        payload = json.loads(ret.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list):
+        return None
+
+    observed: dict[str, set[str]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        interface = item.get("ifname")
+        if not isinstance(interface, str):
+            continue
+        for address in item.get("addr_info") or []:
+            if not isinstance(address, dict):
+                continue
+            local = address.get("local")
+            prefixlen = address.get("prefixlen")
+            if isinstance(local, str) and isinstance(prefixlen, int):
+                observed.setdefault(interface, set()).add(f"{local}/{prefixlen}")
+    return observed
+
+
+def _reconcile_preseed_interfaces(prefix: list[str], container: str, config_file: str) -> list[str]:
+    """Repair rare SONiC-VS startup drift between ConfigDB and kernel state."""
+    expected = _expected_interface_addresses(config_file)
+    if not expected:
+        return []
+    observed = _kernel_interface_addresses(prefix, container)
+    if observed is None:
+        return ["unable to inspect kernel interface addresses"]
+
+    missing = sorted(
+        (interface, address)
+        for interface, addresses in expected.items()
+        for address in addresses
+        if address not in observed.get(interface, set())
+    )
+    for interface, address in missing:
+        for command in (
+            ["ip", "link", "set", "dev", interface, "up"],
+            ["ip", "address", "replace", address, "dev", interface],
+        ):
+            try:
+                ret = safe_run(
+                    [*prefix, "docker", "exec", container, *command],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=15,
+                )
+            except subprocess.TimeoutExpired:
+                return [f"{interface}|{address}: command timed out"]
+            if ret.returncode != 0:
+                detail = (ret.stderr or ret.stdout or "").strip()
+                return [f"{interface}|{address}: {detail or f'exit status {ret.returncode}'}"]
+
+    observed = _kernel_interface_addresses(prefix, container)
+    if observed is None:
+        return ["unable to verify kernel interface addresses"]
+    return sorted(
+        f"{interface}|{address}"
+        for interface, addresses in expected.items()
+        for address in addresses
+        if address not in observed.get(interface, set())
+    )
+
+
 def _apply_single_device(
     device: str,
     topology_dir: str,
     lab_name: str,
     ecmp_hash_policy: int,
+    *,
+    readiness_max_tries: int | None = None,
 ) -> tuple[str, bool, str, float, float, float]:
     """Activate one preseeded device after Containerlab has started it."""
     started_at = time.monotonic()
@@ -288,7 +393,12 @@ def _apply_single_device(
         )
 
     readiness_started = time.monotonic()
-    if not _wait_for_sonic(device, container, expected_port_count=expected_port_count):
+    if not _wait_for_sonic(
+        device,
+        container,
+        max_tries=readiness_max_tries,
+        expected_port_count=expected_port_count,
+    ):
         readiness_elapsed = time.monotonic() - readiness_started
         return (
             device,
@@ -302,11 +412,21 @@ def _apply_single_device(
 
     activation_started = time.monotonic()
     if _activate_preseed_device(prefix, container, ecmp_hash_policy):
+        unreconciled = _reconcile_preseed_interfaces(prefix, container, preseed_config)
         activation_elapsed = time.monotonic() - activation_started
+        if not unreconciled:
+            return (
+                device,
+                True,
+                "post-deploy activation",
+                time.monotonic() - started_at,
+                readiness_elapsed,
+                activation_elapsed,
+            )
         return (
             device,
-            True,
-            "post-deploy activation",
+            False,
+            "post-deploy interface reconciliation failed: " + ", ".join(unreconciled),
             time.monotonic() - started_at,
             readiness_elapsed,
             activation_elapsed,
@@ -320,6 +440,25 @@ def _apply_single_device(
         readiness_elapsed,
         activation_elapsed,
     )
+
+
+def activate_device(
+    device: str,
+    topology_dir: str,
+    lab_name: str,
+    ecmp_hash_policy: int,
+    *,
+    readiness_max_tries: int | None = None,
+) -> tuple[bool, str]:
+    """Activate one SONiC device using the canonical post-deploy path."""
+    _, success, message, *_ = _apply_single_device(
+        device,
+        topology_dir,
+        lab_name,
+        ecmp_hash_policy,
+        readiness_max_tries=readiness_max_tries,
+    )
+    return success, message
 
 
 def apply_configs(

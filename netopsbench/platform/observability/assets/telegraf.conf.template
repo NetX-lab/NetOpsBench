@@ -1,5 +1,4 @@
 [global_tags]
-  user = "admin"
   topology_id = "{{TOPOLOGY_ID}}"
 
 [agent]
@@ -19,9 +18,7 @@
   token = "{{INFLUXDB_TOKEN}}"
   organization = "{{INFLUXDB_ORG}}"
   bucket = "{{INFLUXDB_BUCKET}}"
-
-  # Removed tagdrop as we are filtering in Starlark
-
+  content_encoding = "gzip"
 
 # --- INPUTS ---
 
@@ -30,15 +27,16 @@
   server = "udp://:514"
 
 
-# Map Management IPs to Hostnames - DYNAMIC
-[[processors.regex]]
-  # namepass = ["netflow"] # Apply to all metrics
-{{IP_MAPPINGS}}
-
-# Normalize source tag across inputs
+# Map management IPs to hostnames and normalize source in one O(1) pass.
 [[processors.starlark]]
   source = '''
+ip_to_device = {{IP_MAPPINGS}}
+mapping_keys = ["source", "agent_host", "agent_ip", "agent", "agent_address", "address", "target"]
+
 def apply(metric):
+    for key in mapping_keys:
+        if key in metric.tags and metric.tags[key] in ip_to_device:
+            metric.tags[key] = ip_to_device[metric.tags[key]]
     if "source" not in metric.tags:
         if "agent_host" in metric.tags:
             metric.tags["source"] = metric.tags["agent_host"]
@@ -47,15 +45,6 @@ def apply(metric):
     return metric
 '''
 
-
-# --- PROCESSORS ---
-# Filter out noisy debug logs
-[[processors.regex]]
-  namepass = ["syslog"]
-
-  # Drop logs tagged as drop_me
-[[processors.regex]]
-  namepass = ["syslog"]
 
 # Syslog filtering using Starlark
 [[processors.starlark]]
@@ -162,16 +151,21 @@ def apply(metric):
     field = "SAI_PORT_STAT_IF_OUT_ERRORS"
     dest = "out_errors"
 
-# --- PINGMESH INPUTS ---
-# Pingmesh metrics collection
-[[inputs.tail]]
-  files = ["/var/log/pingmesh/metrics.log"]
-  data_format = "influx"
-  name_override = "pingmesh"
+# Relay each topology's Pingmesh writes through its Telegraf worker so the
+# shared InfluxDB receives bounded, compressed batches instead of one HTTP
+# stream per client.
+[[inputs.influxdb_v2_listener]]
+  service_address = ":8186"
+  max_undelivered_metrics = 200000
+  read_timeout = "10s"
+  write_timeout = "10s"
+  token = "{{INFLUXDB_TOKEN}}"
+  parser_type = "upstream"
 
 # BGP neighbor snapshots collected by the worker host-side poller
 [[inputs.tail]]
-  files = ["/var/lib/netopsbench/bgp_neighbors.lp"]
+  files = ["/var/lib/netopsbench/bgp_neighbors*.lp"]
   from_beginning = true
   watch_method = "poll"
+  max_undelivered_lines = 10000
   data_format = "influx"

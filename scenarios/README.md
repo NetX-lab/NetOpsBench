@@ -12,6 +12,9 @@ All scenarios are generated from campaign specs and organized under `scenarios/g
 - `scenarios/generated/small/`
 - `scenarios/generated/medium/`
 - `scenarios/generated/large/`
+- `scenarios/generated/xlarge/`
+- `scenarios/generated/fat-tree-k8/`
+- `scenarios/generated/fat-tree-k12/`
 
 Pass `--spec` to use a custom campaign instead of the packaged default.
 
@@ -114,20 +117,20 @@ metadata:
   expected_diagnosis: fault_type
   expected_location: device:interface
 
-episodes:
-  - episode_id: ep001
-    description: "What this episode does"
-    fault_type: link_down  # or blackhole_route, mtu_mismatch, etc.
-    target_device: spine1  # optional for fault_type=none baseline episodes
-    target_interface: Ethernet0  # if applicable
-    duration_seconds: 60
-    stabilization_time: 15
-    metadata:
-      difficulty: medium
-      expected_symptoms:
-        - packet_loss
-    parameters:
-      custom_fault_parameters: values
+episode:
+  episode_id: ep001
+  description: "What this episode does"
+  fault_type: link_down  # or blackhole_route, mtu_mismatch, etc.
+  target_device: spine1  # optional for fault_type=none
+  target_interface: Ethernet0  # if applicable
+  duration_seconds: 60
+  stabilization_time: 15
+  metadata:
+    difficulty: medium
+    expected_symptoms:
+      - packet_loss
+  parameters:
+    custom_fault_parameters: values
 ```
 
 ## Episode Types
@@ -161,17 +164,22 @@ scale profile so benchmark load cannot change through an undocumented process
 environment override.
 Per-client PPS caps scale linearly from the 1000 PPS baseline:
 
-| Scale  | Clients | Base Max PPS/Client (1000 PPS) |
-|--------|---------|-------------------------------|
-| xs     | 4       | 250                           |
-| small  | 8       | 250                           |
-| medium | 16      | 200                           |
-| large  | 32      | 150                           |
+| Scale | Clients | Base max PPS/client (1000 PPS switch limit) |
+|---|---:|---:|
+| xs | 2 | 250 |
+| small | 8 | 250 |
+| medium | 16 | 200 |
+| large | 64 | 150 |
+| xlarge | 128 | 100 |
+| fat-tree-k8 | 128 | 100 |
+| fat-tree-k12 | 144 | 50 |
 
 Example (5000 PPS limit):
 - xs/small: 1250 PPS per client
 - medium: 1000 PPS per client
 - large: 750 PPS per client
+- xlarge/fat-tree-k8: 500 PPS per client
+- fat-tree-k12: 250 PPS per client
 
 ## Results
 
@@ -202,7 +210,7 @@ benchmark corpus. It can be deleted and regenerated from spec files.
 
 1. Copy an existing scenario as template
 2. Modify scenario_id, name, description
-3. Adjust episodes for your test case
+3. Adjust the episode for your test case
 4. Validate: `netopsbench scenario validate your_scenario.yaml`
 5. Run through the SDK (`NetOpsBench.sessions.run_scenario` / `run_suite`) or an `examples/` script
 

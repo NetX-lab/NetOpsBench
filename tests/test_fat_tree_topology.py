@@ -39,7 +39,7 @@ def test_fat_tree_k12_sparse_generates_valid_non_overlapping_link_networks(tmp_p
     assert metadata["scale"]["host_density"] == "sparse"
     assert metadata["scale"]["full_density_clients_per_edge"] == 6
     assert metadata["pingmesh"]["coverage_epoch_cycles"] == 36
-    assert metadata["pingmesh"]["coverage_epoch_seconds"] == 72
+    assert metadata["pingmesh"]["coverage_epoch_seconds"] == 108
     assert len(metadata["devices"]["clients"]) == 144
     assert manifest.facts.clients_per_attached_switch == 2
     assert manifest.facts.host_density == "sparse"

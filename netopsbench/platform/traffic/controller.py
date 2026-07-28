@@ -1,60 +1,36 @@
-"""
-Traffic Controller - Manages background iperf3 traffic flows
-"""
+"""Management-network controller for the native background-traffic process."""
 
-import subprocess
+from __future__ import annotations
+
+import hashlib
+import json
+import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from time import monotonic
-from typing import Any
 
 from netopsbench.logging_utils import get_logger
-from netopsbench.platform.utils.proc import docker_prefix, safe_run
-
-from .commands import IperfCommandBuilder
-from .settings import DEFAULT_TRAFFIC_PARALLELISM, TrafficSettings
+from netopsbench.platform.client_agent.contract import HEARTBEAT_MAX_AGE_SECONDS, TRAFFIC_CONTROL_PORT
+from netopsbench.platform.client_agent.control import request_agent
 
 logger = get_logger(__name__)
-_DEFAULT_TRAFFIC_PARALLELISM = DEFAULT_TRAFFIC_PARALLELISM
 
-
-def _traffic_parallelism() -> int:
-    return TrafficSettings.from_env().parallelism
-
-
-def _flow_summary(flow: "TrafficFlow") -> str:
-    return (
-        f"src={flow.src} dst={flow.dst} dst_ip={flow.dst_ip} "
-        f"protocol={flow.protocol} port={flow.dst_port} bandwidth={flow.bandwidth}"
-    )
-
-
-def _error_detail(exc: Exception) -> str:
-    parts = [str(exc)]
-    stderr = getattr(exc, "stderr", None)
-    stdout = getattr(exc, "stdout", None)
-    if stderr:
-        parts.append(f"stderr={str(stderr).strip()}")
-    if stdout:
-        parts.append(f"stdout={str(stdout).strip()}")
-    return "; ".join(part for part in parts if part)
+CONTROL_TIMEOUT_SECONDS = 3.0
+READY_TIMEOUT_SECONDS = 15.0
+CONTROL_PARALLELISM = 32
 
 
 @dataclass
 class TrafficFlow:
-    """Single iperf3 traffic flow specification"""
+    """Single background flow specification shared with the traffic planner."""
 
-    src: str  # client name (e.g., "client1")
-    dst: str  # destination client name
-    dst_ip: str  # destination IP address
+    src: str
+    dst: str
+    dst_ip: str
     dst_port: int = 5201
-    protocol: str = "tcp"  # "tcp" or "udp"
-    bandwidth: str = "100M"  # "100M", "1G", etc.
-    duration: int = 0  # seconds, 0 = continuous
-    parallel: int = 1  # parallel streams
+    protocol: str = "tcp"
+    bandwidth: str = "100M"
     udp_payload_len: int = 1400
     tcp_mss: int = 1360
     flow_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -62,269 +38,270 @@ class TrafficFlow:
 
 @dataclass(frozen=True)
 class TrafficStartStats:
-    """Timings and retry counters for the latest matrix start."""
+    """Native traffic startup metrics retained for reports."""
 
-    server_duration_seconds: float = 0.0
-    source_duration_seconds: float = 0.0
-    server_first_attempt_successes: int = 0
-    server_first_attempt_failures: int = 0
-    retry_count: int = 0
-    timeout_count: int = 0
+    plan_load_seconds: float = 0.0
+    enable_to_ready_seconds: float = 0.0
+    client_count: int = 0
     started_flow_count: int = 0
-    failed_flow_count: int = 0
 
     def to_dict(self) -> dict[str, float | int]:
         return asdict(self)
 
 
-@dataclass(frozen=True)
-class _BatchPhaseResult:
-    failures: dict[str, Exception]
-    duration_seconds: float
-    first_attempt_successes: int
-    first_attempt_failures: int
-    retry_count: int
-    timeout_count: int
-
-
 class TrafficController:
-    """
-    Controls iperf3 traffic flows between client containers.
+    """Load, enable, and inspect one native traffic process per client."""
 
-    Manages starting/stopping background traffic for benchmark realism.
-    """
-
-    def __init__(
-        self,
-        container_names: dict[str, str],
-        command_builder: IperfCommandBuilder | None = None,
-        parallelism: int | None = None,
-    ):
-        """
-        Initialize traffic controller.
-
-        Args:
-            container_names: Dict mapping client names to container names
-                            e.g., {"client1": "clab-dcn-client1"}
-        """
-        self.container_names = container_names
-        self.command_builder = command_builder or IperfCommandBuilder()
-        self.parallelism = max(1, parallelism or _traffic_parallelism())
-        self.server_parallelism = min(16, max(1, (self.parallelism + 1) // 2))
-        self.retry_parallelism = min(4, self.server_parallelism)
+    def __init__(self, management_ips: dict[str, str]):
+        self.management_ips = dict(management_ips)
         self.active_flows: dict[str, TrafficFlow] = {}
-        self.started_server_ports: dict[str, set] = {}
         self.last_start_stats = TrafficStartStats()
-        # Bound external command latency to avoid benchmark hangs.
-        self.command_timeout_seconds = 15
-        self.start_retries = 1
+        self.generation = 0
+        self.plan_digests: dict[str, str] = {}
 
-    def _ensure_iperf_servers_batch(self, dst_container: str, dst_ports: set[int]) -> None:
-        """Ensure a destination container has all required iperf3 server ports."""
-        started_ports = self.started_server_ports.setdefault(dst_container, set())
-        missing_ports = sorted(port for port in dst_ports if port not in started_ports)
-        if not missing_ports:
-            return
+    def _request(self, client: str, operation: str, payload: dict) -> dict:
+        host = self.management_ips.get(client)
+        if not host:
+            raise RuntimeError(f"Missing management IP for traffic client {client}")
+        try:
+            return request_agent(
+                host,
+                TRAFFIC_CONTROL_PORT,
+                operation,
+                payload,
+                timeout=CONTROL_TIMEOUT_SECONDS,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"Traffic process on {client}: {exc}") from exc
 
-        script = self.command_builder.server_batch_script(missing_ports)
-        safe_run(
-            [*docker_prefix(), "docker", "exec", dst_container, "sh", "-lc", script],
-            check=True,
-            capture_output=True,
-            timeout=max(self.command_timeout_seconds, 15),
-        )
-        started_ports.update(missing_ports)
+    def _request_with_retry(self, client: str, operation: str, payload: dict) -> dict:
+        for attempt in range(2):
+            try:
+                return self._request(client, operation, payload)
+            except (OSError, json.JSONDecodeError):
+                if attempt == 1:
+                    raise
+                time.sleep(0.1)
+        raise AssertionError("unreachable")
 
-    def _start_source_flows_batch(self, src_container: str, flows: list[TrafficFlow]) -> None:
-        script = self.command_builder.source_batch_script(flows)
-        safe_run(
-            [*docker_prefix(), "docker", "exec", src_container, "sh", "-lc", script],
-            check=True,
-            capture_output=True,
-            timeout=max(self.command_timeout_seconds, 15),
-        )
-
-    def _run_batch_phase(
-        self,
-        groups: dict[str, Any],
-        operation: Callable[[str, Any], None],
-        initial_parallelism: int,
-    ) -> _BatchPhaseResult:
-        """Run one grouped Docker phase, retrying transient failures at lower pressure."""
-        started_at = monotonic()
-        pending = dict(groups)
-        failures: dict[str, Exception] = {}
-        first_attempt_successes = 0
-        first_attempt_failures = 0
-        retry_count = 0
-        timeout_count = 0
-        for attempt in range(self.start_retries + 1):
-            if not pending:
-                break
-            max_workers = initial_parallelism if attempt == 0 else self.retry_parallelism
-            current = pending
-            pending = {}
-            failures = {}
-            if attempt > 0:
-                retry_count += len(current)
-            with ThreadPoolExecutor(max_workers=min(max_workers, len(current))) as executor:
-                future_map = {
-                    executor.submit(operation, container, value): container for container, value in current.items()
-                }
-                for future in as_completed(future_map):
-                    container = future_map[future]
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        pending[container] = current[container]
-                        failures[container] = exc
-                        if isinstance(exc, subprocess.TimeoutExpired):
-                            timeout_count += 1
-            if attempt == 0:
-                first_attempt_failures = len(pending)
-                first_attempt_successes = len(current) - first_attempt_failures
-        return _BatchPhaseResult(
-            failures=failures,
-            duration_seconds=monotonic() - started_at,
-            first_attempt_successes=first_attempt_successes,
-            first_attempt_failures=first_attempt_failures,
-            retry_count=retry_count,
-            timeout_count=timeout_count,
-        )
+    def _parallel_requests(self, requests: dict[str, tuple[str, dict]]) -> dict[str, dict]:
+        results: dict[str, dict] = {}
+        failures: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(CONTROL_PARALLELISM, max(1, len(requests)))) as executor:
+            futures = {
+                executor.submit(self._request_with_retry, client, operation, payload): client
+                for client, (operation, payload) in requests.items()
+            }
+            for future in as_completed(futures):
+                client = futures[future]
+                try:
+                    results[client] = future.result()
+                except Exception as exc:  # noqa: BLE001 - aggregate every client failure
+                    failures.append(f"{client}: {type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError("Native traffic control failed: " + "; ".join(sorted(failures)))
+        return results
 
     def start_matrix(self, flows: list[TrafficFlow]) -> list[str]:
-        """
-        Start multiple traffic flows.
-
-        Args:
-            flows: List of TrafficFlow specifications
-
-        Returns:
-            List of flow_ids
-        """
         if not flows:
             self.last_start_stats = TrafficStartStats()
-            logger.info("Started 0/0 flows")
             return []
+        unknown = sorted({name for flow in flows for name in (flow.src, flow.dst) if name not in self.management_ips})
+        if unknown:
+            raise RuntimeError(f"Traffic plan references unknown clients: {', '.join(unknown)}")
 
-        valid_flows: list[TrafficFlow] = []
-        dst_ports_by_container: dict[str, set[int]] = defaultdict(set)
-        flows_by_dst_container: dict[str, list[TrafficFlow]] = defaultdict(list)
-        for flow in flows:
-            src_container = self.container_names.get(flow.src)
-            dst_container = self.container_names.get(flow.dst)
-            if not src_container:
-                logger.warning("Skipping flow with unknown source: %s", _flow_summary(flow))
-                continue
-            if not dst_container:
-                logger.warning("Skipping flow with unknown destination: %s", _flow_summary(flow))
-                continue
-            valid_flows.append(flow)
-            dst_ports_by_container[dst_container].add(flow.dst_port)
-            flows_by_dst_container[dst_container].append(flow)
+        started = time.monotonic()
+        generation = time.time_ns() & 0xFFFF_FFFF_FFFF_FFFF or 1
+        plans = _client_plans(self.management_ips, flows)
+        plan_digests = {client: _plan_digest(plan) for client, plan in plans.items()}
+        load_requests = {
+            client: (
+                "load_plan",
+                {
+                    "generation": generation,
+                    "plan_digest": plan_digests[client],
+                    "plan": plan,
+                },
+            )
+            for client, plan in plans.items()
+        }
+        try:
+            # A topology switches generations as one unit. Clear every client
+            # first so a partial load can never leave old and new plans active
+            # at the same time.
+            self._reset_all()
+            self.generation = generation
+            self.plan_digests = plan_digests
+            self._parallel_requests(load_requests)
+            listeners_ready_at = time.monotonic()
+            enable_requests = {
+                client: (
+                    "enable",
+                    {
+                        "generation": self.generation,
+                        "plan_digest": self.plan_digests[client],
+                    },
+                )
+                for client in plans
+            }
+            self._parallel_requests(enable_requests)
 
-        failed_flows: set[str] = set()
-        server_result = self._run_batch_phase(
-            dst_ports_by_container,
-            self._ensure_iperf_servers_batch,
-            self.server_parallelism,
-        )
-        for dst_container, exc in server_result.failures.items():
-            for flow in flows_by_dst_container.get(dst_container, []):
-                failed_flows.add(flow.flow_id)
-                logger.warning("Failed to ensure server for %s: %s", _flow_summary(flow), _error_detail(exc))
+            deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+            while True:
+                statuses = self._status_all()
+                if all(self._status_ready(client, response) for client, response in statuses.items()):
+                    break
+                if time.monotonic() >= deadline:
+                    details = {
+                        client: response.get("status")
+                        for client, response in statuses.items()
+                        if not self._status_ready(client, response)
+                    }
+                    raise RuntimeError(f"Native traffic did not become ready within 15s: {details}")
+                time.sleep(0.2)
+        except Exception:
+            self._reset_all_best_effort()
+            self.generation = 0
+            self.plan_digests.clear()
+            self.active_flows.clear()
+            raise
 
-        source_groups: dict[str, list[TrafficFlow]] = defaultdict(list)
-        for flow in valid_flows:
-            if flow.flow_id in failed_flows:
-                continue
-            source_groups[self.container_names[flow.src]].append(flow)
-
-        source_result = self._run_batch_phase(
-            source_groups,
-            self._start_source_flows_batch,
-            self.parallelism,
-        )
-        for src_container, src_flows in source_groups.items():
-            source_error = source_result.failures.get(src_container)
-            if source_error is not None:
-                for flow in src_flows:
-                    failed_flows.add(flow.flow_id)
-                    logger.warning(
-                        "Failed to start flow on %s: %s: %s",
-                        src_container,
-                        _flow_summary(flow),
-                        _error_detail(source_error),
-                    )
-                continue
-            for flow in src_flows:
-                self.active_flows[flow.flow_id] = flow
-            logger.debug("Started %d flow(s) from %s", len(src_flows), src_flows[0].src)
-
-        flow_ids = [flow.flow_id for flow in valid_flows if flow.flow_id in self.active_flows]
+        self.active_flows = {flow.flow_id: flow for flow in flows}
         self.last_start_stats = TrafficStartStats(
-            server_duration_seconds=server_result.duration_seconds,
-            source_duration_seconds=source_result.duration_seconds,
-            server_first_attempt_successes=server_result.first_attempt_successes,
-            server_first_attempt_failures=server_result.first_attempt_failures,
-            retry_count=server_result.retry_count + source_result.retry_count,
-            timeout_count=server_result.timeout_count + source_result.timeout_count,
-            started_flow_count=len(flow_ids),
-            failed_flow_count=len(flows) - len(flow_ids),
+            plan_load_seconds=listeners_ready_at - started,
+            enable_to_ready_seconds=time.monotonic() - listeners_ready_at,
+            client_count=len(plans),
+            started_flow_count=len(flows),
         )
         logger.info(
-            "Traffic phases: servers=%.1fs sources=%.1fs retries=%d timeouts=%d",
-            server_result.duration_seconds,
-            source_result.duration_seconds,
-            self.last_start_stats.retry_count,
-            self.last_start_stats.timeout_count,
+            "Native traffic ready: clients=%d flows=%d elapsed=%.1fs",
+            len(plans),
+            len(flows),
+            time.monotonic() - started,
         )
-        logger.info("Started %d/%d flows", len(flow_ids), len(flows))
-        return flow_ids
+        return [flow.flow_id for flow in flows]
 
-    def stop_all(self):
-        """Stop all active traffic flows."""
-        flow_ids = list(self.active_flows.keys())
-        flows_by_src_container: dict[str, list[TrafficFlow]] = defaultdict(list)
-        for flow_id in flow_ids:
-            flow = self.active_flows[flow_id]
-            src_container = self.container_names.get(flow.src)
-            if src_container:
-                flows_by_src_container[src_container].append(flow)
-            else:
-                del self.active_flows[flow_id]
+    def _status_all(self) -> dict[str, dict]:
+        return self._parallel_requests({client: ("status", {}) for client in self.management_ips})
 
-        def stop_container(src_container: str) -> None:
-            safe_run(
-                [
-                    *docker_prefix(),
-                    "docker",
-                    "exec",
-                    src_container,
-                    "sh",
-                    "-lc",
-                    self.command_builder.stop_clients_script(),
-                ],
-                check=False,
-                capture_output=True,
-                timeout=15,
+    def verify_active_flows(self) -> bool:
+        if not self.active_flows or not self.generation:
+            return False
+        try:
+            statuses = self._status_all()
+        except RuntimeError as exc:
+            logger.warning("Native traffic health check failed: %s", exc)
+            return False
+        for client, response in statuses.items():
+            if not self._status_ready(client, response):
+                return False
+        return True
+
+    def _status_ready(self, client: str, response: dict) -> bool:
+        status = response.get("status") or {}
+        heartbeat_ns = int(status.get("heartbeat_unix_ns", 0) or 0)
+        heartbeat_age = time.time() - heartbeat_ns / 1_000_000_000
+        return (
+            status.get("ready") is True
+            and status.get("enabled") is True
+            and int(status.get("generation", 0)) == self.generation
+            and status.get("plan_digest") == self.plan_digests.get(client)
+            and int(status.get("active_flows", -1)) == int(status.get("expected_flows", -2))
+            and int(status.get("active_listeners", -1)) == int(status.get("expected_listeners", -2))
+            and 0 <= heartbeat_age <= HEARTBEAT_MAX_AGE_SECONDS
+        )
+
+    def _disable_best_effort(self) -> list[str]:
+        if not self.generation:
+            return []
+        requests = {
+            client: (
+                "disable",
+                {"generation": self.generation, "plan_digest": digest},
             )
+            for client, digest in self.plan_digests.items()
+        }
+        try:
+            self._parallel_requests(requests)
+        except RuntimeError as exc:
+            return [str(exc)]
+        return []
 
-        parallelism = min(self.parallelism, max(len(flows_by_src_container), 1))
-        with ThreadPoolExecutor(max_workers=parallelism) as executor:
-            future_map = {
-                executor.submit(stop_container, src_container): (src_container, src_flows)
-                for src_container, src_flows in flows_by_src_container.items()
+    def _reset_all(self) -> None:
+        self._parallel_requests({client: ("reset", {}) for client in self.management_ips})
+
+    def _reset_all_best_effort(self) -> list[str]:
+        try:
+            self._reset_all()
+        except RuntimeError as exc:
+            return [str(exc)]
+        return []
+
+    def stop_all(self) -> None:
+        failures = self._disable_best_effort()
+        if failures:
+            raise RuntimeError("Native traffic disable failed: " + "; ".join(sorted(failures)))
+        stopped = len(self.active_flows)
+        self.active_flows.clear()
+        self.generation = 0
+        self.plan_digests.clear()
+        logger.info("Disabled all %d native traffic flows", stopped)
+
+
+def _client_plans(clients: dict[str, str], flows: list[TrafficFlow]) -> dict[str, dict]:
+    outgoing: dict[str, list[dict]] = defaultdict(list)
+    listeners: dict[str, list[dict]] = defaultdict(list)
+    seen_listeners: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    for flow in flows:
+        protocol = flow.protocol.lower()
+        if protocol not in {"tcp", "udp"}:
+            raise ValueError(f"Unsupported traffic protocol: {flow.protocol}")
+        payload_bytes = flow.udp_payload_len if protocol == "udp" else flow.tcp_mss
+        outgoing[flow.src].append(
+            {
+                "flow_id": flow.flow_id,
+                "protocol": protocol,
+                "dst_ip": flow.dst_ip,
+                "dst_port": int(flow.dst_port),
+                "bandwidth_bps": _parse_bandwidth_bps(flow.bandwidth),
+                "payload_bytes": max(1, int(payload_bytes)),
+                "tcp_mss": max(0, int(flow.tcp_mss if protocol == "tcp" else 0)),
             }
-            for future in as_completed(future_map):
-                src_container, src_flows = future_map[future]
-                try:
-                    future.result()
-                    logger.debug("Stopped %d flow(s) from %s", len(src_flows), src_flows[0].src)
-                except Exception as exc:
-                    logger.warning("Failed to stop flows on %s: %s", src_container, _error_detail(exc))
-                finally:
-                    for flow in src_flows:
-                        self.active_flows.pop(flow.flow_id, None)
+        )
+        listener_key = (protocol, int(flow.dst_port))
+        if listener_key not in seen_listeners[flow.dst]:
+            listeners[flow.dst].append({"protocol": protocol, "port": int(flow.dst_port)})
+            seen_listeners[flow.dst].add(listener_key)
+    return {
+        client: {
+            "listeners": sorted(
+                listeners.get(client, []),
+                key=lambda item: (item["port"], item["protocol"]),
+            ),
+            "flows": sorted(
+                outgoing.get(client, []),
+                key=lambda item: item["flow_id"],
+            ),
+        }
+        for client in clients
+    }
 
-        logger.info("Stopped all %d flows", len(flow_ids))
+
+def _plan_digest(plan: dict) -> str:
+    encoded = json.dumps(plan, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _parse_bandwidth_bps(value: str) -> int:
+    text = str(value).strip().upper()
+    factors = {"K": 1_000, "M": 1_000_000, "G": 1_000_000_000}
+    if text and text[-1:] in factors:
+        return int(float(text[:-1]) * factors[text[-1]])
+    return int(float(text))
+
+
+__all__ = [
+    "TrafficController",
+    "TrafficFlow",
+    "TrafficStartStats",
+]

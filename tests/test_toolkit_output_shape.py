@@ -59,6 +59,52 @@ def test_get_device_logs_can_include_raw_csv(monkeypatch):
     assert result.data["raw_csv"] == csv_text
 
 
+def test_get_device_logs_uses_explicit_episode_window(monkeypatch):
+    toolkit = _toolkit()
+    queries = []
+
+    def fake_query(*args, **kwargs):
+        queries.append(args[-1])
+        return FluxQueryResult(status="ok", text="")
+
+    monkeypatch.setattr("netopsbench.platform.toolkit._core.device.log_ops.query_flux", fake_query)
+    monkeypatch.setattr(
+        "netopsbench.platform.toolkit._core.device.log_ops.get_device_logs_fallback",
+        lambda *args, **kwargs: [],
+    )
+
+    result = toolkit.get_device_logs(
+        "leaf1",
+        start_time="2026-05-04T00:00:00Z",
+        end_time="2026-05-04T00:01:00Z",
+    )
+
+    assert result.success is True
+    assert 'range(start: time(v: "2026-05-04T00:00:00Z"), stop: time(v: "2026-05-04T00:01:00Z"))' in queries[0]
+    assert result.data["time_scope"] == {
+        "mode": "absolute",
+        "source": "explicit",
+        "start_time": "2026-05-04T00:00:00Z",
+        "end_time": "2026-05-04T00:01:00Z",
+    }
+
+
+def test_get_device_logs_requires_complete_valid_episode_window():
+    toolkit = _toolkit()
+
+    missing_end = toolkit.get_device_logs("leaf1", start_time="2026-05-04T00:00:00Z")
+    reversed_window = toolkit.get_device_logs(
+        "leaf1",
+        start_time="2026-05-04T00:01:00Z",
+        end_time="2026-05-04T00:00:00Z",
+    )
+
+    assert missing_end.success is False
+    assert "provided together" in missing_end.error
+    assert reversed_window.success is False
+    assert "earlier" in reversed_window.error
+
+
 def test_get_device_interfaces_summary_keeps_diagnostic_fields(monkeypatch):
     toolkit = _toolkit()
 

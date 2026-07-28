@@ -3,57 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from netopsbench.agents.base import DiagnosticContext
+from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.logging_utils import get_logger
-from netopsbench.platform.session.context import (
-    _build_toolkit_for_topology,
-    _extract_episode_pingmesh_query_window,
-    build_public_case_id,
-    build_public_symptoms,
-    build_topology_snapshot,
+from netopsbench.platform.incident.context import (
+    extract_episode_pingmesh_query_window,
 )
+from netopsbench.platform.incident.engine import DiagnosticSession, SessionToolGateway
 from netopsbench.platform.session.trace_store import TraceWriter
 from netopsbench.platform.session.types import WorkerExecutionContext
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = get_logger(__name__)
-
-
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-@dataclass
-class AgentHandleAdapter:
-    """Lightweight async wrapper for agents without a stable ``diagnose`` protocol."""
-
-    agent: Any
-    name: str = "agent"
-
-    def __init__(self, agent: Any):
-        self.agent = agent
-        derived_name = getattr(agent, "name", None)
-        if isinstance(derived_name, str) and derived_name.strip():
-            self.name = derived_name.strip()
-        else:
-            self.name = getattr(agent, "__class__", type(agent)).__name__
-
-    async def diagnose(self, context: DiagnosticContext):
-        diagnose_method = getattr(self.agent, "diagnose", None)
-        if not callable(diagnose_method):
-            raise AttributeError(f"{self.agent.__class__.__name__} must define diagnose()")
-        return await _maybe_await(diagnose_method(context))
 
 
 def run_agent_diagnose(handle: Any, context: DiagnosticContext):
@@ -85,44 +53,40 @@ def build_runtime_diagnosis_callback(
     scenario_scale: str | None = None,
 ):
     """Build the episode callback that presents observations to one agent."""
-    toolkit = _build_toolkit_for_topology(topology_dir)
-    if worker_context is not None:
-        toolkit.influxdb_bucket = worker_context.influxdb_bucket
-        toolkit.topology_id = worker_context.topology_id
-    handle = agent if isinstance(agent, AgentHandleAdapter) else AgentHandleAdapter(agent)
+    handle = agent if isinstance(agent, AgentHandle) else AgentHandle(agent)
     context_dir = Path(topology_dir) / ".netopsbench"
     context_file = context_dir / "pingmesh_context.json"
     worker_env = worker_context.as_env() if worker_context is not None else {}
     worker_env["NETOPSBENCH_PINGMESH_CONTEXT_FILE"] = str(context_file)
 
-    def callback(episode_result: dict) -> dict:
+    def callback(
+        episode_result: dict,
+        *,
+        diagnostic_session: DiagnosticSession,
+        diagnostic_payload: dict[str, Any],
+    ) -> dict:
         start_time = datetime.now(UTC)
         trace_recorder = AgentTraceRecorder(enabled=trace_writer is not None)
-        pingmesh_query_window = _extract_episode_pingmesh_query_window(episode_result)
+        pingmesh_query_window = extract_episode_pingmesh_query_window(episode_result)
         window_start = pingmesh_query_window.get("start_time")
         window_end = pingmesh_query_window.get("end_time")
-        toolkit.set_pingmesh_time_window(window_start, window_end)
-        if window_start and window_end:
-            try:
-                context_dir.mkdir(parents=True, exist_ok=True)
-                context_file.write_text(
-                    json.dumps({"start_time": window_start, "end_time": window_end}),
-                    encoding="utf-8",
-                )
-            except OSError:
-                logger.debug("failed to write pingmesh context file", exc_info=True)
+        context_payload = {"start_time": window_start, "end_time": window_end} if window_start and window_end else {}
+        atomic_write_json(context_file, context_payload)
 
+        case_id = str(diagnostic_payload["case_id"])
+        topology = diagnostic_payload["topology"]
+        symptoms = diagnostic_payload["symptoms"]
+        canonical_observation = diagnostic_payload["canonical_observation"]
+        metadata: dict[str, Any] = {"canonical_observation": canonical_observation}
+        if worker_env:
+            metadata["worker_env"] = worker_env
         context = DiagnosticContext(
-            scenario_id=build_public_case_id(scenario_id=scenario_id, episode_result=episode_result),
-            topology=build_topology_snapshot(toolkit),
-            symptoms=build_public_symptoms(
-                episode_result=episode_result,
-                pingmesh_query_window=pingmesh_query_window,
-            ),
-            ground_truth=None,
-            tools=toolkit,
+            scenario_id=case_id,
+            topology=topology,
+            symptoms=symptoms,
+            tools=SessionToolGateway(diagnostic_session),
             trace=trace_recorder,
-            metadata={"worker_env": worker_env} if worker_env else {},
+            metadata=metadata,
         )
         try:
             diagnosis = run_agent_diagnose(handle, context)
@@ -233,4 +197,4 @@ def build_runtime_diagnosis_callback(
     return callback
 
 
-__all__ = ["AgentHandleAdapter", "build_runtime_diagnosis_callback", "run_agent_diagnose"]
+__all__ = ["build_runtime_diagnosis_callback", "run_agent_diagnose"]

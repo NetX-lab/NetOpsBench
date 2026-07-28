@@ -48,9 +48,7 @@ def estimate_packet_size_bytes(
         udp_payload = float(flow.get("udp_payload_len", udp_payload_len_bytes))
         return max(udp_payload, 64.0) + UDP_IP_OVERHEAD_BYTES
     if protocol == "tcp":
-        tcp_payload = flow.get("tcp_payload_len")
-        if tcp_payload is None:
-            tcp_payload = flow.get("tcp_mss", tcp_mss_bytes)
+        tcp_payload = flow.get("tcp_mss", tcp_mss_bytes)
         return max(float(tcp_payload), float(MIN_TCP_PAYLOAD_BYTES)) + TCP_IP_OVERHEAD_BYTES
     return 0.0
 
@@ -83,35 +81,76 @@ def estimate_switch_pps(
     estimate_flow_pps_fn,
 ) -> dict:
     clients = topology.get("devices", {}).get("clients", [])
-    leafs = topology.get("devices", {}).get("leafs", [])
-    spines = topology.get("devices", {}).get("spines", [])
-
-    client_to_leaf = {client["name"]: client.get("leaf") for client in clients}
-    leaf_pps = {leaf["name"]: 0.0 for leaf in leafs}
-    spine_pps = {spine["name"]: 0.0 for spine in spines}
-    spine_count = len(spines)
+    devices = topology.get("devices", {})
+    role_names = {
+        role: [device["name"] for device in devices.get(f"{role}s", [])]
+        for role in ("spine", "leaf", "core", "agg", "edge")
+    }
+    switch_pps = {name: 0.0 for names in role_names.values() for name in names}
+    client_to_switch = {
+        client["name"]: client.get("leaf") or client.get("edge") or client.get("attached_switch") for client in clients
+    }
+    device_pods = {
+        device["name"]: device.get("pod") for role in ("agg", "edge") for device in devices.get(f"{role}s", [])
+    }
 
     for flow in flows:
         pps = estimate_flow_pps_fn(flow)
         if pps <= 0:
             continue
-        src_leaf = client_to_leaf.get(flow.get("src"))
-        dst_leaf = client_to_leaf.get(flow.get("dst"))
-        if src_leaf in leaf_pps:
-            leaf_pps[src_leaf] += pps
-        if dst_leaf in leaf_pps:
-            leaf_pps[dst_leaf] += pps
-        if src_leaf and dst_leaf and src_leaf != dst_leaf and spine_count > 0:
-            per_spine_pps = pps / spine_count
-            for spine_name in spine_pps:
-                spine_pps[spine_name] += per_spine_pps
+        src_switch = client_to_switch.get(flow.get("src"))
+        dst_switch = client_to_switch.get(flow.get("dst"))
+        for name, addition in switch_path_pps(
+            role_names,
+            device_pods,
+            src_switch,
+            dst_switch,
+            pps,
+        ).items():
+            switch_pps[name] += addition
 
-    return {
-        "leafs": {k: round(v, 2) for k, v in leaf_pps.items()},
-        "spines": {k: round(v, 2) for k, v in spine_pps.items()},
-        "max_leaf_pps": round(max(leaf_pps.values()) if leaf_pps else 0.0, 2),
-        "max_spine_pps": round(max(spine_pps.values()) if spine_pps else 0.0, 2),
-    }
+    result: dict[str, object] = {}
+    for role, names in role_names.items():
+        values = {name: round(switch_pps[name], 2) for name in names}
+        result[f"{role}s"] = values
+        result[f"max_{role}_pps"] = round(max(values.values()) if values else 0.0, 2)
+    result["max_switch_pps"] = round(max(switch_pps.values()) if switch_pps else 0.0, 2)
+    return result
+
+
+def switch_path_pps(
+    role_names: dict[str, list[str]],
+    device_pods: dict[str, object],
+    src_switch: str | None,
+    dst_switch: str | None,
+    pps: float,
+) -> dict[str, float]:
+    """Return per-switch PPS additions for a CLOS or fat-tree path."""
+    additions: dict[str, float] = {}
+    for endpoint in (src_switch, dst_switch):
+        if endpoint is None:
+            continue
+        if endpoint in role_names["leaf"] or endpoint in role_names["edge"]:
+            additions[endpoint] = additions.get(endpoint, 0.0) + pps
+    if not src_switch or not dst_switch or src_switch == dst_switch:
+        return additions
+
+    if src_switch in role_names["leaf"] and dst_switch in role_names["leaf"]:
+        for spine in role_names["spine"]:
+            additions[spine] = additions.get(spine, 0.0) + pps / len(role_names["spine"])
+        return additions
+
+    src_pod = device_pods.get(src_switch)
+    dst_pod = device_pods.get(dst_switch)
+    transit_pods = {src_pod} if src_pod == dst_pod else {src_pod, dst_pod}
+    for pod in transit_pods - {None}:
+        aggs = [name for name in role_names["agg"] if device_pods.get(name) == pod]
+        for agg in aggs:
+            additions[agg] = additions.get(agg, 0.0) + pps / len(aggs)
+    if src_pod != dst_pod:
+        for core in role_names["core"]:
+            additions[core] = additions.get(core, 0.0) + pps / len(role_names["core"])
+    return additions
 
 
 def estimate_client_pps(flows: list[dict], *, estimate_flow_pps_fn) -> dict[str, float]:

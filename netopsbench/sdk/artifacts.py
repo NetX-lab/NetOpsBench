@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from netopsbench.platform.session.harbor_export import export_traces, load_trace_index, load_trace_results
+from netopsbench.platform.utils.files import atomic_write_json
 
 
 class ArtifactManager:
@@ -35,7 +36,7 @@ class ArtifactManager:
         path = Path(target_dir)
         path.mkdir(parents=True, exist_ok=True)
         metadata_path = path / "metadata.json"
-        metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_json(metadata_path, payload)
         return metadata_path
 
     def load_metadata(self, target_dir: Path) -> dict[str, Any]:

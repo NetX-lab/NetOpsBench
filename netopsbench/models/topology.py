@@ -1,4 +1,4 @@
-"""Canonical, persisted topology schemas and the legacy agent projection."""
+"""Canonical persisted topology schemas and family-correct agent projection."""
 
 from __future__ import annotations
 
@@ -82,6 +82,14 @@ class PingmeshPolicy(_PersistedModel):
     def coverage_epoch_seconds(self, client_count: int) -> int:
         return self.coverage_epoch_cycles(client_count) * self.cycle_interval_seconds
 
+    def coverage_grace_seconds(self) -> int:
+        """Return ingestion grace after one complete probe coverage epoch."""
+        return max(5, 2 * self.cycle_interval_seconds)
+
+    def complete_window_seconds(self, client_count: int) -> int:
+        """Return the shortest window that covers one epoch plus ingestion grace."""
+        return self.coverage_epoch_seconds(client_count) + self.coverage_grace_seconds()
+
 
 class TopologyDefaults(_PersistedModel):
     link_mtu: int = Field(default=DEFAULT_LINK_MTU, gt=0)
@@ -139,6 +147,19 @@ class TopologyManifest(_PersistedModel):
         names = [device.name for device in self.devices]
         if len(names) != len(set(names)):
             raise ValueError("device names must be unique")
+        for field_name in ("mgmt_ip", "data_ip", "router_id"):
+            seen: set[str] = set()
+            duplicates: set[str] = set()
+            for device in self.devices:
+                value = getattr(device, field_name)
+                if value is None:
+                    continue
+                normalized = str(value)
+                if normalized in seen:
+                    duplicates.add(normalized)
+                seen.add(normalized)
+            if duplicates:
+                raise ValueError(f"{field_name} values must be unique: {', '.join(sorted(duplicates))}")
 
         devices_by_name = {device.name: device for device in self.devices}
         switch_roles = {device.role for device in self.switches()}
@@ -195,18 +216,20 @@ class TopologyManifest(_PersistedModel):
         return [device for device in self.switches() if device.name in attached_names]
 
     def to_agent_topology(self) -> dict[str, Any]:
-        """Adapt canonical data to the grouped topology metadata used by agents today."""
-        groups = {
-            "spines": self.devices_by_role(DeviceRole.SPINE),
-            "leafs": self.devices_by_role(DeviceRole.LEAF),
-            "cores": self.devices_by_role(DeviceRole.CORE),
-            "aggs": self.devices_by_role(DeviceRole.AGG),
-            "edges": self.devices_by_role(DeviceRole.EDGE),
-            "clients": self.clients(),
-        }
-        if self.family == "fat-tree":
-            groups["spines"] = groups["cores"]
-            groups["leafs"] = groups["edges"]
+        """Adapt canonical data to family-correct role groups for agents."""
+        if self.family == "clos":
+            groups = {
+                "spines": self.devices_by_role(DeviceRole.SPINE),
+                "leafs": self.devices_by_role(DeviceRole.LEAF),
+                "clients": self.clients(),
+            }
+        else:
+            groups = {
+                "cores": self.devices_by_role(DeviceRole.CORE),
+                "aggs": self.devices_by_role(DeviceRole.AGG),
+                "edges": self.devices_by_role(DeviceRole.EDGE),
+                "clients": self.clients(),
+            }
 
         projected: dict[str, Any] = {
             "name": self.name,
@@ -269,17 +292,16 @@ class TopologyManifest(_PersistedModel):
             "host_density": self.facts.host_density,
             "total_clients": self.facts.total_clients,
             "total_devices": self.facts.total_switches,
-            "num_spines": self.facts.num_cores,
-            "num_leafs": self.facts.num_edges,
         }
 
     def _device_to_agent_entry(self, device: Device) -> dict[str, Any]:
         entry = device.model_dump(exclude={"role", "metadata"}, exclude_none=True, mode="json")
         entry.update({key: value for key, value in device.metadata.items() if key not in Device.model_fields})
         if device.role is DeviceRole.CLIENT and device.attached_switch:
-            entry["leaf"] = device.attached_switch
             if self.family == "fat-tree":
                 entry["edge"] = device.attached_switch
+            else:
+                entry["leaf"] = device.attached_switch
         return entry
 
 

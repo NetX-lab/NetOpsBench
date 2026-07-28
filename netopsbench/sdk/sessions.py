@@ -6,11 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from netopsbench.exceptions import ScenarioValidationError
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.session.orchestrator import SessionOrchestrator
-from netopsbench.platform.session.types import ScenarioExecutionRef
 from netopsbench.sdk.reports import BenchmarkReport, RunHandle
 from netopsbench.sdk.runtimes import RuntimePool
-from netopsbench.sdk.scenarios import ScenarioHandle
 
 
 def _benchmark_report_from_payload(payload: dict[str, Any]) -> BenchmarkReport:
@@ -42,20 +42,8 @@ def _run_handle_from_payload(payload: dict[str, Any]) -> RunHandle:
     )
 
 
-def _coerce_public_scenario_input(scenario: ScenarioHandle | ScenarioExecutionRef | str | Path):
-    if isinstance(scenario, ScenarioHandle):
-        return ScenarioExecutionRef.from_scenario(scenario.to_scenario(), path=scenario.path)
-    return scenario
-
-
-def _coerce_public_scenario_inputs(scenarios: Sequence[ScenarioHandle | ScenarioExecutionRef] | str | Path):
-    if isinstance(scenarios, (str, Path)):
-        return scenarios
-    return [_coerce_public_scenario_input(item) for item in scenarios]
-
-
 class SessionManager:
-    """Thin SDK manager delegating runtime execution to platform internals."""
+    """SDK manager delegating benchmark execution to the shared episode kernel."""
 
     def __init__(
         self,
@@ -79,7 +67,7 @@ class SessionManager:
     def run_scenario(
         self,
         *,
-        scenario: ScenarioHandle | str | Path,
+        scenario: ScenarioSpec | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -89,7 +77,7 @@ class SessionManager:
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_scenario(
-            scenario=_coerce_public_scenario_input(scenario),
+            scenario=scenario,
             agent=agent,
             scale=scale,
             workers=workers,
@@ -102,7 +90,7 @@ class SessionManager:
     def run_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioHandle] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         agent: Any,
         scale: str | None = None,
         workers: int = 1,
@@ -111,8 +99,9 @@ class SessionManager:
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
+        scenario_list = self._preflight_suite(scenarios)
         return self._executor.run_suite(
-            scenarios=_coerce_public_scenario_inputs(scenarios),
+            scenarios=scenario_list,
             agent=agent,
             scale=scale,
             workers=workers,
@@ -125,15 +114,15 @@ class SessionManager:
     def run_on_runtime_scenario(
         self,
         *,
-        scenario: ScenarioHandle | str | Path,
+        scenario: ScenarioSpec | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
         return self._executor.run_on_runtime_scenario(
-            scenario=_coerce_public_scenario_input(scenario),
-            runtime=runtime,
+            scenario=scenario,
+            runtime=runtime._runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,
             trace=trace,
@@ -142,19 +131,38 @@ class SessionManager:
     def run_on_runtime_suite(
         self,
         *,
-        scenarios: Sequence[ScenarioHandle] | str | Path,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
         runtime: RuntimePool,
         agent: Any,
         artifacts_dir: str | Path | None = None,
         trace: bool = True,
     ) -> RunHandle:
+        scenario_list = self._preflight_suite(scenarios)
+        if scenario_list[0].scale != runtime.scale:
+            raise ScenarioValidationError(
+                f"Suite scale {scenario_list[0].scale!r} does not match runtime scale {runtime.scale!r}"
+            )
         return self._executor.run_on_runtime_suite(
-            scenarios=_coerce_public_scenario_inputs(scenarios),
-            runtime=runtime,
+            scenarios=scenario_list,
+            runtime=runtime._runtime,
             agent=agent,
             artifacts_dir=artifacts_dir,
             trace=trace,
         )
+
+    def _preflight_suite(
+        self,
+        scenarios: Sequence[ScenarioSpec] | str | Path,
+    ) -> list[ScenarioSpec]:
+        scenario_list = self._executor._coerce_scenarios(scenarios)
+        if not scenario_list:
+            raise ScenarioValidationError("A benchmark suite must contain at least one scenario")
+        scales = sorted({scenario.scale for scenario in scenario_list})
+        if len(scales) != 1:
+            raise ScenarioValidationError(
+                "All scenarios in a suite must use the same topology scale; got: " + ", ".join(scales)
+            )
+        return scenario_list
 
 
 __all__ = ["SessionManager"]

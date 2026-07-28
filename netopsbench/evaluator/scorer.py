@@ -6,12 +6,11 @@ Compares agent outputs against ground truth and generates benchmark reports.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, canonicalize_fault_type, judge_fault_type_match
+from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, judge_fault_type_match
 from netopsbench.platform.utils.interface_names import normalize_interface_name
 
 # Composite localization score weighting (used for sorting/ranking only).
@@ -59,12 +58,12 @@ class EvaluationResult:
 
 
 def create_default_evaluator() -> Evaluator:
-    """Stable tiny factory boundary for public evaluator adapters."""
+    """Stable public factory for the default evaluator."""
     return Evaluator()
 
 
 def create_fault_type_judge_evaluator(fault_type_judge: FaultTypeJudge) -> Evaluator:
-    """Create an evaluator that uses a semantic judge for fault-type matching."""
+    """Create an evaluator using a semantic fault-type judge."""
     return Evaluator(fault_type_judge=fault_type_judge)
 
 
@@ -90,6 +89,17 @@ class Evaluator:
             "interface": INTERFACE_LOCALIZATION_WEIGHT,
         }
         self.fault_type_judge = fault_type_judge
+
+    @staticmethod
+    def _agent_details(agent_output: AgentOutput) -> dict[str, Any]:
+        """Return diagnostic accounting fields shared by every sample type."""
+        return {
+            "agent_output": agent_output.to_dict(),
+            "tool_calls_count": len(agent_output.tool_calls),
+            "time_taken": agent_output.time_taken_seconds,
+            "confidence": agent_output.confidence,
+            "inconclusive": agent_output.verdict == "inconclusive",
+        }
 
     def evaluate(self, agent_output: AgentOutput, ground_truth: dict[str, Any], testcase_id: str) -> EvaluationResult:
         """
@@ -118,6 +128,7 @@ class Evaluator:
                 correct_fault_type=True,
                 score=score,
                 details={
+                    **self._agent_details(agent_output),
                     "type": "negative_sample",
                     "negative_sample": True,
                     "agent_verdict": agent_output.verdict,
@@ -176,12 +187,8 @@ class Evaluator:
             correct_fault_type=correct_fault_type,
             score=round(score, 3),
             details={
-                "agent_output": agent_output.to_dict(),
+                **self._agent_details(agent_output),
                 "ground_truth": ground_truth,
-                "tool_calls_count": len(agent_output.tool_calls),
-                "time_taken": agent_output.time_taken_seconds,
-                "confidence": agent_output.confidence,
-                "inconclusive": agent_output.verdict == "inconclusive",
                 "interface_applicable": interface_applicable,
                 "equivalent_locations": equivalent_locations,
                 "matched_location": matched_location,
@@ -252,10 +259,6 @@ class Evaluator:
     def _normalize_interface(self, interface: str | None) -> str:
         """Normalize interface names (e.g., 'ethernet-1/1' -> 'e11')."""
         return normalize_interface_name(interface)
-
-    def _normalize_fault_type(self, fault_type: str) -> str:
-        """Normalize fault type names for comparison."""
-        return canonicalize_fault_type(fault_type)
 
     def _is_fully_correct_case(self, result: EvaluationResult) -> bool:
         """Return True when a testcase is fully solved end-to-end."""
@@ -456,13 +459,3 @@ class Evaluator:
         }
 
         return report
-
-    def save_report(self, report: dict[str, Any], filepath: str) -> None:
-        """Save benchmark report to JSON file."""
-        with open(filepath, "w") as f:
-            json.dump(report, f, indent=2, default=str)
-
-    def load_report(self, filepath: str) -> dict[str, Any]:
-        """Load benchmark report from JSON file."""
-        with open(filepath) as f:
-            return json.load(f)

@@ -3,27 +3,76 @@ version: v1
 defaults:
   traffic_profile: standard
   count_per_fault: 4
-  baseline_duration_seconds: 20
   fault_duration_seconds: 30
-  recovery_duration_seconds: 20
-  baseline_stabilization_seconds: 5
   fault_stabilization_seconds: 5
-  recovery_stabilization_seconds: 10
 
 fault_templates:
-  - name: link_down_core
+  # Access link failures remain the easy anchor. Larger topologies also cover
+  # both ends of redundant fabric links.
+  - name: link_down_access
     fault_type: link_down
     difficulty: easy
     device_role: leaf
+    interface_role: downlink
     fault_stabilization_seconds: 5
     count_per_scale:
       xs: 1
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 2
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: link_down_leaf_fabric
+    fault_type: link_down
+    difficulty: medium
+    device_role: leaf
+    interface_role: uplink
+    count: 0
+    count_per_scale:
+      xlarge: 2
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: link_down_spine_fabric
+    fault_type: link_down
+    difficulty: hard
+    device_role: spine
+    count: 0
+    count_per_scale:
+      xlarge: 2
+      fat-tree-k8: 0
+      fat-tree-k12: 0
+
+  - name: link_down_agg_edge
+    fault_type: link_down
+    difficulty: medium
+    device_role: agg
+    interface_role: downlink
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: link_down_agg_core
+    fault_type: link_down
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: link_down_core_agg
+    fault_type: link_down
+    difficulty: hard
+    device_role: core
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
 
   - name: blackhole_route_leaf
     fault_type: blackhole_route
@@ -34,11 +83,37 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
-  - name: mtu_mismatch_core
+  - name: blackhole_route_spine
+    fault_type: blackhole_route
+    difficulty: hard
+    device_role: spine
+    count: 0
+    count_per_scale:
+      xlarge: 3
+
+  - name: blackhole_route_agg
+    fault_type: blackhole_route
+    difficulty: hard
+    device_role: agg
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: blackhole_route_core
+    fault_type: blackhole_route
+    difficulty: hard
+    device_role: core
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: mtu_mismatch_spine
     fault_type: mtu_mismatch
     difficulty: hard
     device_role: spine
@@ -48,23 +123,80 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: mtu_mismatch_leaf
+    fault_type: mtu_mismatch
+    difficulty: hard
+    device_role: leaf
+    interface_role: uplink
+    mtu: 1400
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: mtu_mismatch_agg
+    fault_type: mtu_mismatch
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    mtu: 1400
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
   - name: high_latency_leaf
     fault_type: high_latency
     difficulty: medium
     device_role: leaf
+    interface_role: uplink
     latency_ms: 120
     count_per_scale:
       xs: 1
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: high_latency_spine
+    fault_type: high_latency
+    difficulty: hard
+    device_role: spine
+    latency_ms: 120
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: high_latency_agg_edge
+    fault_type: high_latency
+    difficulty: hard
+    device_role: agg
+    interface_role: downlink
+    latency_ms: 120
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: high_latency_agg_core
+    fault_type: high_latency
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    latency_ms: 120
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
   - name: static_route_misconfig
     fault_type: static_route_misconfig
@@ -79,7 +211,7 @@ fault_templates:
       fat-tree-k8: 4
       fat-tree-k12: 4
 
-  - name: packet_loss_edge
+  - name: packet_loss_leaf
     fault_type: packet_loss
     difficulty: medium
     device_role: leaf
@@ -90,11 +222,44 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
-  - name: packet_corruption_edge
+  - name: packet_loss_spine
+    fault_type: packet_loss
+    difficulty: hard
+    device_role: spine
+    loss_pct: 30
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: packet_loss_agg_edge
+    fault_type: packet_loss
+    difficulty: hard
+    device_role: agg
+    interface_role: downlink
+    loss_pct: 30
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: packet_loss_agg_core
+    fault_type: packet_loss
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    loss_pct: 30
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: packet_corruption_leaf
     fault_type: packet_corruption
     difficulty: hard
     device_role: leaf
@@ -105,11 +270,44 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
-  - name: link_flapping_core
+  - name: packet_corruption_spine
+    fault_type: packet_corruption
+    difficulty: hard
+    device_role: spine
+    corruption_pct: 25
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: packet_corruption_agg_edge
+    fault_type: packet_corruption
+    difficulty: hard
+    device_role: agg
+    interface_role: downlink
+    corruption_pct: 25
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: packet_corruption_agg_core
+    fault_type: packet_corruption
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    corruption_pct: 25
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: link_flapping_leaf
     fault_type: link_flapping
     difficulty: hard
     device_role: leaf
@@ -119,14 +317,45 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: link_flapping_spine
+    fault_type: link_flapping
+    difficulty: hard
+    device_role: spine
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: link_flapping_agg_edge
+    fault_type: link_flapping
+    difficulty: hard
+    device_role: agg
+    interface_role: downlink
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: link_flapping_agg_core
+    fault_type: link_flapping
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
   - name: bgp_neighbor_misconfig_leaf
     fault_type: bgp_neighbor_misconfig
     difficulty: hard
     device_role: leaf
+    interface_role: uplink
     parameters:
       misconfig_kind: peer_as_mismatch
     count_per_scale:
@@ -134,9 +363,45 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: bgp_neighbor_misconfig_spine
+    fault_type: bgp_neighbor_misconfig
+    difficulty: hard
+    device_role: spine
+    parameters:
+      misconfig_kind: peer_as_mismatch
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: bgp_neighbor_misconfig_agg_edge
+    fault_type: bgp_neighbor_misconfig
+    difficulty: hard
+    device_role: agg
+    interface_role: downlink
+    parameters:
+      misconfig_kind: peer_as_mismatch
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
+
+  - name: bgp_neighbor_misconfig_agg_core
+    fault_type: bgp_neighbor_misconfig
+    difficulty: hard
+    device_role: agg
+    interface_role: uplink
+    parameters:
+      misconfig_kind: peer_as_mismatch
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 1
+      fat-tree-k12: 1
 
   - name: route_policy_misconfig_leaf
     fault_type: route_policy_misconfig
@@ -162,9 +427,28 @@ fault_templates:
       small: 1
       medium: 2
       large: 4
-      xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: device_down_spine
+    fault_type: device_down
+    difficulty: hard
+    device_role: spine
+    count: 0
+    count_per_scale:
+      xlarge: 3
+      fat-tree-k8: 2
+      fat-tree-k12: 2
+
+  - name: device_down_agg
+    fault_type: device_down
+    difficulty: hard
+    device_role: agg
+    count: 0
+    count_per_scale:
+      fat-tree-k8: 2
+      fat-tree-k12: 2
 
   - name: acl_misconfig_leaf
     fault_type: acl_misconfig
@@ -176,21 +460,6 @@ fault_templates:
       medium: 2
       large: 4
       xlarge: 4
-      fat-tree-k8: 4
-      fat-tree-k12: 4
-
-  - name: bgp_neighbor_misconfig_agg
-    fault_type: bgp_neighbor_misconfig
-    difficulty: hard
-    device_role: agg
-    parameters:
-      misconfig_kind: peer_as_mismatch
-    count_per_scale:
-      xs: 0
-      small: 0
-      medium: 0
-      large: 0
-      xlarge: 0
       fat-tree-k8: 4
       fat-tree-k12: 4
 

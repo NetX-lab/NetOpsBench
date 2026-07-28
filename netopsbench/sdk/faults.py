@@ -9,14 +9,15 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol
 
+from netopsbench.exceptions import (
+    FaultNotFoundError,
+    FaultValidationError,
+)
 from netopsbench.platform.faults.specs import (
     FaultExecutor,
     FaultPack,
     FaultSpec,
     create_fault_registry,
-)
-from netopsbench.sdk.exceptions import (
-    FaultNotFoundError,
 )
 from netopsbench.sdk.types import FaultContext, FaultExecutionResult
 
@@ -169,9 +170,9 @@ class FaultManager:
 
     def register(self, *, spec: FaultSpec, executor: FaultExecutor) -> None:
         if not isinstance(spec, FaultSpec):
-            raise TypeError("spec must be a FaultSpec")
+            raise FaultValidationError("spec must be a FaultSpec")
         if not hasattr(executor, "inject") or not hasattr(executor, "recover"):
-            raise TypeError("executor must provide inject() and recover()")
+            raise FaultValidationError("executor must provide inject() and recover()")
 
         # Synthesize inject_episode / recover_active_fault wrappers so that
         # scenario_execution.py (which calls spec.inject_episode) can dispatch
@@ -189,28 +190,49 @@ class FaultManager:
             )
             outcome = _exec.inject(ctx)
             if isinstance(outcome, FaultExecutionResult):
-                return {
+                result = {"success": outcome.success, **outcome.details}
+                if outcome.error is not None:
+                    result["error"] = outcome.error
+            else:
+                result = dict(outcome) if outcome is not None else {"success": True}
+            result.update(
+                {
                     "type": ctx.fault_type,
                     "device": ctx.target_device,
-                    "success": outcome.success,
-                    "error": outcome.error,
-                    **outcome.details,
+                    "interface": ctx.target_interface,
+                    "parameters": dict(ctx.parameters),
+                    "metadata": dict(ctx.metadata),
                 }
-            return dict(outcome) if outcome is not None else {"success": True}
+            )
+            result["success"] = bool(result.get("success", True))
+            if result["success"]:
+                injector.track_active_fault(result)
+            return result
 
-        def _recover_active_fault(injector: Any, fault_info: dict[str, Any]) -> dict[str, Any]:
+        def _recover_active_fault(injector: Any, fault_info: Any) -> dict[str, Any]:
             ctx = FaultContext(
                 fault_type=str(fault_info.get("type", spec.name)),
                 target_device=str(fault_info.get("device", "") or ""),
                 target_interface=fault_info.get("interface"),
                 parameters=dict(fault_info.get("parameters", {}) or {}),
-                metadata={},
+                metadata=dict(fault_info.get("metadata", {}) or {}),
                 container_names=dict(getattr(injector, "container_names", {}) or {}),
             )
             outcome = _exec.recover(ctx)
             if isinstance(outcome, FaultExecutionResult):
-                return {"success": outcome.success, "error": outcome.error, **outcome.details}
-            return dict(outcome) if outcome is not None else {"success": True}
+                result = {"success": outcome.success, **outcome.details}
+                if outcome.error is not None:
+                    result["error"] = outcome.error
+            else:
+                result = dict(outcome) if outcome is not None else {"success": True}
+            recovered = bool(result.get("success", True)) and bool(result.get("recovered", True))
+            return {
+                **result,
+                "type": ctx.fault_type,
+                "device": ctx.target_device,
+                "interface": ctx.target_interface,
+                "recovered": recovered,
+            }
 
         patched_spec = FaultSpec(
             name=spec.name,

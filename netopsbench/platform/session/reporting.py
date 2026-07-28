@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from netopsbench.logging_utils import get_logger
-from netopsbench.platform.session.types import ScenarioExecutionRef
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
+from netopsbench.platform.utils.files import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -25,7 +25,7 @@ class LocalArtifactStore:
     def save_metadata(self, artifact_dir: Path, payload: dict[str, Any]) -> None:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         metadata_path = artifact_dir / "metadata.json"
-        metadata_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        atomic_write_json(metadata_path, payload, default=str)
 
 
 def load_topology_metadata(topology_dir: Path) -> dict[str, Any]:
@@ -36,18 +36,23 @@ def artifacts_root(artifact_manager: Any, artifacts_dir: str | Path | None) -> P
     return Path(artifacts_dir) if artifacts_dir is not None else (artifact_manager.root_dir / "runs")
 
 
-def next_run_id(artifact_root: Path, *, started_at: datetime | None = None) -> str:
+def reserve_run_id(artifact_root: Path, *, started_at: datetime | None = None) -> str:
+    """Atomically reserve a unique run directory and return its id."""
+    artifact_root.mkdir(parents=True, exist_ok=True)
     timestamp = (started_at or datetime.now(UTC)).astimezone(UTC)
     base = f"run-{timestamp.strftime('%Y%m%dT%H%M%SZ')}"
-    if not artifact_root.exists() or not (artifact_root / base).exists():
-        return base
-    suffix = 2
-    while (artifact_root / f"{base}-{suffix:02d}").exists():
-        suffix += 1
-    return f"{base}-{suffix:02d}"
+    suffix = 1
+    while True:
+        candidate = base if suffix == 1 else f"{base}-{suffix:02d}"
+        try:
+            (artifact_root / candidate).mkdir()
+        except FileExistsError:
+            suffix += 1
+            continue
+        return candidate
 
 
-def resolve_scale(scenarios: Iterable[ScenarioExecutionRef]) -> str:
+def resolve_scale(scenarios: Iterable[ScenarioSpec]) -> str:
     scenario_list = list(scenarios)
     return scenario_list[0].scale if scenario_list else "xs"
 
@@ -61,7 +66,7 @@ def create_run_report(
     runtime: Any,
     runtime_owner: str,
     teardown: str,
-    scenarios: Sequence[ScenarioExecutionRef],
+    scenarios: Sequence[ScenarioSpec],
     agent: Any,
     worker_summaries: list[dict[str, Any]],
     scenario_summaries: list[dict[str, Any]],
@@ -85,6 +90,8 @@ def create_run_report(
         or (scenarios[0].scale if scenarios else "unknown")
         or "unknown"
     )
+    profile = runtime.scale_registry.get(reported_topology_scale)
+    scale_profile = profile.model_dump(mode="json")
     artifact_paths = {
         "report": str(report_path),
         "metadata": str(metadata_path),
@@ -105,12 +112,17 @@ def create_run_report(
         "status": status,
         "runtime_id": runtime.id,
         "topology_scale": reported_topology_scale,
+        "scale_registry_sha256": runtime.scale_registry.digest,
+        "scale_profile_sha256": profile.digest,
+        "resolved_scale_profile": scale_profile,
         "summary": {
             **dict(aggregate_report.get("summary") or {}),
             "agent_name": reported_agent_name,
             "mode": mode,
             "status": status,
             "topology_scale": reported_topology_scale,
+            "scale_registry_sha256": runtime.scale_registry.digest,
+            "scale_profile_sha256": profile.digest,
             "runtime_id": runtime.id,
             "started_at": started_at.isoformat(),
             "completed_at": completed_at.isoformat(),
@@ -130,6 +142,9 @@ def create_run_report(
             "completed_at": completed_at.isoformat(),
             "agent": reported_agent_name,
             "topology_scale": reported_topology_scale,
+            "scale_registry_sha256": runtime.scale_registry.digest,
+            "scale_profile_sha256": profile.digest,
+            "resolved_scale_profile": scale_profile,
             "execution": "real_runtime_runner",
             "worker_summaries": worker_summaries,
         },
@@ -138,7 +153,7 @@ def create_run_report(
 
 def save_run_report(report_payload: dict[str, Any], report_path: Path) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(report_payload, indent=2, default=str), encoding="utf-8")
+    atomic_write_json(report_path, report_payload, default=str)
 
 
 def save_run_metadata(
@@ -153,8 +168,11 @@ def save_run_metadata(
     teardown: str,
     started_at: datetime,
     completed_at: datetime,
-    scenarios: Sequence[ScenarioExecutionRef],
+    scenarios: Sequence[ScenarioSpec],
     worker_summaries: list[dict[str, Any]],
+    scale_registry_sha256: str,
+    scale_profile_sha256: str,
+    resolved_scale_profile: dict[str, Any],
     traces_dir: Path | None = None,
     trace_index_path: Path | None = None,
     trace_results_path: Path | None = None,
@@ -180,6 +198,9 @@ def save_run_metadata(
             "scenario_ids": [scenario.id for scenario in scenarios],
             "execution": "real_runtime_runner",
             "worker_summaries": worker_summaries,
+            "scale_registry_sha256": scale_registry_sha256,
+            "scale_profile_sha256": scale_profile_sha256,
+            "resolved_scale_profile": resolved_scale_profile,
             "artifact_paths": artifact_paths,
         },
     )
@@ -193,7 +214,7 @@ def build_run_handle(
     started_at: datetime,
     completed_at: datetime,
     artifact_dir: Path,
-    scenarios: Sequence[ScenarioExecutionRef],
+    scenarios: Sequence[ScenarioSpec],
     runtime_id: str,
     report_path: Path,
 ) -> dict[str, Any]:

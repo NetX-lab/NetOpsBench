@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from netopsbench.platform.client_agent.config import (
+    CLIENT_AGENT_CONFIG_NAME,
+    write_client_agent_config,
+)
+
 from .config import (
     SONIC_BASE_CONFIG_DB,
     SONIC_HWSKU,
     SONIC_LANEMAP_PATH,
+    SONIC_PID1_COMMAND,
     SONIC_PLATFORM,
     SONIC_PORT_CONFIG_PATH,
     SONIC_START_WRAPPER_SOURCE,
@@ -134,6 +143,7 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
             "kinds": {
                 plan.nos_kind: {
                     "image": plan.nos_image,
+                    "cmd": SONIC_PID1_COMMAND,
                     "binds": [
                         "configs/sonic/__clabNodeName__/config_db.json:/etc/sonic/config_db.json:rw",
                         f"configs/sonic/__clabNodeName__/port_config.ini:{SONIC_PORT_CONFIG_PATH}:rw",
@@ -144,7 +154,7 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
                 },
                 "linux": {
                     "image": plan.client_image,
-                    "binds": ["configs/pingmesh:/tmp/pingmesh:ro"],
+                    "binds": ["configs/client-agent:/etc/netopsbench:ro"],
                 },
             },
             "nodes": {},
@@ -177,15 +187,13 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
     return topology
 
 
-def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, Any]:
-    """Write every topology artifact from one canonical fabric plan."""
-    root = Path(output_dir)
+def _render_into(plan: FabricPlan, root: Path) -> dict[str, Any]:
     sonic_root = root / "configs" / "sonic"
     frr_root = root / "configs" / "frr"
-    pingmesh_root = root / "configs" / "pingmesh"
+    client_agent_root = root / "configs" / "client-agent"
     sonic_root.mkdir(parents=True, exist_ok=True)
     frr_root.mkdir(parents=True, exist_ok=True)
-    pingmesh_root.mkdir(parents=True, exist_ok=True)
+    client_agent_root.mkdir(parents=True, exist_ok=True)
 
     sonic_start_wrapper = sonic_root / "start.sh"
     if not SONIC_START_WRAPPER_SOURCE.is_file():
@@ -225,18 +233,57 @@ def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, An
         json.dumps(plan.manifest.model_dump(mode="json"), indent=2) + "\n",
         encoding="utf-8",
     )
+    client_agent_config = write_client_agent_config(
+        plan.manifest,
+        client_agent_root / CLIENT_AGENT_CONFIG_NAME,
+    )
     return {
         "yaml_file": str(yaml_path),
         "metadata_file": str(metadata_path),
+        "client_agent_config_file": str(client_agent_config),
         "config_files": config_paths,
-        "startup_config_files": config_paths,
         "sonic_start_wrapper_file": str(sonic_start_wrapper),
         "frr_config_files": frr_paths,
         "metadata": plan.manifest.model_dump(mode="json"),
         "agent_topology": plan.manifest.to_agent_topology(),
-        "manifest": plan.manifest,
-        "plan": plan,
     }
+
+
+def render_fabric_plan(plan: FabricPlan, output_dir: str | Path) -> dict[str, Any]:
+    """Atomically replace every artifact for one canonical fabric plan."""
+    root = Path(output_dir)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=f".{root.name}.staging-", dir=root.parent))
+    backup = root.with_name(f".{root.name}.backup")
+    try:
+        result = _render_into(plan, staged)
+        if backup.exists():
+            shutil.rmtree(backup)
+        if root.exists():
+            os.replace(root, backup)
+        try:
+            os.replace(staged, root)
+        except Exception:
+            if backup.exists() and not root.exists():
+                os.replace(backup, root)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+
+    staged_prefix = str(staged)
+    for key in (
+        "yaml_file",
+        "metadata_file",
+        "client_agent_config_file",
+        "sonic_start_wrapper_file",
+    ):
+        result[key] = str(root) + str(result[key])[len(staged_prefix) :]
+    for key in ("config_files", "frr_config_files"):
+        result[key] = [str(root) + str(path)[len(staged_prefix) :] for path in result[key]]
+    return result
 
 
 __all__ = ["render_fabric_plan"]

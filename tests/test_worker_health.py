@@ -1,8 +1,10 @@
 import subprocess
+import time
 from pathlib import Path
 
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime import health
+from netopsbench.platform.topology.topology_utils import coerce_topology_manifest
 
 
 def _canonical_topology_dict(*, scale: str, spines: int, leafs: int, clients: int) -> dict:
@@ -54,7 +56,7 @@ def _runtime_identity(topology_dir: Path, name: str) -> RuntimeIdentity:
     )
 
 
-def test_active_interface_coverage_flags_xlarge_spine_with_only_32_ports_up():
+def test_active_interface_parser_exposes_incomplete_xlarge_spine():
     topo = _canonical_topology_dict(scale="xlarge", spines=16, leafs=128, clients=128)
     output = "\n".join(f"Ethernet{idx * 4} 1,2,3,4 100G 9100 N/A up up QSFP" for idx in range(32))
 
@@ -63,25 +65,12 @@ def test_active_interface_coverage_flags_xlarge_spine_with_only_32_ports_up():
     assert health._expected_active_interface_count(topo, "spine1") == 128
     assert health._expected_active_interface_count(topo, "leaf128") == 17
 
-    error = health._active_interface_coverage_error(
-        container="clab-xlarge-spine1",
-        device="spine1",
-        active_interfaces=active,
-        expected_count=128,
-    )
-    assert error == "active interface coverage too low on clab-xlarge-spine1: active=32 expected>=128"
 
+def test_deployment_convergence_checks_every_routing_device():
+    topo = coerce_topology_manifest(_canonical_topology_dict(scale="xlarge", spines=16, leafs=128, clients=128))
 
-def test_active_interface_coverage_accepts_required_count():
-    output = "\n".join(f"Ethernet{idx * 4} 1,2,3,4 100G 9100 N/A up up QSFP" for idx in range(128))
-
-    error = health._active_interface_coverage_error(
-        container="clab-xlarge-spine1",
-        device="spine1",
-        active_interfaces=health._parse_active_interfaces(output),
-        expected_count=128,
-    )
-    assert error is None
+    assert len(health._convergence_targets(topo, all_routing_devices=True)) == 144
+    assert len(health._convergence_targets(topo, all_routing_devices=False)) == 3
 
 
 def test_fat_tree_sparse_expected_active_interface_counts():
@@ -118,13 +107,23 @@ def test_worker_health_retries_observability_until_collector_is_ready(tmp_path, 
             output = "".join(f"10.0.0.{index} 4 65001 0 0 0 0 0 00:10:00 1\n" for index in range(1, 5))
         elif "show interfaces status" in joined:
             output = "".join(f"Ethernet{index * 4} 1,2,3,4 100G 9100 N/A up up QSFP\n" for index in range(4))
-        elif "ps aux" in joined:
-            output = "root 1 0.0 0.0 python3 -m netopsbench.platform.pingmesh.cli\n"
         else:
             output = ""
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(health, "_docker_exec", fake_docker_exec)
+    monkeypatch.setattr(
+        health,
+        "request_agent",
+        lambda *_args, **_kwargs: {
+            "protocol_version": 1,
+            "ok": True,
+            "status": {
+                "ready": True,
+                "heartbeat_unix_ns": time.time_ns(),
+            },
+        },
+    )
     attempts = []
 
     def fake_check_observability(*_args, **_kwargs):

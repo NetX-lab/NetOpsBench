@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from netopsbench.sdk.agents import AgentHandle, AgentManager
 
 
@@ -58,11 +60,10 @@ def test_handle_close_is_idempotent():
     handle = AgentHandle(agent=agent)
     handle.close()
     handle.close()
-    # Underlying agent close called twice but no exception leaks.
-    assert agent.closed == 2
+    assert agent.closed == 1
 
 
-def test_handle_close_swallows_exceptions(caplog):
+def test_handle_close_propagates_exceptions_for_retry():
     class Boom:
         def diagnose(self, context):  # pragma: no cover
             raise NotImplementedError
@@ -71,7 +72,30 @@ def test_handle_close_swallows_exceptions(caplog):
             raise RuntimeError("boom")
 
     handle = AgentHandle(agent=Boom(), name="boom")
-    handle.close()  # Must not propagate.
+    with pytest.raises(RuntimeError, match="boom"):
+        handle.close()
+
+
+def test_handle_close_can_retry_after_underlying_failure():
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        def diagnose(self, context):  # pragma: no cover
+            raise NotImplementedError
+
+        def close(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("boom")
+
+    agent = Flaky()
+    handle = AgentHandle(agent=agent, name="flaky")
+    with pytest.raises(RuntimeError, match="boom"):
+        handle.close()
+    handle.close()
+
+    assert agent.calls == 2
 
 
 def test_manager_close_closes_all_handles():
@@ -87,21 +111,45 @@ def test_manager_close_closes_all_handles():
     assert a.closed == 1
 
 
-def test_handle_sync_close_in_async_loop_logs_but_does_not_raise(caplog):
+def test_handle_sync_close_in_async_loop_has_explicit_error():
     agent = SyncCloseAgent()
     handle = AgentHandle(agent=agent)
 
     async def runner():
-        # AgentHandle.close() catches the RuntimeError raised by _run_async
-        # so this must not propagate even though we're inside a loop.
-        handle.close()
-        # Drain the unawaited aclose() coroutine to avoid a RuntimeWarning
-        # leaking into pytest output (best-effort cleanup path).
+        with pytest.raises(RuntimeError, match=r"await agent\.aclose"):
+            handle.close()
         await handle.aclose()
 
     asyncio.run(runner())
     # Sync path is rejected inside an event loop; async aclose() above does the close.
     assert agent.closed == 1
+
+
+def test_manager_aclose_retains_only_failed_handles_for_retry():
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        async def aclose(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("retry me")
+
+    stable = AsyncCloseAgent()
+    flaky = Flaky()
+    manager = AgentManager()
+    manager.wrap(stable)
+    manager.wrap(flaky)
+
+    async def runner():
+        with pytest.raises(RuntimeError, match="retry me"):
+            await manager.aclose()
+        assert len(manager._handles) == 1
+        await manager.aclose()
+
+    asyncio.run(runner())
+    assert stable.closed == 1
+    assert flaky.calls == 2
 
 
 def test_handle_aclose_works_in_async_loop():

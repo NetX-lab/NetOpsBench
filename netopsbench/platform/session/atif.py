@@ -324,13 +324,6 @@ def _context_steps(diagnostic_context: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _safe_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _steps_from_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     if not isinstance(tool_calls, list):
         return []

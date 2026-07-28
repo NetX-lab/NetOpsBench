@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import subprocess
 import sys
 import tomllib
@@ -97,7 +98,6 @@ def test_domain_and_service_modules_do_not_read_process_environment():
             "netopsbench/platform/topology/fat_tree_builder.py",
             "netopsbench/platform/topology/plan.py",
             "netopsbench/platform/topology/renderer.py",
-            "netopsbench/platform/traffic/commands.py",
             "netopsbench/platform/traffic/generator.py",
             "netopsbench/platform/traffic/planner.py",
             "netopsbench/platform/session/diagnosis.py",
@@ -136,6 +136,7 @@ def test_removed_environment_controls_do_not_return():
         "NETOPSBENCH_SWITCH_PPS_LIMIT",
         "NETOPSBENCH_SYSLOG_COLLECTOR",
         "NETOPSBENCH_TELEGRAF_INFLUXDB_URL",
+        "NETOPSBENCH_TOPOLOGY_ID",
         "NETOPSBENCH_TRACE",
         "NETOPSBENCH_WORKER_AGENT_TIMEOUT_SECONDS",
         "NETOPSBENCH_WORKER_DEPLOY_JOBS",
@@ -147,15 +148,22 @@ def test_removed_environment_controls_do_not_return():
         "PINGMESH_CYCLE_INTERVAL",
         "SONIC_GNMI_",
     }
-    roots = [
-        PACKAGE_ROOT,
-        PROJECT_ROOT / "docs",
-        PROJECT_ROOT / "examples",
-        PROJECT_ROOT / "scenarios",
-        PROJECT_ROOT / "scripts",
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .split("\0")
+    )
+    source_roots = ("netopsbench/", "docs/", "examples/", "scenarios/", "scripts/")
+    files = [
+        PROJECT_ROOT / name
+        for name in tracked
+        if (name == ".env.example" or name.startswith(source_roots)) and (PROJECT_ROOT / name).is_file()
     ]
-    files = [path for root in roots for path in root.rglob("*") if path.is_file()]
-    files.append(PROJECT_ROOT / ".env.example")
     offenders: dict[str, list[str]] = {}
     for path in files:
         try:
@@ -171,7 +179,6 @@ def test_removed_environment_controls_do_not_return():
 def test_library_modules_do_not_call_sys_exit():
     cli_boundaries = {
         PACKAGE_ROOT / "cli" / "main.py",
-        PACKAGE_ROOT / "platform" / "pingmesh" / "cli.py",
     }
     offenders: list[str] = []
     for path in _python_files():
@@ -208,6 +215,14 @@ def test_runtime_lifecycle_cli_imports_without_package_cycle():
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_client_image_docker_context_excludes_repository_artifacts():
+    patterns = set((PROJECT_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines())
+
+    assert {".git", ".netopsbench*", "scenario_results", "native/client-agent/target"} <= patterns
+    assert "native/client-agent" not in patterns
+    assert "containers" not in patterns
 
 
 def test_removed_internal_compatibility_trees_do_not_return():
@@ -297,3 +312,59 @@ def test_packaged_asset_trees_contain_only_runtime_inputs():
 
     scenario_specs = PACKAGE_ROOT / "platform" / "scenario" / "specs"
     assert {path.name for path in scenario_specs.iterdir() if path.is_file()} == {"fault_campaign.yaml"}
+
+
+def test_canonical_scenario_and_evaluator_are_single_source_of_truth(tmp_path):
+    from netopsbench.agents.base import DiagnosticContext
+    from netopsbench.models import profiles
+    from netopsbench.models.scenario import ScenarioSpec
+    from netopsbench.sdk import NetOpsBench
+
+    assert set(ScenarioSpec.model_fields) >= {"scenario_id", "topology_scale", "episode"}
+    assert "episodes" not in ScenarioSpec.model_fields
+    assert "ground_truth" not in {field.name for field in dataclasses.fields(DiagnosticContext)}
+    assert profiles.SCALE_PROFILES["xs"] is profiles.default_scale_registry().get("xs")
+    assert not (PACKAGE_ROOT / "platform" / "scenario" / "models.py").exists()
+    assert (PACKAGE_ROOT / "sdk" / "evaluators.py").exists()
+    with NetOpsBench(workspace=tmp_path) as bench:
+        assert hasattr(bench, "evaluators")
+
+
+def test_core_distribution_contains_no_rl_training_control_plane():
+    forbidden_imports = ("verl", "ray", "netopsbench_rl", "netopsbench.integrations")
+    offenders = {
+        str(path.relative_to(PROJECT_ROOT)): sorted(
+            name for name in _imports(path) if name.startswith(forbidden_imports)
+        )
+        for path in _python_files()
+    }
+    assert not {path: imports for path, imports in offenders.items() if imports}
+
+    forbidden_tokens = ("RLExperimentConfig", "TaskSampler", "train_split", "group_id", "group_size")
+    source_offenders = {
+        str(path.relative_to(PROJECT_ROOT)): [
+            token for token in forbidden_tokens if token in path.read_text(encoding="utf-8")
+        ]
+        for path in _python_files()
+    }
+    assert not {path: tokens for path, tokens in source_offenders.items() if tokens}
+
+
+def test_simulator_has_no_builtin_scale_name_branches():
+    from netopsbench.models.profiles import default_scale_registry
+
+    scale_names = set(default_scale_registry().names())
+    offenders: list[str] = []
+    for path in _python_files(PACKAGE_ROOT / "platform" / "simulator"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.If, ast.Match)):
+                continue
+            values = {
+                child.value
+                for child in ast.walk(node.test if isinstance(node, ast.If) else node.subject)
+                if isinstance(child, ast.Constant) and isinstance(child.value, str)
+            }
+            if values & scale_names:
+                offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}")
+    assert not offenders

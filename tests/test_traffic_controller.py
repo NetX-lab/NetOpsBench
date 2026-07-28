@@ -1,194 +1,384 @@
-import subprocess
+from __future__ import annotations
+
+import time
+from types import SimpleNamespace
 
 import pytest
 
-from netopsbench.platform.traffic import controller as controller_mod
-from netopsbench.platform.traffic.controller import TrafficController, TrafficFlow
+from netopsbench.platform.traffic import scenario_execution as scenario_execution_mod
+from netopsbench.platform.traffic.controller import (
+    TrafficController,
+    TrafficFlow,
+    _client_plans,
+    _parse_bandwidth_bps,
+    _plan_digest,
+)
 
 
 def _flows() -> list[TrafficFlow]:
     return [
-        TrafficFlow(src="client1", dst="client3", dst_ip="192.168.103.2", dst_port=5201, protocol="udp"),
-        TrafficFlow(src="client1", dst="client4", dst_ip="192.168.104.2", dst_port=5202, protocol="tcp"),
-        TrafficFlow(src="client2", dst="client3", dst_ip="192.168.103.2", dst_port=5201, protocol="udp"),
-        TrafficFlow(src="client2", dst="client4", dst_ip="192.168.104.2", dst_port=5202, protocol="tcp"),
+        TrafficFlow(
+            flow_id="flow-1",
+            src="client1",
+            dst="client2",
+            dst_ip="192.168.102.2",
+            dst_port=5201,
+            protocol="udp",
+            bandwidth="2M",
+        ),
+        TrafficFlow(
+            flow_id="flow-2",
+            src="client1",
+            dst="client2",
+            dst_ip="192.168.102.2",
+            dst_port=5202,
+            protocol="tcp",
+            bandwidth="500K",
+        ),
+        TrafficFlow(
+            flow_id="flow-3",
+            src="client2",
+            dst="client1",
+            dst_ip="192.168.101.2",
+            dst_port=5201,
+            protocol="udp",
+        ),
+        TrafficFlow(
+            flow_id="flow-4",
+            src="client2",
+            dst="client1",
+            dst_ip="192.168.101.2",
+            dst_port=5202,
+            protocol="tcp",
+        ),
     ]
 
 
 def _controller() -> TrafficController:
     return TrafficController(
         {
-            "client1": "clab-test-client1",
-            "client2": "clab-test-client2",
-            "client3": "clab-test-client3",
-            "client4": "clab-test-client4",
+            "client1": "172.20.20.101",
+            "client2": "172.20.20.102",
         }
     )
 
 
-def test_start_matrix_batches_server_ensure_and_client_start_by_container(monkeypatch):
-    calls: list[list[str]] = []
+class _NativeControl:
+    def __init__(self):
+        self.states: dict[str, dict] = {}
+        self.calls: list[tuple[str, str, dict]] = []
 
-    def fake_safe_run(cmd, **kwargs):
-        calls.append([str(part) for part in cmd])
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def request(self, client: str, operation: str, payload: dict) -> dict:
+        self.calls.append((client, operation, payload))
+        state = self.states.setdefault(
+            client,
+            {
+                "ready": False,
+                "enabled": False,
+                "generation": 0,
+                "plan_digest": "",
+                "expected_flows": 0,
+                "active_flows": 0,
+                "expected_listeners": 0,
+                "active_listeners": 0,
+            },
+        )
+        if operation == "load_plan":
+            state.update(
+                {
+                    "ready": True,
+                    "generation": payload["generation"],
+                    "plan_digest": payload["plan_digest"],
+                    "expected_flows": len(payload["plan"]["flows"]),
+                    "active_flows": 0,
+                    "expected_listeners": len(payload["plan"]["listeners"]),
+                    "active_listeners": len(payload["plan"]["listeners"]),
+                }
+            )
+        elif operation == "enable":
+            state["enabled"] = True
+            state["active_flows"] = state["expected_flows"]
+            state["ready"] = True
+        elif operation == "disable":
+            state["enabled"] = False
+            state["active_flows"] = 0
+            state["ready"] = True
+        elif operation == "reset":
+            state.update(
+                {
+                    "ready": False,
+                    "enabled": False,
+                    "generation": 0,
+                    "plan_digest": "",
+                    "expected_flows": 0,
+                    "active_flows": 0,
+                    "expected_listeners": 0,
+                    "active_listeners": 0,
+                }
+            )
+        state["heartbeat_unix_ns"] = time.time_ns()
+        return {"protocol_version": 1, "ok": True, "status": dict(state)}
 
-    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
 
+def test_compact_plan_preserves_existing_flow_contract():
+    plans = _client_plans(_controller().management_ips, _flows())
+
+    assert plans["client1"]["listeners"] == [
+        {"protocol": "udp", "port": 5201},
+        {"protocol": "tcp", "port": 5202},
+    ]
+    assert plans["client1"]["flows"] == [
+        {
+            "flow_id": "flow-1",
+            "protocol": "udp",
+            "dst_ip": "192.168.102.2",
+            "dst_port": 5201,
+            "bandwidth_bps": 2_000_000,
+            "payload_bytes": 1400,
+            "tcp_mss": 0,
+        },
+        {
+            "flow_id": "flow-2",
+            "protocol": "tcp",
+            "dst_ip": "192.168.102.2",
+            "dst_port": 5202,
+            "bandwidth_bps": 500_000,
+            "payload_bytes": 1360,
+            "tcp_mss": 1360,
+        },
+    ]
+    assert _plan_digest(plans["client1"]) == _plan_digest(plans["client1"])
+    assert _parse_bandwidth_bps("1G") == 1_000_000_000
+
+
+def test_synthetic_1024_client_plan_has_4096_flows():
+    clients = {f"client{index}": f"172.31.{index // 254}.{index % 254 + 1}" for index in range(1024)}
+    flows = [
+        TrafficFlow(
+            flow_id=f"flow-{source}-{offset}",
+            src=f"client{source}",
+            dst=f"client{(source + offset + 1) % 1024}",
+            dst_ip=f"10.{((source + offset + 1) // 256) % 256}.{(source + offset + 1) % 256}.2",
+            dst_port=5201 + offset,
+            protocol="udp" if offset % 2 == 0 else "tcp",
+        )
+        for source in range(1024)
+        for offset in range(4)
+    ]
+
+    plans = _client_plans(clients, flows)
+
+    assert len(plans) == 1024
+    assert sum(len(plan["flows"]) for plan in plans.values()) == 4096
+    assert all(len(plan["flows"]) == 4 for plan in plans.values())
+    assert all(len(plan["listeners"]) == 4 for plan in plans.values())
+
+
+def test_start_matrix_loads_enables_and_checks_native_status(monkeypatch):
+    native = _NativeControl()
     controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
+
     flow_ids = controller.start_matrix(_flows())
 
-    command_texts = [" ".join(call) for call in calls]
-    server_calls = [text for text in command_texts if "iperf3 -s" in text]
-    client_calls = [text for text in command_texts if "iperf3 -c" in text]
-
-    assert len(flow_ids) == 4
-    assert len(controller.active_flows) == 4
-    assert len(server_calls) == 2
-    assert len(client_calls) == 2
-    assert any("192.168.103.2" in text and "192.168.104.2" in text for text in client_calls)
+    assert flow_ids == ["flow-1", "flow-2", "flow-3", "flow-4"]
+    assert controller.verify_active_flows() is True
+    assert len([call for call in native.calls if call[1] == "load_plan"]) == 2
+    assert len([call for call in native.calls if call[1] == "enable"]) == 2
+    assert len([call for call in native.calls if call[1] == "reset"]) == 2
+    assert all(call[0].startswith("client") for call in native.calls)
 
 
-def test_batched_server_ensure_fails_fast_and_verifies_listeners(monkeypatch):
-    calls: list[list[str]] = []
-
-    def fake_safe_run(cmd, **kwargs):
-        calls.append([str(part) for part in cmd])
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
-
+def test_stale_heartbeat_or_partial_flow_is_not_ready(monkeypatch):
+    native = _NativeControl()
     controller = _controller()
-    controller._ensure_iperf_servers_batch("clab-test-client3", {5201, 5202})
-
-    script = calls[0][-1]
-    assert script.startswith("set -e\n")
-    assert script.count("ss -lntH") == 2
-    assert "required_ports='5201 5202'" in script
-    assert "for port in $required_ports" in script
-    assert "missing=0" in script
-
-
-def test_batched_source_start_is_idempotent_for_safe_retry(monkeypatch):
-    calls: list[list[str]] = []
-
-    monkeypatch.setattr(
-        controller_mod,
-        "safe_run",
-        lambda cmd, **kwargs: calls.append([str(part) for part in cmd]) or subprocess.CompletedProcess(cmd, 0, "", ""),
-    )
-
-    _controller().start_matrix(_flows())
-
-    source_scripts = [call[-1] for call in calls if "iperf3 -c" in " ".join(call)]
-    assert source_scripts
-    assert all("flow_running" in script for script in source_scripts)
-    assert all("/tmp/netopsbench-traffic/" in script for script in source_scripts)
-    assert all("/proc/$pid/cmdline" in script for script in source_scripts)
-    assert all("</dev/null &" in script for script in source_scripts)
-    assert all("missing=0" in script for script in source_scripts)
-    assert all("pgrep -f" not in script for script in source_scripts)
-
-
-def test_start_matrix_retries_transient_batch_failure_at_lower_parallelism(monkeypatch):
-    attempts: dict[str, int] = {}
-
-    def fake_safe_run(cmd, **kwargs):
-        text = " ".join(str(part) for part in cmd)
-        container = next(part for part in cmd if str(part).startswith("clab-test-client"))
-        key = f"{container}:{'server' if 'iperf3 -s' in text else 'source'}"
-        attempts[key] = attempts.get(key, 0) + 1
-        if key == "clab-test-client3:server" and attempts[key] == 1:
-            raise subprocess.TimeoutExpired(cmd, 15)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
-
-    controller = _controller()
-    flow_ids = controller.start_matrix(_flows())
-
-    assert len(flow_ids) == 4
-    assert attempts["clab-test-client3:server"] == 2
-    assert controller.last_start_stats.server_first_attempt_successes == 1
-    assert controller.last_start_stats.server_first_attempt_failures == 1
-    assert controller.last_start_stats.retry_count == 1
-    assert controller.last_start_stats.timeout_count == 1
-    assert controller.last_start_stats.started_flow_count == 4
-    assert controller.last_start_stats.failed_flow_count == 0
-
-
-def test_stop_all_kills_iperf_clients_once_per_source_container(monkeypatch):
-    calls: list[list[str]] = []
-
-    def fake_safe_run(cmd, **kwargs):
-        calls.append([str(part) for part in cmd])
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
-
-    controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
     controller.start_matrix(_flows())
-    calls.clear()
+
+    native.states["client1"]["active_flows"] -= 1
+    assert controller.verify_active_flows() is False
+
+    native.states["client1"]["active_flows"] = native.states["client1"]["expected_flows"]
+
+    def stale_request(client: str, operation: str, payload: dict) -> dict:
+        response = native.request(client, operation, payload)
+        response["status"]["heartbeat_unix_ns"] = time.time_ns() - 20_000_000_000
+        return response
+
+    monkeypatch.setattr(controller, "_request", stale_request)
+    assert controller.verify_active_flows() is False
+
+
+def test_generation_or_digest_mismatch_is_not_ready(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
+    controller.start_matrix(_flows())
+
+    native.states["client2"]["plan_digest"] = "wrong"
+    assert controller.verify_active_flows() is False
+
+
+def test_transient_management_timeout_is_retried_once(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+    attempts = 0
+
+    def transient_request(client: str, operation: str, payload: dict) -> dict:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("injected timeout")
+        return native.request(client, operation, payload)
+
+    monkeypatch.setattr(controller, "_request", transient_request)
+
+    response = controller._request_with_retry("client1", "status", {})
+
+    assert response["ok"] is True
+    assert attempts == 2
+
+
+def test_failed_start_disables_loaded_agents_and_keeps_no_active_flows(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+
+    def fail_enable(client: str, operation: str, payload: dict) -> dict:
+        if client == "client2" and operation == "enable":
+            raise RuntimeError("injected enable failure")
+        return native.request(client, operation, payload)
+
+    monkeypatch.setattr(controller, "_request", fail_enable)
+    with pytest.raises(RuntimeError, match="injected enable failure"):
+        controller.start_matrix(_flows())
+
+    assert controller.active_flows == {}
+    assert controller.generation == 0
+    assert len([call for call in native.calls if call[1] == "reset"]) == 4
+
+
+def test_invalid_replacement_plan_does_not_change_active_generation(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
+    controller.start_matrix(_flows())
+    original_generation = controller.generation
+    original_digests = dict(controller.plan_digests)
+    invalid = [
+        TrafficFlow(
+            src="client1",
+            dst="client2",
+            dst_ip="192.168.102.2",
+            protocol="sctp",
+        )
+    ]
+
+    with pytest.raises(ValueError, match="Unsupported traffic protocol"):
+        controller.start_matrix(invalid)
+
+    assert controller.generation == original_generation
+    assert controller.plan_digests == original_digests
+    assert controller.verify_active_flows() is True
+
+
+def test_stop_all_disables_every_agent(monkeypatch):
+    native = _NativeControl()
+    controller = _controller()
+    monkeypatch.setattr(controller, "_request", native.request)
+    controller.start_matrix(_flows())
 
     controller.stop_all()
 
-    command_texts = [" ".join(call) for call in calls]
-    stop_calls = [text for text in command_texts if "/tmp/netopsbench-traffic" in text]
-    assert len(stop_calls) == 2
-    assert all("flow_running" in text for text in stop_calls)
     assert controller.active_flows == {}
+    assert controller.generation == 0
+    assert len([call for call in native.calls if call[1] == "disable"]) == 2
 
 
-def test_traffic_parallelism_env_override_and_invalid_value(monkeypatch):
-    monkeypatch.setenv("NETOPSBENCH_TRAFFIC_PARALLELISM", "7")
-    assert controller_mod._traffic_parallelism() == 7
+def test_setup_traffic_cleans_partial_matrix_and_fails_before_baseline(tmp_path, monkeypatch):
+    (tmp_path / "topology.json").write_text("{}", encoding="utf-8")
+    traffic_config = {
+        "stats": {
+            "total_flows": 2,
+            "udp_flows": 1,
+            "tcp_flows": 1,
+            "estimated_switch_pps": {},
+        },
+        "profile": {},
+        "flows": [
+            {
+                "src": "client1",
+                "dst": "client2",
+                "dst_ip": "192.0.2.2",
+                "protocol": "udp",
+            },
+            {
+                "src": "client2",
+                "dst": "client1",
+                "dst_ip": "192.0.2.1",
+                "protocol": "tcp",
+            },
+        ],
+    }
+    controller_instances = []
 
-    monkeypatch.setenv("NETOPSBENCH_TRAFFIC_PARALLELISM", "not-an-int")
-    assert controller_mod._traffic_parallelism() == 32
+    class PartialController:
+        def __init__(self, _management_ips):
+            self.last_start_stats = SimpleNamespace(to_dict=lambda: {"started_flow_count": 1})
+            self.stop_calls = 0
+            controller_instances.append(self)
 
-    monkeypatch.delenv("NETOPSBENCH_TRAFFIC_PARALLELISM", raising=False)
-    assert controller_mod._traffic_parallelism() == 32
+        def start_matrix(self, flows):
+            return [flows[0].flow_id]
 
+        def stop_all(self):
+            self.stop_calls += 1
 
-@pytest.mark.parametrize(
-    ("configured", "server", "retry"),
-    [(32, 16, 4), (8, 4, 4), (1, 1, 1), (64, 16, 4)],
-)
-def test_controller_derives_server_and_retry_parallelism(configured, server, retry):
-    controller = TrafficController({}, parallelism=configured)
-
-    assert controller.parallelism == configured
-    assert controller.server_parallelism == server
-    assert controller.retry_parallelism == retry
-
-
-def test_start_matrix_partial_failure_records_only_started_flows(monkeypatch):
-    messages: list[str] = []
-
-    def fake_safe_run(cmd, **kwargs):
-        text = " ".join(str(part) for part in cmd)
-        if "clab-test-client2" in text and "iperf3 -c" in text:
-            raise subprocess.CalledProcessError(1, cmd, stderr="boom")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(controller_mod, "safe_run", fake_safe_run)
+    clients = [
+        SimpleNamespace(name="client1", mgmt_ip="172.20.0.1"),
+        SimpleNamespace(name="client2", mgmt_ip="172.20.0.2"),
+    ]
     monkeypatch.setattr(
-        controller_mod.logger,
-        "warning",
-        lambda message, *args, **kwargs: messages.append(message % args if args else message),
+        scenario_execution_mod,
+        "generate_traffic_config",
+        lambda *args, **kwargs: traffic_config,
     )
-    monkeypatch.setenv("NETOPSBENCH_TRAFFIC_PARALLELISM", "2")
-
-    controller = _controller()
-    flow_ids = controller.start_matrix(_flows())
-
-    assert len(flow_ids) == 2
-    assert {flow.src for flow in controller.active_flows.values()} == {"client1"}
-    assert any(
-        "src=client2" in message
-        and "dst_ip=192.168.103.2" in message
-        and "protocol=udp" in message
-        and "port=5201" in message
-        and "boom" in message
-        for message in messages
+    monkeypatch.setattr(
+        scenario_execution_mod,
+        "validate_traffic_config",
+        lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        scenario_execution_mod,
+        "load_topology_manifest",
+        lambda _path: SimpleNamespace(clients=lambda: clients),
+    )
+    monkeypatch.setattr(
+        scenario_execution_mod,
+        "TrafficController",
+        PartialController,
+    )
+    runner = SimpleNamespace(
+        topology_dir=tmp_path,
+        scale_registry=SimpleNamespace(),
+        traffic_controller=None,
+    )
+
+    with pytest.raises(RuntimeError, match="started 1/2 flows"):
+        scenario_execution_mod.setup_traffic(runner, "xs", "standard")
+
+    assert controller_instances[0].stop_calls == 1
+    assert runner.traffic_controller is None
+
+    class CompleteController(PartialController):
+        def start_matrix(self, flows):
+            self.last_start_stats = SimpleNamespace(to_dict=lambda: {"started_flow_count": len(flows)})
+            return [flow.flow_id for flow in flows]
+
+    monkeypatch.setattr(scenario_execution_mod, "TrafficController", CompleteController)
+    result = scenario_execution_mod.setup_traffic(runner, "xs", "standard")
+
+    assert result["stats"]["total_flows"] == 2
+    assert result["runtime"] == {"started_flow_count": 2}
+    assert len(result["matrix_digest"]) == 64
+    assert "flows" not in result
+    assert "estimated_switch_pps" not in result["stats"]

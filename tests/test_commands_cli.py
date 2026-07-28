@@ -16,7 +16,8 @@ def _write_trace_run(tmp_path, run_id, *, completed_at="2026-06-05T12:40:40+00:0
     run_dir = tmp_path / ".netopsbench" / "runs" / run_id
     trace_dir = run_dir / "traces" / "worker-1" / "case-1"
     trace_dir.mkdir(parents=True)
-    (trace_dir / "trajectory.atif.json").write_text(
+    atif_path = trace_dir / "trajectory-t1.atif.json"
+    atif_path.write_text(
         json.dumps(
             {
                 "schema_version": "ATIF-v1.7",
@@ -42,7 +43,7 @@ def _write_trace_run(tmp_path, run_id, *, completed_at="2026-06-05T12:40:40+00:0
                 "model": "model",
                 "provider": "provider",
                 "topology_scale": "xs",
-                "atif_path": str(trace_dir / "trajectory.atif.json"),
+                "atif_path": str(atif_path),
             }
         )
         + "\n",
@@ -100,7 +101,7 @@ def test_cli_scenario_validate_and_list(tmp_path, monkeypatch, capsys):
     scenario_dir.mkdir()
     scenario_file = scenario_dir / "s1.yaml"
     scenario_file.write_text(
-        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nepisodes:\n  - episode_id: ep1\n    fault_type: link_down\n    target:\n      device: leaf1\n      interface: Ethernet1\n",
+        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nmetadata:\n  difficulty: easy\nepisode:\n  episode_id: diagnosis\n  fault_type: link_down\n  target_device: leaf1\n  target_interface: Ethernet1\n",
         encoding="utf-8",
     )
 
@@ -215,14 +216,9 @@ def test_cli_topology_generate_uses_default_output_dir(tmp_path, monkeypatch, ca
     assert main() == 0
     out = capsys.readouterr().out
     assert "generated topology" in out
-    assert calls == {"workspace": tmp_path, "scale": "small", "output_dir": None}
-
-
-def test_scenario_generator_module_importable():
-    from netopsbench.platform.scenario import generator
-
-    assert hasattr(generator, "TopologyContext")
-    assert hasattr(generator, "generate")
+    assert calls["workspace"].workspace == tmp_path
+    assert calls["scale"] == "small"
+    assert calls["output_dir"] is None
 
 
 def test_cli_runtime_teardown_by_name(tmp_path, monkeypatch, capsys):
@@ -257,7 +253,7 @@ def test_cli_runtime_teardown_not_found(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_result_list(tmp_path, monkeypatch, capsys):
-    results_dir = tmp_path / "scenario_results" / "suite1" / "run-0001"
+    results_dir = tmp_path / ".netopsbench" / "runs" / "run-0001"
     results_dir.mkdir(parents=True)
     (results_dir / "report.json").write_text(
         '{"id": "run:run-0001", "summary": {"status": "completed", "total_cases": 3, "average_score": 0.75, "completed_at": "2026-04-12T00:00:00Z"}, "scenario_summaries": [], "detailed_results": [], "artifact_paths": {}, "raw": {}}',
@@ -274,7 +270,7 @@ def test_cli_result_list(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_result_list_empty(tmp_path, monkeypatch, capsys):
-    (tmp_path / "scenario_results").mkdir()
+    (tmp_path / ".netopsbench" / "runs").mkdir(parents=True)
     monkeypatch.setattr("sys.argv", ["netopsbench", "--workspace", str(tmp_path), "result", "list"])
     assert main() == 0
     out = capsys.readouterr().out
@@ -324,7 +320,7 @@ def test_cli_trace_export(tmp_path, monkeypatch, capsys):
         tmp_path
         / "harbor-jobs"
         / "netopsbench-run-20260605T124040Z"
-        / "scenario-1__case-1"
+        / "scenario-1__case-1__t1"
         / "agent"
         / "trajectory.json"
     ).exists()
@@ -358,7 +354,9 @@ def test_cli_trace_view_exports_and_launches_harbor_viewer(tmp_path, monkeypatch
     assert "synced traces:" in out
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "55668"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_trace_list_shows_trace_runs(tmp_path, monkeypatch, capsys):
@@ -405,8 +403,12 @@ def test_cli_trace_view_latest_uses_newest_trace_run(tmp_path, monkeypatch, caps
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
-    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
+    assert (
+        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatch, capsys):
@@ -436,8 +438,12 @@ def test_cli_trace_view_without_run_id_syncs_all_trace_runs(tmp_path, monkeypatc
     expected = tmp_path / ".netopsbench" / "harbor-jobs"
     assert "synced traces:" in out
     assert launched == {"folder": expected, "host": "127.0.0.1", "port": "8080-8089"}
-    assert (expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
-    assert (expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1" / "agent" / "trajectory.json").exists()
+    assert (
+        expected / "netopsbench-run-20260605T124040Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
+    assert (
+        expected / "netopsbench-run-20260605T123000Z" / "scenario-1__case-1__t1" / "agent" / "trajectory.json"
+    ).exists()
 
 
 def test_cli_benchmark_prepare_runs_topology_then_scenario_generation(tmp_path, monkeypatch, capsys):

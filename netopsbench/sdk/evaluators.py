@@ -8,8 +8,8 @@ from typing import Any
 
 from netopsbench.evaluator.fault_type_judge import FaultTypeJudge, create_judge_from_env
 from netopsbench.evaluator.scorer import AgentOutput, create_default_evaluator, create_fault_type_judge_evaluator
+from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.sdk.reports import BenchmarkReport
-from netopsbench.sdk.scenarios import ScenarioHandle
 from netopsbench.sdk.types import DiagnosisResult, DiagnosticContext
 
 
@@ -26,17 +26,17 @@ class _DefaultEvaluatorAdapter:
                 self._scorer = create_default_evaluator()
 
     def evaluate_scenario(
-        self, *, scenario: ScenarioHandle, diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
+        self, *, scenario: ScenarioSpec, diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         scored_results = self._score_scenario(scenario, diagnosis_results)
         payload = self._build_payload(
             scored_results, agent_name=_agent_name(diagnosis_results), topology_scale=scenario.scale
         )
         payload.update({"evaluator": evaluator, "scope": "scenario", "scenario_id": scenario.id})
-        return BenchmarkReport(report_id=f"scenario:{scenario.id}", payload=payload)
+        return _report_from_payload(identifier=f"scenario:{scenario.id}", payload=payload)
 
     def evaluate_suite(
-        self, *, scenarios: list[ScenarioHandle], diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
+        self, *, scenarios: list[ScenarioSpec], diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         if len(scenarios) != len(diagnosis_results):
             raise ValueError("diagnosis_results must align 1:1 with scenarios for suite evaluation")
@@ -49,9 +49,9 @@ class _DefaultEvaluatorAdapter:
         payload.update(
             {"evaluator": evaluator, "scope": "suite", "scenario_ids": [scenario.id for scenario in scenarios]}
         )
-        return BenchmarkReport(report_id=f"suite:{len(scenarios)}", payload=payload)
+        return _report_from_payload(identifier=f"suite:{len(scenarios)}", payload=payload)
 
-    def _score_scenario(self, scenario: ScenarioHandle, diagnosis_results: list[DiagnosisResult]) -> list[Any]:
+    def _score_scenario(self, scenario: ScenarioSpec, diagnosis_results: list[DiagnosisResult]) -> list[Any]:
         scored_results = []
         for index, diagnosis in enumerate(diagnosis_results):
             result = self._scorer.evaluate(
@@ -80,13 +80,13 @@ class _WrappedPublicEvaluator:
         self.name = name
 
     def evaluate_scenario(
-        self, *, scenario: ScenarioHandle, diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
+        self, *, scenario: ScenarioSpec, diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         if hasattr(self._evaluator, "evaluate_scenario"):
             report = self._evaluator.evaluate_scenario(
                 scenario=scenario, diagnosis_results=list(diagnosis_results), evaluator=evaluator
             )
-            return _coerce_report(report, report_id=f"scenario:{scenario.id}", evaluator_name=evaluator)
+            return _coerce_report(report, identifier=f"scenario:{scenario.id}", evaluator_name=evaluator)
         if hasattr(self._evaluator, "evaluate"):
             results: list[dict[str, Any]] = []
             for index, diagnosis in enumerate(diagnosis_results):
@@ -94,24 +94,27 @@ class _WrappedPublicEvaluator:
                     scenario_id=scenario.id,
                     topology={"scale": scenario.scale},
                     symptoms={},
-                    ground_truth=_build_ground_truth(scenario, index),
-                    metadata={"scenario": scenario.to_dict(), "episode_index": index},
+                    metadata={
+                        "scenario": scenario.to_dict(),
+                        "episode_index": index,
+                        "ground_truth": _build_ground_truth(scenario, index),
+                    },
                     tools=None,
                 )
                 results.append(dict(self._evaluator.evaluate(context, diagnosis)))
             return _report_from_result_items(
-                report_id=f"scenario:{scenario.id}", evaluator_name=evaluator, results=results
+                identifier=f"scenario:{scenario.id}", evaluator_name=evaluator, results=results
             )
         raise TypeError(f"Evaluator '{self.name}' does not provide evaluate_scenario() or evaluate()")
 
     def evaluate_suite(
-        self, *, scenarios: list[ScenarioHandle], diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
+        self, *, scenarios: list[ScenarioSpec], diagnosis_results: list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         if hasattr(self._evaluator, "evaluate_suite"):
             report = self._evaluator.evaluate_suite(
                 scenarios=list(scenarios), diagnosis_results=list(diagnosis_results), evaluator=evaluator
             )
-            return _coerce_report(report, report_id=f"suite:{len(scenarios)}", evaluator_name=evaluator)
+            return _coerce_report(report, identifier=f"suite:{len(scenarios)}", evaluator_name=evaluator)
         if len(scenarios) != len(diagnosis_results):
             raise ValueError("diagnosis_results must align 1:1 with scenarios for suite evaluation")
         results: list[dict[str, Any]] = []
@@ -120,13 +123,15 @@ class _WrappedPublicEvaluator:
                 scenario=scenario, diagnosis_results=[diagnosis], evaluator=evaluator
             )
             results.extend(_extract_report_results(scenario_report))
-        return _report_from_result_items(report_id=f"suite:{len(scenarios)}", evaluator_name=evaluator, results=results)
+        return _report_from_result_items(
+            identifier=f"suite:{len(scenarios)}", evaluator_name=evaluator, results=results
+        )
 
 
 class EvaluatorManager:
     """Thin public registry for scenario evaluators."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         default = _DefaultEvaluatorAdapter(name="default")
         self._evaluators: dict[str, Any] = {"default": default}
 
@@ -149,18 +154,18 @@ class EvaluatorManager:
         return sorted(self._evaluators)
 
     def evaluate_scenario(
-        self, *, scenario: ScenarioHandle, diagnosis_results: builtins.list[DiagnosisResult], evaluator: str = "default"
+        self, *, scenario: ScenarioSpec, diagnosis_results: builtins.list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         adapter = self.get(evaluator)
         report = adapter.evaluate_scenario(
             scenario=scenario, diagnosis_results=list(diagnosis_results), evaluator=evaluator
         )
-        return _coerce_report(report, report_id=f"scenario:{scenario.id}", evaluator_name=evaluator)
+        return _coerce_report(report, identifier=f"scenario:{scenario.id}", evaluator_name=evaluator)
 
     def evaluate_suite(
         self,
         *,
-        scenarios: builtins.list[ScenarioHandle],
+        scenarios: builtins.list[ScenarioSpec],
         diagnosis_results: builtins.list[DiagnosisResult],
         evaluator: str = "default",
     ) -> BenchmarkReport:
@@ -168,7 +173,7 @@ class EvaluatorManager:
         diagnosis_list = list(diagnosis_results)
         adapter = self.get(evaluator)
         report = adapter.evaluate_suite(scenarios=scenario_list, diagnosis_results=diagnosis_list, evaluator=evaluator)
-        return _coerce_report(report, report_id=f"suite:{len(scenario_list)}", evaluator_name=evaluator)
+        return _coerce_report(report, identifier=f"suite:{len(scenario_list)}", evaluator_name=evaluator)
 
 
 def create_fault_type_judge_evaluator_adapter(
@@ -194,36 +199,41 @@ def _normalize_evaluator(evaluator: Any, *, name: str) -> Any:
     raise TypeError("evaluator must provide evaluate_scenario(), evaluate_suite(), or evaluate()")
 
 
-def _coerce_report(report: Any, *, report_id: str, evaluator_name: str) -> BenchmarkReport:
+def _coerce_report(report: Any, *, identifier: str, evaluator_name: str) -> BenchmarkReport:
     if isinstance(report, BenchmarkReport):
         return report
     if isinstance(report, Mapping):
-        return _report_from_result_items(report_id=report_id, evaluator_name=evaluator_name, results=[dict(report)])
+        return _report_from_result_items(identifier=identifier, evaluator_name=evaluator_name, results=[dict(report)])
     raise TypeError("evaluator output must be a BenchmarkReport or mapping")
 
 
-def _report_from_result_items(*, report_id: str, evaluator_name: str, results: list[dict[str, Any]]) -> BenchmarkReport:
+def _report_from_result_items(
+    *, identifier: str, evaluator_name: str, results: list[dict[str, Any]]
+) -> BenchmarkReport:
     scores = [float(item.get("score", 0.0)) for item in results]
     average_score = round(sum(scores) / len(scores), 3) if scores else 0.0
     return BenchmarkReport(
-        report_id=report_id,
-        payload={
-            "evaluator": evaluator_name,
-            "summary": {"total_cases": len(results), "average_score": average_score},
-            "results": results,
-        },
+        id=identifier,
+        summary={"total_cases": len(results), "average_score": average_score},
+        detailed_results=results,
+        raw={"evaluator": evaluator_name},
     )
 
 
 def _extract_report_results(report: BenchmarkReport) -> list[dict[str, Any]]:
-    payload = dict(report.payload)
-    result_items = payload.get("results")
-    if isinstance(result_items, list):
-        return [dict(item) for item in result_items]
-    detailed_items = payload.get("detailed_results")
-    if isinstance(detailed_items, list):
-        return [dict(item) for item in detailed_items]
-    return []
+    return [dict(item) for item in report.detailed_results]
+
+
+def _report_from_payload(*, identifier: str, payload: Mapping[str, Any]) -> BenchmarkReport:
+    raw = dict(payload)
+    summary = raw.pop("summary", {})
+    detailed_results = raw.pop("detailed_results", [])
+    return BenchmarkReport(
+        id=identifier,
+        summary=dict(summary) if isinstance(summary, Mapping) else {},
+        detailed_results=[dict(item) for item in detailed_results] if isinstance(detailed_results, list) else [],
+        raw=raw,
+    )
 
 
 def _diagnosis_to_agent_output(diagnosis: DiagnosisResult) -> AgentOutput:
@@ -247,9 +257,9 @@ def _diagnosis_to_agent_output(diagnosis: DiagnosisResult) -> AgentOutput:
     )
 
 
-def _build_ground_truth(scenario: ScenarioHandle, index: int) -> dict[str, Any]:
-    episodes = scenario.episodes
-    episode = episodes[min(index, len(episodes) - 1)] if episodes else {}
+def _build_ground_truth(scenario: ScenarioSpec, index: int) -> dict[str, Any]:
+    del index
+    episode: dict[str, Any] = scenario.episode.model_dump(mode="json")
     fault_type = episode.get("fault_type") or scenario.metadata.get("expected_diagnosis")
     location = {}
     if episode.get("target_device"):
@@ -268,7 +278,7 @@ def _agent_name(diagnosis_results: list[DiagnosisResult]) -> str:
     return diagnosis_results[0].agent_name if diagnosis_results else "unknown"
 
 
-def _suite_scale(scenarios: Iterable[ScenarioHandle]) -> str:
+def _suite_scale(scenarios: Iterable[ScenarioSpec]) -> str:
     scales = {scenario.scale for scenario in scenarios}
     return next(iter(scales)) if len(scales) == 1 else "mixed"
 

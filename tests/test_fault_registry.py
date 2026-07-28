@@ -5,8 +5,8 @@ import tempfile
 
 import pytest
 
+from netopsbench.models.scenario import EpisodeSpec
 from netopsbench.platform.scenario.executor import ScenarioExecutor
-from netopsbench.platform.scenario.models import Episode
 from netopsbench.platform.topology.generator import generate_topology
 
 
@@ -33,7 +33,7 @@ def test_scenario_runner_uses_registered_fault_spec(monkeypatch):
         topology_metadata=_metadata(),
         fault_registry=registry,
     )
-    episode = Episode(
+    episode = EpisodeSpec(
         episode_id="ep_synth",
         description="Synthetic fault via registry",
         fault_type="synthetic_fault",

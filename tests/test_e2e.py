@@ -5,13 +5,13 @@ End-to-end tests for NetOpsBench benchmark system.
 These tests verify the complete benchmark flow works correctly.
 """
 
+import inspect
 import json
 import os
 import stat
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -21,17 +21,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from netopsbench.evaluator.scorer import AgentOutput, EvaluationResult, Evaluator
 from netopsbench.models.profiles import supported_scales
+from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
+from netopsbench.platform.client_agent.config import build_client_agent_config
 from netopsbench.platform.faults.injector import FaultInjector
-from netopsbench.platform.faults.services.topology_runtime import TopologyRuntime
 from netopsbench.platform.faults.specs import create_fault_registry
-from netopsbench.platform.pingmesh.generator import PinglistGenerator, generate_pinglist_from_topology
 from netopsbench.platform.scenario.generator import parse_bgp_config, parse_network_interfaces
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
-from netopsbench.platform.session.scoring import score_scenario_fault_episodes
+from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.toolkit import fastmcp_server
-from netopsbench.platform.toolkit.mcp.registry import load_tool_specs
+from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_schemas, validate_tool_call
 
 # Internal test path: direct toolkit import keeps implementation-level e2e checks fast.
 from netopsbench.platform.toolkit.toolkit import AgentToolkit, ToolResult
@@ -78,6 +78,10 @@ class TestTopologyGeneration:
             rendered = yaml.safe_load(Path(result["yaml_file"]).read_text(encoding="utf-8"))
 
             binds = rendered["topology"]["kinds"]["sonic-vs"]["binds"]
+            assert (
+                rendered["topology"]["kinds"]["sonic-vs"]["cmd"]
+                == "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
+            )
             linux_binds = rendered["topology"]["kinds"]["linux"]["binds"]
             assert "configs/sonic/__clabNodeName__/config_db.json:/etc/sonic/config_db.json:rw" in binds
             assert (
@@ -90,11 +94,13 @@ class TestTopologyGeneration:
             ) in binds
             assert "configs/sonic/start.sh:/usr/bin/start.sh:ro" in binds
             assert "configs/frr/__clabNodeName__.conf:/etc/frr/frr.conf:rw" in binds
-            assert "configs/pingmesh:/tmp/pingmesh:ro" in linux_binds
+            assert "configs/client-agent:/etc/netopsbench:ro" in linux_binds
 
             assert not list(Path(tmpdir, "configs").glob("*.sh"))
             assert not list(Path(tmpdir, "configs").glob("*.configdb.json"))
-            assert Path(tmpdir, "configs", "pingmesh").is_dir()
+            client_agent_dir = Path(tmpdir, "configs", "client-agent")
+            assert client_agent_dir.is_dir()
+            assert (client_agent_dir / "client-agent.json").is_file()
 
             manifest = TopologyManifest.model_validate(result["metadata"])
             first_routing = manifest.routing_devices()[0].name
@@ -263,49 +269,32 @@ class TestAgentToolkit:
             assert "client1" in toolkit.container_names
 
 
-class TestPingmeshGenerator:
-    """Tests for Pingmesh pinglist generation across topology scales."""
+class TestClientAgentConfig:
+    """Tests for the compact native client-agent configuration."""
 
     @pytest.mark.parametrize("scale", supported_scales())
-    def test_pinglist_scales_with_topology(self, scale):
-        """Pinglist should be N*(N-1) for N clients across all scales."""
+    def test_config_scales_linearly_with_topology(self, scale):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = generate_topology(scale, tmpdir)
-            metadata = result["metadata"]
+            manifest = TopologyManifest.model_validate(result["metadata"])
+            payload = build_client_agent_config(manifest)
 
-            generator = PinglistGenerator()
-            tasks = generator.generate(metadata)
+            assert len(payload["clients"]) == manifest.facts.total_clients
+            assert len({client["name"] for client in payload["clients"]}) == len(payload["clients"])
+            assert "probes" not in payload
 
-            total_clients = TopologyManifest.model_validate(metadata).facts.total_clients
-            assert len(tasks) == total_clients * (total_clients - 1)
-            assert all(t.src_name != t.dst_name for t in tasks)
-            assert {t.path_type for t in tasks}.issubset({"same_rack", "cross_rack"})
-
-    def test_xlarge_pinglist_uses_full_universe_with_bounded_runtime_policy(self):
+    def test_xlarge_config_is_deterministic_and_bounded(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = generate_topology("xlarge", tmpdir)
-            output_file = Path(tmpdir) / "pinglist.json"
+            manifest = TopologyManifest.model_validate(result["metadata"])
+            first = build_client_agent_config(manifest)
+            second = build_client_agent_config(manifest)
 
-            first = generate_pinglist_from_topology(result["metadata_file"], str(output_file))
-            second = generate_pinglist_from_topology(result["metadata_file"], str(output_file))
-
-            assert [(task.src_name, task.dst_name) for task in first] == [
-                (task.src_name, task.dst_name) for task in second
-            ]
-            assert len(first) == 128 * 127
-            per_src: dict[str, int] = {}
-            per_dst: dict[str, int] = {}
-            for task in first:
-                per_src[task.src_name] = per_src.get(task.src_name, 0) + 1
-                per_dst[task.dst_name] = per_dst.get(task.dst_name, 0) + 1
-                assert task.src_name != task.dst_name
-            assert set(per_src.values()) == {127}
-            assert set(per_dst.values()) == {127}
-
-            payload = json.loads(output_file.read_text(encoding="utf-8"))
-            assert payload["total_probes"] == 128 * 127
-            assert payload["pingmesh_policy"]["destination_batch_size"] == 16
-            assert payload["pingmesh_policy"]["coverage_epoch_cycles"] == 32
+            assert first == second
+            assert len(first["clients"]) == 128
+            assert len(json.dumps(first).encode()) < 100_000
+            assert first["pingmesh_policy"]["destination_batch_size"] == 16
+            assert first["pingmesh_policy"]["coverage_epoch_cycles"] == 32
 
 
 class TestFastMCPServer:
@@ -347,6 +336,40 @@ class TestFastMCPServer:
         for name in tool_names:
             assert name in fastmcp_server.EXPOSED_TOOLS, f"Tool {name} in definitions but not in FastMCP"
 
+    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        specs = {spec.name: spec for spec in fastmcp_server._TOOL_SPECS}
+
+        assert schemas.keys() == specs.keys()
+        for name, spec in specs.items():
+            parameters = {parameter for parameter in inspect.signature(spec.handler).parameters if parameter != "self"}
+            assert set(schemas[name]["input_schema"]["properties"]) == parameters
+            assert schemas[name]["input_schema"]["additionalProperties"] is False
+
+    def test_tool_schema_defaults_are_valid_and_integer_arguments_are_strict(self):
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        payload_size = schemas["ping_test"]["input_schema"]["properties"]["payload_size"]
+
+        for schema in schemas.values():
+            for prop in schema["input_schema"]["properties"].values():
+                if prop.get("default", object()) is None:
+                    assert any(option.get("type") == "null" for option in prop.get("anyOf", []))
+        assert payload_size["default"] is None
+        assert validate_tool_call("ping_test", {"src": "client1", "dst_ip": "192.0.2.1"})
+        assert validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "payload_size": None},
+        )
+        assert not validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "count": "3"},
+        )
+        assert not validate_tool_call(
+            "ping_test",
+            {"src": "client1", "dst_ip": "192.0.2.1", "count": True},
+        )
+        assert validate_tool_call("get_device_logs", {"device": "leaf1", "severity": None})
+
 
 class TestFaultInjector:
     """Tests for fault injection."""
@@ -355,7 +378,6 @@ class TestFaultInjector:
         """Test fault injector initializes correctly."""
         injector = FaultInjector(topology_metadata=_generated_metadata())
         assert injector is not None
-        assert injector.topology_name == "dcn"
         assert injector.container_names["spine1"] == "clab-dcn-spine1"
         assert injector.active_faults == []
 
@@ -718,12 +740,11 @@ topology_scale: xs
 traffic_profile: standard
 metadata:
   difficulty: easy
-  expected_diagnosis: link_down
-episodes:
-  - episode_id: ep1
-    description: bad fault
-    fault_type: made_up_fault
-    target_device: spine1
+episode:
+  episode_id: diagnosis
+  description: bad fault
+  fault_type: made_up_fault
+  target_device: spine1
 """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
@@ -737,44 +758,36 @@ episodes:
         finally:
             os.unlink(tmp_path)
 
-    def test_score_scenario_fault_episodes_only_scores_faults(self):
-        """Only non-none episodes should be scored."""
+    def test_score_scenario_episode_scores_the_canonical_episode(self):
         scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_xs_001.yaml"))
         evaluator = Evaluator()
 
         scenario_result = {
             "scenario_id": scenario.scenario_id,
-            "episodes": [
-                {
-                    "episode": {
-                        "episode_id": "ep001_baseline",
-                        "fault_type": "none",
-                        "target_device": "spine1",
-                        "target_interface": None,
-                    }
+            "episode": {
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "fault_type": "link_down",
+                    "target_device": scenario.episode.target_device,
+                    "target_interface": scenario.episode.target_interface,
                 },
-                {
-                    "episode": {
-                        "episode_id": "ep002_link_down",
-                        "fault_type": "link_down",
-                        "target_device": "spine1",
-                        "target_interface": "Ethernet0",
+                "diagnosis": {
+                    "verdict": "fault_detected",
+                    "fault_type": "link_down",
+                    "location": {
+                        "device": scenario.episode.target_device,
+                        "interface": scenario.episode.target_interface,
                     },
-                    "diagnosis": {
-                        "verdict": "fault_detected",
-                        "fault_type": "link_down",
-                        "location": {"device": "spine1", "interface": "Ethernet0"},
-                        "confidence": 0.95,
-                        "tool_calls": [],
-                        "time_taken_seconds": 1.0,
-                    },
+                    "confidence": 0.95,
+                    "tool_calls": [],
+                    "time_taken_seconds": 1.0,
                 },
-            ],
+            },
         }
 
-        scored = score_scenario_fault_episodes(scenario, scenario_result, evaluator)
+        scored = score_scenario_episode(scenario, scenario_result, evaluator)
         assert len(scored) == 1
-        assert scored[0].testcase_id == f"{scenario.scenario_id}:ep002_link_down"
+        assert scored[0].testcase_id == f"{scenario.scenario_id}:diagnosis"
         assert scored[0].score == 1.0
 
     def test_topology_guard_rejects_scale_mismatch_by_default(self):
@@ -833,28 +846,21 @@ episodes:
             spine_config = _write_config_db(tmpdir, "spine1", {"Ethernet4": ["10.0.0.2/30"]})
             _write_config_db(tmpdir, "leaf1", {"Ethernet4": ["10.0.0.1/30"]})
 
-            scenario = SimpleNamespace(
+            scenario = ScenarioSpec(
                 scenario_id="configdb_interface_case",
+                name="ConfigDB interface case",
                 topology_scale="small",
-                episodes=[
-                    SimpleNamespace(
-                        episode_id="ep001",
-                        fault_type="link_down",
-                        target_device="spine1",
-                        target_interface="e1-2",
-                    )
-                ],
+                metadata={"difficulty": "easy"},
+                episode=EpisodeSpec(
+                    episode_id="diagnosis",
+                    fault_type="link_down",
+                    target_device="spine1",
+                    target_interface="e1-2",
+                ),
             )
             result = validate_scenario_topology(scenario=scenario, topology_dir=tmpdir)
             assert result["status"] == "pass"
             assert parse_network_interfaces(spine_config) == ["Ethernet4"]
-
-            topo_runtime = TopologyRuntime(
-                sonic=SimpleNamespace(),
-                iface=SimpleNamespace(resolve_sonic=lambda interface: interface),
-                ctx=SimpleNamespace(clab_dir=Path(tmpdir), clients=[]),
-            )
-            assert topo_runtime.configured_device_interfaces("spine1") == ["Ethernet4"]
 
             from netopsbench.platform.session.scoring import build_episode_ground_truth
 
@@ -862,42 +868,39 @@ episodes:
                 {"fault_type": "link_down", "target_device": "leaf1", "target_interface": "Ethernet4"},
                 topology_dir=tmpdir,
             )
-            assert ground_truth["equivalent_locations"] == [{"device": "spine1", "interface": "Ethernet4"}]
+            assert ground_truth["equivalent_locations"] == [{"device": "spine2", "interface": "Ethernet0"}]
 
     def test_interface_alias_helper_keeps_scale_agnostic_equivalence(self):
         assert are_interfaces_equivalent("e1-1", "Ethernet0") is True
         assert are_interfaces_equivalent("ethernet-1/2", "Ethernet4") is True
         assert are_interfaces_equivalent("eth3", "Ethernet8") is True
 
-    def test_score_scenario_fault_episodes_accepts_link_peer_equivalence(self):
+    def test_score_scenario_episode_accepts_link_peer_equivalence(self):
         scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_xs_001.yaml"))
         evaluator = Evaluator()
         scenario_result = {
-            "episodes": [
-                {
-                    "episode": {
-                        "episode_id": "ep002_link_down",
-                        "fault_type": "link_down",
-                        "target_device": "spine1",
-                        "target_interface": "e1-1",
-                    },
-                    "diagnosis": {
-                        "verdict": "fault_detected",
-                        "fault_type": "link_down",
-                        "location": {"device": "leaf1", "interface": "Ethernet0"},
-                        "confidence": 0.9,
-                        "tool_calls": [],
-                        "time_taken_seconds": 1.0,
-                    },
-                }
-            ]
+            "episode": {
+                "episode": {
+                    "episode_id": "diagnosis",
+                    "fault_type": "link_down",
+                    "target_device": "spine1",
+                    "target_interface": "Ethernet0",
+                },
+                "diagnosis": {
+                    "verdict": "fault_detected",
+                    "fault_type": "link_down",
+                    "location": {"device": "leaf1", "interface": "Ethernet0"},
+                    "confidence": 0.9,
+                    "tool_calls": [],
+                    "time_taken_seconds": 1.0,
+                },
+            }
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            _write_config_db(tmpdir, "spine1", {"Ethernet0": ["192.168.11.1/30"]})
-            _write_config_db(tmpdir, "leaf1", {"Ethernet0": ["192.168.11.2/30"]})
+            generate_topology("xs", tmpdir)
 
-            scored = score_scenario_fault_episodes(
+            scored = score_scenario_episode(
                 scenario,
                 scenario_result,
                 evaluator,
@@ -910,8 +913,8 @@ episodes:
         assert scored[0].score == 1.0
 
     @pytest.mark.parametrize("fault_type", ["packet_loss", "packet_corruption", "high_latency", "mtu_mismatch"])
-    def test_score_scenario_interface_symmetric_fault_accepts_peer_endpoint(self, fault_type):
-        """Interface-level faults should accept the link-peer endpoint as an equivalent answer."""
+    def test_score_scenario_unidirectional_fault_rejects_peer_endpoint_equivalence(self, fault_type):
+        """Single-ended impairment injection must only accept its actual target."""
         from netopsbench.platform.session.scoring import build_episode_ground_truth
 
         episode_info = {
@@ -922,18 +925,11 @@ episodes:
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # leaf1 Ethernet0 and spine1 Ethernet0 share the same /30 subnet
-            _write_config_db(tmpdir, "leaf1", {"Ethernet0": ["10.0.0.1/30"]})
-            _write_config_db(tmpdir, "spine1", {"Ethernet0": ["10.0.0.2/30"]})
+            generate_topology("xs", tmpdir)
 
             gt = build_episode_ground_truth(episode_info, topology_dir=tmpdir)
 
-        assert (
-            "equivalent_locations" in gt
-        ), f"{fault_type} should produce equivalent_locations for symmetric interface fault"
-        peer = gt["equivalent_locations"][0]
-        assert peer["device"] == "spine1"
-        assert peer["interface"] == "Ethernet0"
+        assert "equivalent_locations" not in gt
 
 
 class TestEndToEnd:

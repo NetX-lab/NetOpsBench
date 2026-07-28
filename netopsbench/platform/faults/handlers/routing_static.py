@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..context import FaultContext
+    from ..context import FaultRuntimeContext
     from ..services.sonic_runtime import SonicRuntime
     from ..services.tracking import FaultTracker
 
@@ -17,11 +18,67 @@ class StaticRouteHandler:
         self,
         sonic: SonicRuntime,
         tracker: FaultTracker,
-        ctx: FaultContext,
+        ctx: FaultRuntimeContext,
     ) -> None:
         self._sonic = sonic
         self._tracker = tracker
         self._ctx = ctx
+
+    def _running_config_contains(self, device: str, statement: str) -> bool | None:
+        result = self._sonic.vtysh(device, ["show running-config"])
+        if result.returncode != 0:
+            return None
+        expected = " ".join(statement.split())
+        return any(" ".join(line.strip().split()) == expected for line in (result.stdout or "").splitlines())
+
+    def _running_config_has_route(self, device: str, target: str) -> bool | None:
+        result = self._sonic.vtysh(device, ["show running-config"])
+        if result.returncode != 0:
+            return None
+        prefix = f"ip route {target} "
+        return any(" ".join(line.strip().split()).startswith(prefix) for line in (result.stdout or "").splitlines())
+
+    def _operational_route(self, device: str, target: str) -> str | None:
+        result = self._sonic.vtysh(device, [f"show ip route {target}"])
+        if result.returncode != 0:
+            return None
+        return result.stdout or ""
+
+    def _operational_blackhole_present(self, device: str, target: str) -> bool | None:
+        output = self._operational_route(device, target)
+        if output is None:
+            return None
+        return bool(target in output and re.search(r"\b(?:blackhole|discard|Null0)\b", output, re.IGNORECASE))
+
+    def _operational_nexthop_present(
+        self,
+        device: str,
+        target: str,
+        nexthop: str,
+    ) -> bool | None:
+        output = self._operational_route(device, target)
+        if output is None:
+            return None
+        return bool(target in output and re.search(rf"\b(?:via\s+)?{re.escape(nexthop)}\b", output))
+
+    def _track_failed_compensation(
+        self,
+        fault_info: dict[str, Any],
+        rollback: dict[str, Any],
+    ) -> None:
+        if rollback.get("recovered") is True:
+            return
+        error = "; ".join(
+            filter(
+                None,
+                [
+                    str(fault_info.get("error") or ""),
+                    str(rollback.get("error") or "route compensation failed"),
+                ],
+            )
+        )
+        fault_info["error"] = error
+        self._tracker.track_residual(fault_info, error)
 
     # ------------------------------------------------------------------
     # Topology helpers (moved from FaultInjector body)
@@ -48,11 +105,11 @@ class StaticRouteHandler:
         if not candidates:
             return None
 
-        remote = [c for c in candidates if c.get("leaf") != target_device]
+        remote = [c for c in candidates if c.get("attached_switch") != target_device]
         if remote:
             candidates = remote
 
-        chosen = sorted(candidates, key=lambda c: (c.get("leaf", ""), c.get("name", "")))[0]
+        chosen = sorted(candidates, key=lambda c: (c.get("attached_switch", ""), c.get("name", "")))[0]
         ip_str = str(chosen.get("data_ip") or "").split("/")[0].strip()
         if not ip_str:
             return None
@@ -87,17 +144,26 @@ class StaticRouteHandler:
             ],
         )
 
+        statement = f"ip route {target_prefix} Null0"
+        success = (
+            result.returncode == 0
+            and self._running_config_contains(device, statement) is True
+            and self._operational_blackhole_present(device, target_prefix) is True
+        )
         fault_info = {
             "type": "blackhole_route",
             "device": device,
             "prefix": target_prefix,
-            "success": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "success": success,
+            "error": None if success else result.stderr or f"blackhole route was not operational: {statement}",
         }
 
-        if fault_info["success"]:
+        if success:
             self._tracker.track(fault_info)
+            return fault_info
 
+        rollback = self.recover_blackhole_route(device, target_prefix)
+        self._track_failed_compensation(fault_info, rollback)
         return fault_info
 
     def recover_blackhole_route(self, device: str, target_prefix: str) -> dict[str, Any]:
@@ -116,18 +182,24 @@ class StaticRouteHandler:
             ],
         )
 
-        self._tracker.remove_faults(
-            lambda fault: fault["type"] == "blackhole_route"
-            and fault["device"] == device
-            and fault["prefix"] == target_prefix
+        removed = (
+            result.returncode == 0
+            and self._running_config_contains(device, f"ip route {target_prefix} Null0") is False
+            and self._operational_blackhole_present(device, target_prefix) is False
         )
+        if removed:
+            self._tracker.remove_faults(
+                lambda fault: fault["type"] == "blackhole_route"
+                and fault["device"] == device
+                and fault["prefix"] == target_prefix
+            )
 
         return {
             "type": "blackhole_route",
             "device": device,
             "prefix": target_prefix,
-            "recovered": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "recovered": removed,
+            "error": None if removed else result.stderr or "blackhole route remained in running config",
         }
 
     # ------------------------------------------------------------------
@@ -163,18 +235,27 @@ class StaticRouteHandler:
             ],
         )
 
+        statement = f"ip route {target_ip} {wrong_nexthop}"
+        success = (
+            result.returncode == 0
+            and self._running_config_contains(device, statement) is True
+            and self._operational_nexthop_present(device, target_ip, wrong_nexthop) is True
+        )
         fault_info = {
             "type": "static_route_misconfig",
             "device": device,
             "target_ip": target_ip,
             "wrong_nexthop": wrong_nexthop,
-            "success": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "success": success,
+            "error": None if success else result.stderr or f"static route was not operational: {statement}",
         }
 
-        if fault_info["success"]:
+        if success:
             self._tracker.track(fault_info)
+            return fault_info
 
+        rollback = self.recover_static_route_misconfig(device, target_ip, wrong_nexthop)
+        self._track_failed_compensation(fault_info, rollback)
         return fault_info
 
     def recover_static_route_misconfig(
@@ -212,18 +293,25 @@ class StaticRouteHandler:
             result = self._sonic.vtysh(device, commands)
             if result.returncode == 0:
                 break
+        assert result is not None
 
-        self._tracker.remove_faults(
-            lambda fault: fault["type"] == "static_route_misconfig"
-            and fault["device"] == device
-            and fault["target_ip"] == target_ip
+        removed = (
+            result.returncode == 0
+            and self._running_config_has_route(device, target_ip) is False
+            and (not wrong_nexthop or self._operational_nexthop_present(device, target_ip, wrong_nexthop) is False)
         )
+        if removed:
+            self._tracker.remove_faults(
+                lambda fault: fault["type"] == "static_route_misconfig"
+                and fault["device"] == device
+                and fault["target_ip"] == target_ip
+            )
 
         return {
             "type": "static_route_misconfig",
             "device": device,
             "target_ip": target_ip,
             "wrong_nexthop": wrong_nexthop,
-            "recovered": result.returncode == 0,
-            "error": result.stderr if result.returncode != 0 else None,
+            "recovered": removed,
+            "error": None if removed else result.stderr or "static route remained in running config",
         }
