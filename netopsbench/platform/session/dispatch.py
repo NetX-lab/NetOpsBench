@@ -212,6 +212,7 @@ def _run_worker(
                     "scale": scenario.scale,
                     "worker": worker.worker_id,
                     "raw_result_path": raw_result_path,
+                    "cleanup_failed": not cleanup_success,
                     **({"failure_stage": failure_stage} if failure_stage else {}),
                 }
             )
@@ -293,13 +294,10 @@ def execute_on_runtime_pool(
         ),
     )
     cleanup_failures = sorted(
-        {
-            str(item["worker"])
-            for item in result.scenarios
-            if item.get("failure_stage") == "cleanup" and item.get("worker")
-        }
+        {str(item["worker"]) for item in result.scenarios if item.get("cleanup_failed") is True and item.get("worker")}
     )
     if cleanup_failures:
+        runtime.state = "quarantined"
         runtime.metadata["quarantined"] = True
         runtime.metadata["quarantine_reason"] = "scenario_cleanup_failure"
         runtime.metadata["quarantined_workers"] = cleanup_failures

@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 
+import pytest
+
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.services.command_runner import CommandRunner
 from netopsbench.platform.faults.services.tracking import FaultTracker
@@ -361,43 +363,88 @@ def test_route_policy_checks_withdrawal_and_recovery(monkeypatch):
     assert injector.active_faults == []
 
 
-def test_device_down_unreadable_state_is_compensated(monkeypatch):
-    injector = FaultInjector(topology_metadata=_metadata())
-    compensation_calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result())
-    monkeypatch.setattr(
-        injector._system._cmd,
-        "container_is_running",
-        lambda _container: None,
-    )
-    monkeypatch.setattr(
-        injector._system,
-        "_start_and_wait",
-        lambda device, container: compensation_calls.append((device, container)) or (True, ""),
-    )
-
-    result = injector.inject_device_down("spine1")
-
-    assert result["success"] is False
-    assert compensation_calls == [("spine1", "clab-dcn-spine1")]
-    assert injector.active_faults == []
-
-
-def test_device_down_failed_compensation_tracks_residual(monkeypatch):
+def test_device_down_unreadable_state_is_terminal_residual(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result())
     monkeypatch.setattr(
         injector._system._cmd,
-        "container_is_running",
-        lambda _container: None,
+        "docker_exec",
+        lambda *_args, **_kwargs: _Result(returncode=1),
     )
-    monkeypatch.setattr(
-        injector._system,
-        "_start_and_wait",
-        lambda _device, _container: (False, "start readback failed"),
-    )
+    monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (None, None))
 
     result = injector.inject_device_down("spine1")
 
     assert result["success"] is False
     _assert_single_residual(injector, "device_down")
+    assert injector.active_faults[0].metadata["retryable"] is False
+
+
+def test_device_down_reads_parking_namespace_without_sudo(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+    calls: list[list[str]] = []
+
+    def run_cmd(command, **_kwargs):
+        calls.append(command)
+        return _Result(stdout="clab-park-clab-dcn-spine1 (id: 7)\n")
+
+    monkeypatch.setattr(injector._system._cmd, "run_cmd", run_cmd)
+
+    assert injector._system._parking_namespace_exists("clab-dcn-spine1") is True
+    assert calls == [["ip", "netns", "list"]]
+
+
+def test_device_down_running_with_restored_links_is_clean_injection_failure(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result())
+    monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (True, False))
+
+    result = injector.inject_device_down("spine1")
+
+    assert result["success"] is False
+    assert injector.active_faults == []
+
+
+def test_device_down_stopped_without_parking_tracks_terminal_residual(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result(returncode=1))
+    monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (False, False))
+
+    result = injector.inject_device_down("spine1")
+
+    assert result["success"] is False
+    _assert_single_residual(injector, "device_down")
+    assert injector.active_faults[0].metadata["retryable"] is False
+
+
+def test_device_down_command_error_is_success_when_stopped_and_parked(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(
+        injector._system._cmd,
+        "run_cmd",
+        lambda *_args, **_kwargs: _Result(returncode=1, stderr="late Docker event"),
+    )
+    monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (False, True))
+
+    result = injector.inject_device_down("spine1")
+
+    assert result["success"] is True
+    assert result["error"] is None
+    assert len(injector.active_faults) == 1
+
+
+def test_device_down_recovery_missing_parking_does_not_call_start(monkeypatch):
+    injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "container_is_running", lambda _container: False)
+    monkeypatch.setattr(injector._system, "_parking_namespace_exists", lambda _container: False)
+    monkeypatch.setattr(
+        injector._system._cmd,
+        "run_cmd",
+        lambda *_args, **_kwargs: pytest.fail("containerlab start must not run without parking state"),
+    )
+
+    result = injector.recover_device_down("spine1")
+
+    assert result["recovered"] is False
+    assert result["retryable"] is False
+    assert "parking namespace is missing" in result["error"]

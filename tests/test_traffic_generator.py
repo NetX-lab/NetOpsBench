@@ -79,7 +79,9 @@ def test_large_standard_profile_respects_switch_budget(tmp_path):
         "standard",
     )
 
-    assert config["stats"]["total_flows"] > 0
+    assert config["stats"]["total_flows"] == 256
+    assert config["stats"]["estimated_max_pps_per_client"] == pytest.approx(353.64)
+    assert config["stats"]["estimated_switch_pps"]["max_switch_pps"] == pytest.approx(4229.69)
     assert config["stats"]["estimated_switch_pps"]["max_leaf_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert config["stats"]["estimated_switch_pps"]["max_spine_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert traffic_generator.validate_traffic_config(config, "large") is True
@@ -138,6 +140,7 @@ def test_fat_tree_profiles_are_bounded(tmp_path):
         ("xs", 2, 1),
         ("small", 32, 4),
         ("medium", 64, 4),
+        ("large", 256, 4),
         ("xlarge", 512, 4),
         ("fat-tree-k8", 512, 4),
         ("fat-tree-k12", 576, 4),
@@ -178,9 +181,9 @@ def test_large_standard_matrix_never_exceeds_four_destination_listeners(tmp_path
     config = traffic_generator.generate_traffic_config_from_topology(topology, "large", "standard")
     incoming = Counter(flow["dst"] for flow in config["flows"])
 
-    assert config["stats"]["total_flows"] > 0
-    assert max(incoming.values()) <= 4
-    assert set(flow["dst_port"] for flow in config["flows"]) <= {5201, 5202, 5203, 5204}
+    assert config["stats"]["total_flows"] == 256
+    assert set(incoming.values()) == {4}
+    assert set(flow["dst_port"] for flow in config["flows"]) == {5201, 5202, 5203, 5204}
 
 
 @pytest.mark.parametrize("profile", ["light", "stress"])

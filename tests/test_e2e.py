@@ -78,6 +78,10 @@ class TestTopologyGeneration:
             rendered = yaml.safe_load(Path(result["yaml_file"]).read_text(encoding="utf-8"))
 
             binds = rendered["topology"]["kinds"]["sonic-vs"]["binds"]
+            assert (
+                rendered["topology"]["kinds"]["sonic-vs"]["cmd"]
+                == "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
+            )
             linux_binds = rendered["topology"]["kinds"]["linux"]["binds"]
             assert "configs/sonic/__clabNodeName__/config_db.json:/etc/sonic/config_db.json:rw" in binds
             assert (

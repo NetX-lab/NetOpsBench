@@ -22,6 +22,7 @@ from .config import (
     SONIC_BASE_CONFIG_DB,
     SONIC_HWSKU,
     SONIC_LANEMAP_PATH,
+    SONIC_PID1_COMMAND,
     SONIC_PLATFORM,
     SONIC_PORT_CONFIG_PATH,
     SONIC_START_WRAPPER_SOURCE,
@@ -142,6 +143,7 @@ def _containerlab_topology(plan: FabricPlan) -> dict[str, Any]:
             "kinds": {
                 plan.nos_kind: {
                     "image": plan.nos_image,
+                    "cmd": SONIC_PID1_COMMAND,
                     "binds": [
                         "configs/sonic/__clabNodeName__/config_db.json:/etc/sonic/config_db.json:rw",
                         f"configs/sonic/__clabNodeName__/port_config.ini:{SONIC_PORT_CONFIG_PATH}:rw",

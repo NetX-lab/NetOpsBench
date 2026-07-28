@@ -288,7 +288,61 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
         },
     ]
     assert runtime.metadata["quarantined"] is True
+    assert runtime.state == "quarantined"
     assert runtime.metadata["quarantine_reason"] == "scenario_cleanup_failure"
     assert runtime.metadata["quarantined_workers"] == ["worker-1"]
     persisted = (runtime.root_dir / "runtime.json").read_text(encoding="utf-8")
     assert '"quarantined": true' in persisted
+
+
+def test_invalid_case_with_cleanup_failure_still_quarantines_runtime(tmp_path, monkeypatch):
+    import netopsbench.platform.session.dispatch as dispatch
+
+    class InvalidCleanupRunner(_FakeRunner):
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            return {
+                "success": False,
+                "case_valid": False,
+                "scenario_id": scenario.id,
+                "episode": None,
+                "cleanup": {"success": False, "status": "terminal_recovery_failure"},
+                "cleanup_failure": {"domain": "cleanup", "message": "parking namespace is missing"},
+            }
+
+    runtime = RuntimePool(
+        id="runtime-1",
+        name="runtime-1",
+        scale="xs",
+        root_dir=tmp_path / "runtime",
+        workers=[_worker(tmp_path, 1)],
+        state="warm",
+    )
+    monkeypatch.setattr(dispatch, "ScenarioExecutor", InvalidCleanupRunner)
+    monkeypatch.setattr(dispatch, "_create_evaluator", _FakeEvaluator)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args: lambda _payload: {})
+    monkeypatch.setattr(
+        dispatch,
+        "build_worker_execution_context",
+        lambda worker, topology_dir: WorkerExecutionContext(
+            topology_dir=topology_dir,
+            topology_id=f"topo-{worker.worker_index}",
+            influxdb_bucket=worker.bucket,
+        ),
+    )
+    monkeypatch.setattr(dispatch, "load_topology_metadata", lambda _topology_dir: None)
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda _scenario, _topology_dir: None)
+
+    result = execute_on_runtime_pool(
+        scenarios=[_scenario("scenario-1")],
+        runtime=runtime,
+        agent=SimpleNamespace(name="agent"),
+        raw_dir=tmp_path / "raw",
+    )
+
+    summary = result.scenarios[0]
+    assert summary["status"] == "invalid"
+    assert summary["failure_stage"] == "infrastructure"
+    assert summary["cleanup_failed"] is True
+    assert result.evaluations == []
+    assert runtime.state == "quarantined"
+    assert runtime.metadata["quarantined_workers"] == ["worker-1"]

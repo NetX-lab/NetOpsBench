@@ -152,6 +152,13 @@ class ScenarioExecutor:
             return False
         return all(isinstance(item, dict) and item.get("recovered") is True for item in results)
 
+    @staticmethod
+    def _recovery_has_terminal_failure(results: object) -> bool:
+        return isinstance(results, list) and any(
+            isinstance(item, dict) and item.get("recovered") is not True and item.get("retryable") is False
+            for item in results
+        )
+
     def _cleanup_after_scenario(
         self,
         scenario: ScenarioSpec,
@@ -169,6 +176,7 @@ class ScenarioExecutor:
         recovery_attempted = False
         post_recovery_waited = False
         convergence_pending = False
+        terminal_recovery_failure = False
         prior_recovery = episode_result.get("recovery") if isinstance(episode_result, dict) else None
         recovery_results = prior_recovery
 
@@ -188,6 +196,7 @@ class ScenarioExecutor:
                         errors.append(
                             f"fault_recovery: remaining_faults={len(active_faults)} " f"results={recovery_results!r}"
                         )
+                        terminal_recovery_failure = self._recovery_has_terminal_failure(recovery_results)
                 except Exception as exc:  # noqa: BLE001 - bounded retry records the failure
                     recovery_complete = False
                     errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
@@ -258,6 +267,8 @@ class ScenarioExecutor:
                     result["validated_baseline"] = validated_baseline
                 return result
 
+            if terminal_recovery_failure:
+                break
             remaining = deadline - monotonic()
             if remaining <= 0:
                 break
@@ -265,7 +276,11 @@ class ScenarioExecutor:
 
         return {
             "success": False,
-            "status": "post_recovery_convergence_timeout" if convergence_pending else "recovery_timeout",
+            "status": (
+                "terminal_recovery_failure"
+                if terminal_recovery_failure
+                else ("post_recovery_convergence_timeout" if convergence_pending else "recovery_timeout")
+            ),
             "attempts": attempts,
             "duration_seconds": max(0.0, monotonic() - started),
             "timeout_seconds": timeout_seconds,

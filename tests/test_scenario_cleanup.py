@@ -101,6 +101,33 @@ def test_cleanup_retry_stops_at_scale_timeout(monkeypatch):
     assert calls == ["sleep:1.0"]
 
 
+def test_terminal_recovery_failure_is_not_retried(monkeypatch):
+    runner = _runner(active_faults=[{"type": "device_down"}], timeout_seconds=60)
+    calls = []
+
+    def recover():
+        calls.append("recover")
+        return [
+            {
+                "type": "device_down",
+                "recovered": False,
+                "retryable": False,
+                "error": "parking namespace is missing",
+            }
+        ]
+
+    runner._recover_fault = recover
+    runner.sleep = lambda seconds: calls.append(f"sleep:{seconds}")
+    monkeypatch.setattr(executor_module, "monotonic", lambda: 0.0)
+
+    cleanup = runner._cleanup_after_scenario(_scenario(), None)
+
+    assert cleanup["success"] is False
+    assert cleanup["status"] == "terminal_recovery_failure"
+    assert cleanup["attempts"] == 1
+    assert calls == ["recover"]
+
+
 def test_cleanup_requires_shared_post_recovery_health(monkeypatch):
     runner = _runner(active_faults=[])
     clock = [0.0]

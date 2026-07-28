@@ -24,6 +24,10 @@ SONIC_HWSKU_PATH = f"/usr/share/sonic/device/{SONIC_PLATFORM}/{SONIC_HWSKU}"
 SONIC_PORT_CONFIG_PATH = f"{SONIC_HWSKU_PATH}/port_config.ini"
 SONIC_LANEMAP_PATH = f"{SONIC_HWSKU_PATH}/lanemap.ini"
 SONIC_PORT_COUNTER_INTERVAL_MS = 10_000
+# PID namespace init ignores default-action SIGTERM unless it installs a
+# handler. Keep this wrapper minimal, but explicitly handle Docker's stop
+# signals before waiting on the idle child.
+SONIC_PID1_COMMAND = "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
 _TOPOLOGY_RESOURCES = files("netopsbench.platform.topology")
 SONIC_BASE_CONFIG_DB = _TOPOLOGY_RESOURCES.joinpath("sonic_vs_base_config_db.json")
 SONIC_START_WRAPPER_SOURCE = _TOPOLOGY_RESOURCES.joinpath("sonic_start.sh")
@@ -147,6 +151,7 @@ __all__ = [
     "SONIC_BASE_CONFIG_DB",
     "SONIC_HWSKU",
     "SONIC_LANEMAP_PATH",
+    "SONIC_PID1_COMMAND",
     "SONIC_PLATFORM",
     "SONIC_PORT_COUNTER_INTERVAL_MS",
     "SONIC_PORT_CONFIG_PATH",

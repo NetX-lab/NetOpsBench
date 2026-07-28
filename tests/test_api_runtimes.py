@@ -276,6 +276,11 @@ def test_python_worker_deploy_owns_topology_containerlab_and_activation(tmp_path
 
     monkeypatch.setattr(deployment, "generate_topology", fake_generate_topology)
     monkeypatch.setattr(deployment, "safe_run", fake_safe_run)
+    monkeypatch.setattr(
+        deployment,
+        "_verify_sonic_pid1_contract",
+        lambda deployed_worker: calls.append(("pid1", deployed_worker.worker_id)),
+    )
     monkeypatch.setattr(deployment, "apply_configs", lambda *args: SimpleNamespace(failed=[]))
     deployment.deploy_worker_lab(worker, "xs")
 
@@ -284,6 +289,7 @@ def test_python_worker_deploy_owns_topology_containerlab_and_activation(tmp_path
     assert generated["name"] == "deploy-lab"
     assert generated["mgmt_subnet"] == worker.mgmt_subnet
     assert any("containerlab" in command and "deploy" in command for command in commands)
+    assert ("pid1", worker.worker_id) in calls
     assert not any("telegraf" in " ".join(command) or "pingmesh" in " ".join(command) for command in commands)
 
 
@@ -307,6 +313,7 @@ def test_k12_worker_deploy_uses_profile_containerlab_parallelism(tmp_path, monke
 
     monkeypatch.setattr(deployment, "generate_topology", fake_generate_topology)
     monkeypatch.setattr(deployment, "safe_run", fake_safe_run)
+    monkeypatch.setattr(deployment, "_verify_sonic_pid1_contract", lambda _worker: None)
     monkeypatch.setattr(deployment, "apply_configs", lambda *args: SimpleNamespace(failed=[]))
     deployment.deploy_worker_lab(worker, "fat-tree-k12")
 
@@ -334,6 +341,7 @@ def test_removed_containerlab_env_does_not_override_scale_profile(tmp_path, monk
 
     monkeypatch.setattr(deployment, "generate_topology", fake_generate_topology)
     monkeypatch.setattr(deployment, "safe_run", fake_safe_run)
+    monkeypatch.setattr(deployment, "_verify_sonic_pid1_contract", lambda _worker: None)
     monkeypatch.setattr(deployment, "apply_configs", lambda *args: SimpleNamespace(failed=[]))
     monkeypatch.setenv("NETOPSBENCH_CONTAINERLAB_MAX_WORKERS", "3")
 

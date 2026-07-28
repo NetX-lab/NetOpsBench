@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.platform.topology.generator import generate_topology
@@ -40,6 +41,8 @@ def test_custom_same_family_scale_generates_without_code_changes(tmp_path: Path)
     assert manifest["facts"]["num_spines"] == 3
     assert manifest["facts"]["num_leafs"] == 3
     assert manifest["pingmesh"]["rtt_port_pool_size"] == 8
+    rendered = yaml.safe_load(Path(result["yaml_file"]).read_text(encoding="utf-8"))
+    assert rendered["topology"]["kinds"]["sonic-vs"]["cmd"] == "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
 
 
 def test_profile_override_must_be_explicit(tmp_path: Path):
@@ -79,3 +82,9 @@ def test_fat_tree_switch_counts_are_derived_from_k():
 
     assert (k8.num_cores, k8.num_aggs, k8.num_edges, k8.total_clients) == (16, 32, 32, 128)
     assert (k12.num_cores, k12.num_aggs, k12.num_edges, k12.total_clients) == (36, 72, 72, 144)
+
+
+def test_large_limits_containerlab_deploy_parallelism():
+    profile = ScaleRegistry.with_builtins().get("large")
+
+    assert profile.containerlab_max_workers == 16

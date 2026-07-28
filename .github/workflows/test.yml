@@ -84,7 +84,7 @@ jobs:
           python -m venv /tmp/netopsbench-wheel-smoke
           /tmp/netopsbench-wheel-smoke/bin/pip install dist/netopsbench-*.whl
           cd /tmp
-          /tmp/netopsbench-wheel-smoke/bin/python -c "from netopsbench.sdk import NetOpsBench; from netopsbench.platform.incident import DiagnosticSession, IncidentEngine"
+          /tmp/netopsbench-wheel-smoke/bin/python -c "from netopsbench.sdk import DiagnosticSession, IncidentEngine, NetOpsBench"
           /tmp/netopsbench-wheel-smoke/bin/netopsbench --help >/dev/null
 
   lint:

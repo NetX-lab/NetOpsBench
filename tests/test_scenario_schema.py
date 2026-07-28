@@ -89,7 +89,7 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
         ("xs", 7),
         ("small", 7),
         ("medium", 8),
-        ("large", 9),
+        ("large", 54),
         ("xlarge", 102),
         ("fat-tree-k8", 102),
         ("fat-tree-k12", 114),
@@ -106,7 +106,7 @@ def test_builtin_scale_complete_windows_are_topology_derived(scale, expected_win
 
     assert policy.complete_window_seconds(profile.total_clients) == expected_window
     assert max(30, policy.complete_window_seconds(profile.total_clients)) == (
-        expected_window if scale in {"xlarge", "fat-tree-k8", "fat-tree-k12"} else 30
+        expected_window if scale in {"large", "xlarge", "fat-tree-k8", "fat-tree-k12"} else 30
     )
 
 

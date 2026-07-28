@@ -49,6 +49,13 @@ def _role_counts(rows: list[dict], roles: dict[str, str], fault_type: str) -> Co
     return Counter(roles[row["episode"]["target_device"]] for row in rows if row["episode"]["fault_type"] == fault_type)
 
 
+def test_large_campaign_uses_complete_pingmesh_window(tmp_path):
+    _topology, rows = _generate_default("large", tmp_path)
+
+    assert len(rows) == 52
+    assert {row["episode"]["duration_seconds"] for row in rows} == {54}
+
+
 @pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k8", "fat-tree-k12"])
 def test_default_large_campaign_has_balanced_tier_placements(tmp_path, scale):
     topo, rows = _generate_default(scale, tmp_path)

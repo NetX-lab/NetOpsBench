@@ -19,6 +19,19 @@ from netopsbench.platform.topology.topology_utils import (
     load_topology_manifest,
 )
 
+_SONIC_PID1_COMMAND = "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
+
+
+@pytest.mark.parametrize(
+    "scale",
+    ["xs", "small", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"],
+)
+def test_every_builtin_scale_uses_terminable_sonic_pid1(tmp_path, scale):
+    result = generate_topology(scale, str(tmp_path / scale))
+    rendered = yaml.safe_load(Path(result["yaml_file"]).read_text(encoding="utf-8"))
+
+    assert rendered["topology"]["kinds"]["sonic-vs"]["cmd"] == _SONIC_PID1_COMMAND
+
 
 @pytest.mark.parametrize(
     ("scale", "roles", "clients", "links"),

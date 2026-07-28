@@ -374,7 +374,7 @@ def test_runtime_identity_schema_version_defaults_to_v3():
         ("xs", "clos", 2, 2, None, 1, 24, None, 250, 1800, 2, 60),
         ("small", "clos", 2, 4, None, 2, 24, None, 250, 1800, 2, 60),
         ("medium", "clos", 4, 8, None, 2, 24, None, 200, 1800, 2, 60),
-        ("large", "clos", 4, 16, None, 4, 24, None, 150, 2700, 1, 180),
+        ("large", "clos", 4, 16, None, 4, 24, 16, 100, 2700, 1, 180),
         ("xlarge", "clos", 16, 128, None, 1, 23, 16, 100, 3600, 1, 240),
         ("fat-tree-k8", "fat-tree", None, None, 8, 4, 24, 16, 100, 3600, 1, 240),
         ("fat-tree-k12", "fat-tree", None, None, 12, 2, 23, 16, 50, 5400, 1, 300),

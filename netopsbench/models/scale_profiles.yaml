@@ -21,9 +21,9 @@ profiles:
   - name: large
     topology: {family: clos, spines: 4, leafs: 16, clients_per_leaf: 4}
     management: {prefix: 24, subnet_base: 160}
-    pingmesh: {destination_batch_size: null, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 1}
-    traffic: {max_pps_per_client: 150}
-    runtime: {deploy_timeout_seconds: 2700, worker_deploy_parallelism: 1, health_timeout_seconds: 180}
+    pingmesh: {destination_batch_size: 16, rtt_port_pool_size: 16, rtt_ports_per_cycle: 4, cycle_interval_seconds: 3}
+    traffic: {max_pps_per_client: 100}
+    runtime: {deploy_timeout_seconds: 2700, worker_deploy_parallelism: 1, health_timeout_seconds: 180, containerlab_max_workers: 16}
   - name: xlarge
     topology: {family: clos, spines: 16, leafs: 128, clients_per_leaf: 1}
     management: {prefix: 23, subnet_base: 180}

@@ -252,12 +252,13 @@ def test_device_down_uses_containerlab_node_stop():
     calls = []
     result = type("R", (), {"returncode": 0, "stderr": "", "stdout": "spine1"})()
     injector._system._cmd.run_cmd = lambda command, **_kwargs: calls.append(command) or result
-    injector._system._cmd.container_is_running = lambda _container: False
+    injector._system._settled_stop_state = lambda _container: (False, True)
 
     fault = injector.inject_device_down("spine1")
 
     assert fault["success"] is True
     assert fault["mode"] == "containerlab_node_stop"
+    assert fault["parking_exists"] is True
     assert calls[0][-7:] == [
         "stop",
         "-t",
@@ -265,7 +266,7 @@ def test_device_down_uses_containerlab_node_stop():
         "--node",
         "spine1",
         "--timeout",
-        "20s",
+        "120s",
     ]
 
 
@@ -275,7 +276,11 @@ def test_device_down_starts_supervisor_activates_and_waits_for_bgp_recovery(monk
     result = type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
     established = iter([False, True])
     injector._system._cmd.run_cmd = lambda command, **_kwargs: calls.append(command) or result
-    injector._system._cmd.container_is_running = lambda _container: True
+    running = iter([False, True, True, True, True])
+    injector._system._cmd.container_is_running = lambda _container: next(running)
+    parking = iter([True, False])
+    injector._system._parking_namespace_exists = lambda _container: next(parking)
+    injector._system._observed_dataplane_interface_count = lambda _container: 2
     supervisor_ready = iter([False, True, True])
     injector._system._sonic.supervisord_ready = lambda _container: next(supervisor_ready)
     injector._system._sonic.bgp_neighbors_established = lambda _device: next(established)
@@ -298,7 +303,7 @@ def test_device_down_starts_supervisor_activates_and_waits_for_bgp_recovery(monk
         "--node",
         "spine1",
         "--timeout",
-        "20s",
+        "120s",
     ]
     assert calls[1][-5:] == [
         "docker",

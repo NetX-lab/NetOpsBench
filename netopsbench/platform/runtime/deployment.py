@@ -6,6 +6,7 @@ import fcntl
 import ipaddress
 import json
 import os
+import shlex
 import signal
 import tempfile
 import time
@@ -16,8 +17,9 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime.apply_configs import apply_configs
+from netopsbench.platform.topology.config import SONIC_PID1_COMMAND
 from netopsbench.platform.topology.generator import generate_topology
-from netopsbench.platform.topology.topology_utils import load_topology_manifest
+from netopsbench.platform.topology.topology_utils import clab_container_name, load_topology_manifest
 from netopsbench.platform.utils.proc import docker_prefix, safe_run, sudo_prefix
 
 APPLY_CONFIG_PARALLELISM = 32
@@ -25,6 +27,10 @@ LAB_REMOVAL_TIMEOUT_SECONDS = 120
 LAB_REMOVAL_POLL_SECONDS = 1.0
 RUNTIME_DEPLOY_LOCK_PATH = Path(tempfile.gettempdir()) / f"netopsbench-{os.getuid()}-runtime-deploy.lock"
 logger = get_logger(__name__)
+
+
+def _read_process_comm(pid: int) -> str:
+    return Path(f"/proc/{pid}/comm").read_text(encoding="utf-8").strip()
 
 
 def management_subnet_stride(scale: str, registry: ScaleRegistry | None = None) -> int:
@@ -148,9 +154,70 @@ def deploy_worker_lab(worker: RuntimeIdentity, scale: str, registry: ScaleRegist
         details = (deploy_result.stderr or deploy_result.stdout or "no diagnostic output").strip()
         raise RuntimeError(f"Containerlab deploy failed ({deploy_result.returncode}): {details[-4000:]}")
 
+    _verify_sonic_pid1_contract(worker)
     result = apply_configs(str(topology_dir), APPLY_CONFIG_PARALLELISM, worker.lab_name)
     if result.failed:
         raise RuntimeError(f"SONiC activation failed for: {', '.join(result.failed)}")
+
+
+def _verify_sonic_pid1_contract(worker: RuntimeIdentity) -> None:
+    """Require the generated, SIGTERM-responsive PID 1 on every SONiC node."""
+    manifest = load_topology_manifest(worker.topology_dir)
+    containers = [clab_container_name(worker.lab_name, device.name) for device in manifest.routing_devices()]
+    if not containers:
+        raise RuntimeError(f"Topology {worker.lab_name!r} has no SONiC routing devices")
+
+    inspected = safe_run(
+        [
+            *docker_prefix(),
+            "docker",
+            "inspect",
+            "--format",
+            "{{.Name}}\t{{.State.Running}}\t{{.State.Pid}}\t{{json .Config.Cmd}}",
+            *containers,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if inspected.returncode != 0:
+        details = (inspected.stderr or inspected.stdout or "no diagnostic output").strip()
+        raise RuntimeError(f"Unable to verify SONiC PID 1 contract: {details[-2000:]}")
+
+    failures: list[str] = []
+    seen: set[str] = set()
+    for line in inspected.stdout.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) != 4:
+            failures.append(f"malformed docker inspect output: {line!r}")
+            continue
+        raw_name, running, raw_pid, command = parts
+        name = raw_name.lstrip("/")
+        seen.add(name)
+        if running.lower() != "true":
+            failures.append(f"{name}: container is not running")
+            continue
+        try:
+            parsed_command = json.loads(command)
+        except json.JSONDecodeError:
+            parsed_command = None
+        if parsed_command != shlex.split(SONIC_PID1_COMMAND):
+            failures.append(f"{name}: unexpected command {command}")
+            continue
+        try:
+            pid = int(raw_pid)
+            pid1 = _read_process_comm(pid)
+        except (OSError, ValueError) as exc:
+            failures.append(f"{name}: unable to inspect PID 1: {exc}")
+            continue
+        if pid1 != "bash":
+            failures.append(f"{name}: PID 1 is {pid1!r}, expected the signal-handling 'bash' wrapper")
+
+    missing = sorted(set(containers) - seen)
+    failures.extend(f"{name}: missing docker inspect result" for name in missing)
+    if failures:
+        raise RuntimeError("SONiC PID 1 contract failed: " + "; ".join(failures[:12]))
 
 
 def assert_worker_slot_available(worker: RuntimeIdentity) -> None:
