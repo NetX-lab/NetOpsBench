@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from netopsbench.evaluator.scorer import AgentOutput, Evaluator
 from netopsbench.models.scenario import ScenarioSpec
+from netopsbench.platform.incident.context import sanitize_model_visible_payload
 from netopsbench.platform.incident.contracts import (
     AgentUsage,
     DiagnosisSubmission,
@@ -457,6 +458,7 @@ class SessionToolGateway:
             if transition.failure is not None:
                 return ToolResult(success=False, data=None, error=transition.failure.message)
             payload = transition.observation.get("result")
+            payload = sanitize_model_visible_payload(payload)
             if isinstance(payload, dict) and "success" in payload and "data" in payload:
                 return ToolResult(
                     success=bool(payload.get("success")),

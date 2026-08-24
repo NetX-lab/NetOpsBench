@@ -33,7 +33,12 @@ def parse_route_table(text: str) -> list[dict[str, Any]]:
 
     def add_route_state(route: dict[str, Any], raw_text: str) -> None:
         code = str(route.get("code") or "")
-        route["selected"] = ">" in code or "best" in raw_text.lower()
+        # Detailed FRR output marks an installed/active next hop with ``*``.
+        # It does not consistently include the word ``best`` (notably for
+        # static routes), so preserve that structured signal while parsing and
+        # consume it here rather than making callers inspect raw CLI text.
+        active_nexthop = bool(route.pop("_active_nexthop", False))
+        route["selected"] = ">" in code or "best" in raw_text.lower() or active_nexthop
         discard_match = re.search(r"\b(Null0|blackhole|reject)\b", raw_text, re.IGNORECASE)
         discard_hop = next(
             (
@@ -48,30 +53,65 @@ def parse_route_table(text: str) -> list[dict[str, Any]]:
 
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     if lines and lines[0].startswith("Routing entry for "):
+        # FRR can print several entries for the same prefix (for example a
+        # selected static route followed by a BGP alternative).  Treat each
+        # ``Known via`` section as a separate route.  Folding the sections
+        # into one mapping lets the last protocol overwrite the selected one
+        # and loses the exact route semantics needed by callers.
         prefix = lines[0].split("Routing entry for ", 1)[1].strip()
-        route: dict[str, Any] = {"prefix": prefix, "code": None, "protocol": "unknown", "nexthops": []}
+        detailed: list[dict[str, Any]] = []
+        route: dict[str, Any] | None = None
+        route_raw: list[str] = []
+
+        def finish_detailed() -> None:
+            nonlocal route, route_raw
+            if route is None:
+                return
+            add_route_state(route, "\n".join(route_raw))
+            detailed.append(route)
+            route = None
+            route_raw = []
+
         for raw in lines[1:]:
             line = raw.strip()
             known_match = re.match(r'^Known via "([^"]+)", distance (\d+), metric (\d+)', line)
             if known_match:
+                finish_detailed()
                 protocol, distance, metric = known_match.groups()
-                route["protocol"] = protocol.lower().replace(" ", "_")
-                route["admin_distance"] = int(distance)
-                route["metric"] = int(metric)
+                route = {
+                    "prefix": prefix,
+                    "code": None,
+                    "protocol": protocol.lower().replace(" ", "_"),
+                    "nexthops": [],
+                    "admin_distance": int(distance),
+                    "metric": int(metric),
+                }
+                route_raw = [line]
                 continue
-            if not line.startswith("*"):
+            if route is None:
                 continue
-            line = line.lstrip("* ").strip()
-            if line.startswith("directly connected"):
-                iface_match = re.search(r"directly connected,\s*([^,\s]+)", line)
+            route_raw.append(line)
+            # FRR uses ``*`` for an active next hop and may use lower-case
+            # status markers such as ``q`` for a queued FIB install.  A
+            # section explicitly marked ``best`` is selected even when its
+            # next-hop line uses the latter form.
+            status_match = re.match(r"^(?P<status>[*a-z]+)\s+(?P<body>.+)$", line)
+            if status_match is None:
+                continue
+            status = status_match.group("status")
+            if "*" in status or "best" in " ".join(route_raw).lower():
+                route["_active_nexthop"] = True
+            body = status_match.group("body").strip()
+            if body.startswith("directly connected"):
+                iface_match = re.search(r"directly connected,\s*([^,\s]+)", body)
                 route["nexthops"].append({"via": None, "interface": iface_match.group(1) if iface_match else None})
                 continue
-            nh_match = re.match(r"^([^,\s]+)(?:,\s*via\s+([^,\s]+))?", line)
+            nh_match = re.match(r"^([^,\s]+)(?:,\s*via\s+([^,\s]+))?", body)
             if nh_match:
                 via, iface = nh_match.groups()
                 route["nexthops"].append({"via": via, "interface": iface})
-        add_route_state(route, text)
-        return [route]
+        finish_detailed()
+        return detailed
     for raw in text.splitlines():
         if not raw.strip():
             continue
@@ -80,7 +120,10 @@ def parse_route_table(text: str) -> list[dict[str, Any]]:
                 current["nexthops"].extend(parse_nexthops(raw))
                 current["_raw"] = f"{current.get('_raw', '')} {raw.strip()}"
             continue
-        match = re.match(r"^([A-Z*>]+)\s+([0-9.]+/\d+)\s*(.*)$", raw.strip())
+        # FRR appends lower-case route status flags (for example ``q`` for a
+        # queued FIB install) to the protocol/selection code. Rejecting those
+        # lines made a selected ``S>q`` route disappear from structured data.
+        match = re.match(r"^([A-Za-z*>]+)\s+([0-9.]+/\d+)\s*(.*)$", raw.strip())
         if not match:
             continue
         code, prefix, rest = match.groups()

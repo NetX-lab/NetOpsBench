@@ -27,7 +27,7 @@ def _payload() -> dict:
         "case_id": "case-1",
         "topology": {},
         "symptoms": {},
-        "canonical_observation": {"case_id": "case-1"},
+        "canonical_observation": {"topology_summary": {}, "symptoms": {}},
     }
 
 

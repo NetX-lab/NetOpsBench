@@ -15,10 +15,12 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
 
 from examples._common import (
     build_arg_parser,
-    build_wrapped_agent,
     discover_generated_scenarios,
     print_agent_banner,
     resolve_repo_root,
@@ -31,22 +33,60 @@ DEFAULT_SCALE = "xs"
 SCALE_CHOICES = list(supported_scales())
 
 
+def _construct_agent(agent_cls: Any, *, vendor: str) -> Any:
+    try:
+        return agent_cls(vendor=vendor)
+    except TypeError:
+        return agent_cls()
+
+
 def main(
     repo_root: Path | None = None,
     *,
     scale: str = DEFAULT_SCALE,
     vendor: str = "minimax",
     workers: int = 3,
+    agent_mode: str = "original",
+    scale_profile: Path | None = None,
+    only_scenario_ids: tuple[str, ...] = (),
     bench_cls=NetOpsBench,
     agent_cls=MinimalDeepAgent,
 ) -> int:
+    if agent_mode not in {"original", "harness"}:
+        raise ValueError("agent_mode must be 'original' or 'harness'")
     repo = resolve_repo_root(repo_root)
+    load_dotenv(repo / ".env", override=False)
     scenarios = discover_generated_scenarios(repo, scale)
+    if only_scenario_ids:
+        discovered = {path.stem: path for path in scenarios}
+        unknown = set(only_scenario_ids) - set(discovered)
+        if unknown:
+            raise ValueError(f"unknown {scale} scenario IDs: {sorted(unknown)}")
+        scenarios = [discovered[scenario_id] for scenario_id in only_scenario_ids]
 
-    with bench_cls(workspace=str(repo)) as bench:
-        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor)
+    bench_kwargs: dict[str, Any] = {"workspace": str(repo)}
+    if scale_profile is not None:
+        bench_kwargs["scale_profiles"] = [scale_profile]
+    with bench_cls(**bench_kwargs) as bench:
+        raw_agent = _construct_agent(agent_cls, vendor=vendor)
+        selected_agent = raw_agent
+        if agent_mode == "harness":
+            from examples.agents.diagnostic_harness import DiagnosticHarness
+            from examples.agents.diagnostic_harness.config import FeatureConfig, HarnessConfig, TelemetryConfig
 
-        print(f"03 — Scale benchmark (scale={scale})")
+            selected_agent = DiagnosticHarness(
+                raw_agent,
+                config=HarnessConfig(
+                    impairment_probes=FeatureConfig(enabled=True),
+                    topology_ranker=FeatureConfig(enabled=True),
+                    diagnosability_gate=FeatureConfig(enabled=True),
+                    telemetry=TelemetryConfig(enabled=True),
+                ),
+            )
+        wrap = getattr(getattr(bench, "agents", None), "wrap", None)
+        agent = wrap(selected_agent) if callable(wrap) else selected_agent
+
+        print(f"03 — Scale benchmark (scale={scale}, agent={agent_mode})")
         print_agent_banner("agent", vendor, raw_agent)
         print(f"  scenarios: {len(scenarios)} files")
         for path in scenarios[:5]:
@@ -80,5 +120,34 @@ if __name__ == "__main__":
         default=3,
         help="Number of concurrent runtime worker labs to provision. Default: %(default)s.",
     )
+    parser.add_argument(
+        "--agent",
+        dest="agent_mode",
+        choices=("original", "harness"),
+        default="original",
+        help="Run the original example agent or diagnostic harness. Default: %(default)s.",
+    )
+    parser.add_argument(
+        "--scale-profile",
+        type=Path,
+        default=None,
+        help="Optional validated scale-profile override, for example an isolated management subnet.",
+    )
+    parser.add_argument(
+        "--only-scenarios",
+        nargs="*",
+        default=[],
+        help="Run only these exact generated scenario IDs, preserving the supplied order.",
+    )
     args = parser.parse_args()
-    raise SystemExit(main(repo_root=args.repo_root, scale=args.scale, vendor=args.vendor, workers=args.workers))
+    raise SystemExit(
+        main(
+            repo_root=args.repo_root,
+            scale=args.scale,
+            vendor=args.vendor,
+            workers=args.workers,
+            agent_mode=args.agent_mode,
+            scale_profile=args.scale_profile,
+            only_scenario_ids=tuple(args.only_scenarios),
+        )
+    )

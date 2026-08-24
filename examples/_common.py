@@ -73,7 +73,11 @@ def wait_and_print_run(run: Any, *, raise_on_failure: bool = True) -> int:
     """Wait for a run, print its report, and convert common failures to exit codes."""
     try:
         report = run.wait(raise_on_failure=raise_on_failure)
-        report.pretty_print()
+        try:
+            report.pretty_print(include_evaluator_details=False)
+        except TypeError:
+            # Compatibility with tiny report doubles used by example tests.
+            report.pretty_print()
         return 0
     except RunFailedError as exc:
         print(f"Run failed: {exc}")

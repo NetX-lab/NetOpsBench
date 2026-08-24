@@ -94,13 +94,40 @@ def baseline_gate_errors(observation: dict) -> list[str]:
     return errors
 
 
-def observation_integrity_errors(observation: dict) -> list[str]:
-    """Return data-integrity failures without judging fault anomalies."""
+def observation_integrity_errors(
+    observation: dict,
+    *,
+    allow_fault_local_errors: bool = False,
+) -> list[str]:
+    """Return data-integrity failures without judging fault anomalies.
+
+    Local DF drops and probe errors are valid observations during a positive
+    impairment/link episode.  They remain integrity failures by default (and
+    for healthy baselines), but the incident backend may preserve them as
+    evidence once source coverage and data-source status are otherwise valid.
+    """
     errors: list[str] = []
     if observation.get("data_source_status") != "ok":
         errors.append(f"data={observation.get('data_source_status')}")
-    if observation.get("coverage_status") != "complete":
-        errors.append(f"coverage={observation.get('coverage_status')}")
+    coverage_status = observation.get("coverage_status")
+    if coverage_status != "complete":
+        coverage = (observation.get("pingmesh_metrics") or {}).get("coverage") or {}
+        coverage_complete_enough = (
+            allow_fault_local_errors
+            and coverage.get("status") == "ok"
+            and int(coverage.get("missing_pair_combinations", 0) or 0) == 0
+            and int(coverage.get("missing_source_clients", 0) or 0) == 0
+            and not (coverage.get("missing_port_batches") or [])
+            and not (coverage.get("missing_destination_batches") or [])
+            and int(coverage.get("source_clients_observed", 0) or 0)
+            == int(coverage.get("expected_source_clients", 0) or 0)
+            and int(coverage.get("destination_pairs_observed", 0) or 0)
+            == int(coverage.get("expected_destination_pairs", 0) or 0)
+            and int(coverage.get("pair_port_combinations_observed", 0) or 0)
+            == int(coverage.get("expected_pair_port_combinations", 0) or 0)
+        )
+        if not coverage_complete_enough:
+            errors.append(f"coverage={coverage_status}")
     baseline_coverage = observation.get("_baseline_coverage") or {}
     if baseline_coverage.get("coverage_status") != "complete":
         errors.append(f"baseline_coverage={baseline_coverage.get('coverage_status') or 'missing'}")
@@ -109,12 +136,13 @@ def observation_integrity_errors(observation: dict) -> list[str]:
     quality = report.get("quality") or {}
     if int(quality.get("current_paths_observed", 0) or 0) <= 0:
         errors.append("current_paths_observed=0")
-    local_df_drops = int(quality.get("local_df_mtu_drops", 0) or 0)
-    if local_df_drops:
-        errors.append(f"local_df_mtu_drops={local_df_drops}")
-    local_probe_errors = int(quality.get("local_probe_errors", 0) or 0)
-    if local_probe_errors:
-        errors.append(f"local_probe_errors={local_probe_errors}")
+    if not allow_fault_local_errors:
+        local_df_drops = int(quality.get("local_df_mtu_drops", 0) or 0)
+        if local_df_drops:
+            errors.append(f"local_df_mtu_drops={local_df_drops}")
+        local_probe_errors = int(quality.get("local_probe_errors", 0) or 0)
+        if local_probe_errors:
+            errors.append(f"local_probe_errors={local_probe_errors}")
     return errors
 
 

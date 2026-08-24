@@ -73,7 +73,7 @@ class BenchmarkReport:
             raw=payload.get("raw", {}),
         )
 
-    def pretty_print(self, *, json: bool = False) -> None:
+    def pretty_print(self, *, json: bool = False, include_evaluator_details: bool = True) -> None:
         """Render the report to stdout in a human-readable form.
 
         Sections (in order, skipped when empty):
@@ -93,16 +93,18 @@ class BenchmarkReport:
         header = _format_header(self)
         if header:
             sections.append(header)
-        table = _format_per_case_table(self.detailed_results)
+        table = _format_per_case_table(self.detailed_results, include_evaluator_details=include_evaluator_details)
         if table:
             sections.append(table)
-        summary_block = _format_summary_block(self.summary)
+        summary_block = _format_summary_block(self.summary, include_evaluator_details=include_evaluator_details)
         if summary_block:
             sections.append(summary_block)
         footer = _format_footer(self.artifact_paths)
         if footer:
             sections.append(footer)
-        judgments = _format_fault_type_judgments(self.detailed_results)
+        judgments = (
+            _format_fault_type_judgments(self.detailed_results) if include_evaluator_details else ""
+        )
         if judgments:
             sections.append(judgments)
 
@@ -199,25 +201,21 @@ def _format_header(report: BenchmarkReport) -> str:
     return "\n".join(lines)
 
 
-def _format_per_case_table(detailed: list[dict[str, Any]]) -> str:
+def _format_per_case_table(detailed: list[dict[str, Any]], *, include_evaluator_details: bool = True) -> str:
     if not detailed:
         return ""
     headers = [
         "#",
-        "Scenario",
-        "GT type",
-        "GT dev:if",
         "Pred type",
         "Pred dev:if",
-        "V",
-        "D",
-        "F",
-        "I",
-        "Score",
         "Time",
         "Tools",
     ]
-    aligns = ["<", "<", "<", "<", "<", "<", "<", "<", "<", "<", ">", ">", ">"]
+    if include_evaluator_details:
+        headers[1:1] = ["Scenario", "GT type", "GT dev:if"]
+        headers[4:4] = ["V", "D", "F", "I", "Score"]
+    aligns = ["<"] * len(headers)
+    aligns[-2:] = [">", ">"]
     rows: list[list[str]] = []
     for idx, case in enumerate(detailed, start=1):
         details = case.get("details") or {}
@@ -256,20 +254,25 @@ def _format_per_case_table(detailed: list[dict[str, Any]]) -> str:
         rows.append(
             [
                 str(idx),
+                _truncate(str(pred_type), 22),
+                _truncate(f"{pred_dev}:{pred_if}", 22),
+                _fmt_number(time_taken, ".1f"),
+                _fmt_number(tool_calls, "d"),
+            ]
+        )
+        if include_evaluator_details:
+            rows[-1][1:1] = [
                 _truncate(_short_scenario_id(case.get("scenario_id") or details.get("scenario_id") or ""), 30),
                 _truncate(str(gt.get("fault_type") or "-"), 22),
                 _truncate(f"{gt_dev}:{gt_if}", 22),
-                _truncate(str(pred_type), 22),
-                _truncate(f"{pred_dev}:{pred_if}", 22),
+            ]
+            rows[-1][4:4] = [
                 _flag(case.get("correct_verdict")),
                 _flag(case.get("correct_device")),
                 _flag(case.get("correct_fault_type")),
                 iflag,
                 _fmt_number(score, ".2f"),
-                _fmt_number(time_taken, ".1f"),
-                _fmt_number(tool_calls, "d"),
             ]
-        )
 
     title = f"Per-case Breakdown  ({len(detailed)} cases)"
     legend = "Legend: V=verdict  D=device  F=fault_type  I=interface (Y/N/-)"
@@ -305,11 +308,20 @@ _SUMMARY_LAYOUT: list[tuple[str, str, str]] = [
 ]
 
 
-def _format_summary_block(summary: dict[str, Any]) -> str:
+def _format_summary_block(summary: dict[str, Any], *, include_evaluator_details: bool = True) -> str:
     if not summary:
         return ""
     rows: list[tuple[str, str]] = []
+    evaluator_keys = {
+        "correct_verdict", "correct_device", "correct_fault_type", "correct_interface",
+        "interface_applicable_cases", "detection_accuracy", "detection_precision",
+        "detection_recall", "detection_f1", "detection_macro_f1", "device_accuracy",
+        "fault_type_accuracy", "interface_localization_rate", "device_localization_rate",
+        "localization_composite_score", "overall_accuracy", "average_score",
+    }
     for key, label, spec in _SUMMARY_LAYOUT:
+        if not include_evaluator_details and key in evaluator_keys:
+            continue
         if key not in summary:
             continue
         rows.append((label, _fmt_number(summary.get(key), spec)))

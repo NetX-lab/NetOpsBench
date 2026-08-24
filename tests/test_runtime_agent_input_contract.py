@@ -2,6 +2,7 @@ from netopsbench.platform.incident.context import (
     build_canonical_observation,
     build_public_case_id,
     build_public_symptoms,
+    sanitize_model_visible_payload,
 )
 from netopsbench.sdk import (
     build_canonical_observation as sdk_build_canonical_observation,
@@ -22,7 +23,7 @@ def test_canonical_observation_builders_are_public_sdk_contracts():
 
 def test_canonical_observation_is_compact_non_semantic_and_stable():
     symptoms = {
-        "episode": {"episode_id": "diagnosis"},
+            "episode": {},
         "observations": {"pingmesh_metrics": {"summary": {"total_anomalies": 2}}},
         "pingmesh_query_window": {"start_time": "start", "end_time": "end"},
         "observation_type": "scenario_episode",
@@ -43,7 +44,6 @@ def test_canonical_observation_is_compact_non_semantic_and_stable():
     )
 
     assert observation == {
-        "case_id": "case-deadbeef1234",
         "topology_summary": {
             "family": "clos",
             "spines": 2,
@@ -115,7 +115,7 @@ def test_build_public_symptoms_strips_fault_injection_labels():
     )
 
     episode = payload["episode"]
-    assert episode["episode_id"] == "ep002_fault"
+    assert "episode_id" not in episode
     assert episode["duration_seconds"] == 30
     assert episode["stabilization_time"] == 5
     assert "fault_type" not in episode
@@ -192,3 +192,19 @@ def test_canonical_observation_compacts_without_changing_public_symptoms():
     assert compacted["truncated"] is True
     assert "aggregated_anomalies" not in compacted
     assert len(symptoms["observations"]["pingmesh_metrics"]["anomalies"]) == 20
+
+
+def test_model_visible_values_redact_injection_markers_but_keep_observation():
+    payload = sanitize_model_visible_payload(
+        {
+            "log": "ACL was injected at 2026-08-06T09:58:50Z",
+            "rule": "netopsbench-injected deny 192.0.2.0/30",
+            "detail": "fault injection completed",
+        }
+    )
+    serialized = str(payload).lower()
+    assert "injected at" not in serialized
+    assert "netopsbench-injected" not in serialized
+    assert "fault injection" not in serialized
+    assert "acl was observed at" in serialized
+    assert "deny 192.0.2.0/30" in serialized

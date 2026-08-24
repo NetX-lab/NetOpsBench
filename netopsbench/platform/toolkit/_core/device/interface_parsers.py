@@ -43,7 +43,10 @@ def parse_ip_link_stats(text: str) -> list[dict[str, Any]]:
         if not match:
             i += 1
             continue
-        name = match.group(1)
+        # Linux renders veth names as ``eth1@if123``.  ``@if123`` is a
+        # transient peer index, not part of the interface identity exposed by
+        # the topology or evaluator.
+        name = match.group(1).split("@", 1)[0]
         entry: dict[str, Any] = {"name": name}
         mtu_match = re.search(r"\bmtu\s+(\d+)", line)
         if mtu_match:

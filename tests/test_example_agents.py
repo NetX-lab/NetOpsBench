@@ -20,11 +20,22 @@ for _mod in [
 ]:
     sys.modules.setdefault(_mod, MagicMock())
 
+from langchain.agents.middleware import ToolCallLimitMiddleware  # noqa: E402
+from langchain_core.messages import ToolMessage  # noqa: E402
+
 from examples.agents import MinimalDeepAgent  # noqa: E402
+from examples.agents.minimal_deepagent.prompts import DEFAULT_SYSTEM_PROMPT  # noqa: E402
 from examples.agents.minimal_deepagent.providers import get_provider  # noqa: E402
+from examples.agents.minimal_deepagent.providers.runtime import SchemaErrorDedupMiddleware  # noqa: E402
 from netopsbench.agents.base import DiagnosticContext  # noqa: E402
 from netopsbench.agents.tracing import AgentTraceRecorder  # noqa: E402
 from netopsbench.sdk.agents import DiagnosisResult  # noqa: E402
+
+
+def test_default_prompt_keeps_blackhole_and_static_route_canonical_labels_distinct():
+    assert "canonical fault_type='blackhole_route'" in DEFAULT_SYSTEM_PROMPT
+    assert "Reserve canonical fault_type='static_route_misconfig'" in DEFAULT_SYSTEM_PROMPT
+    assert "missing or blackhole static route" not in DEFAULT_SYSTEM_PROMPT
 
 
 class _FakeRuntime:
@@ -91,7 +102,14 @@ def _patch_agent_deps(monkeypatch, fake_graph):
     monkeypatch.setattr(agent_mod, "_connect_mcp_tools", _fake_connect_mcp_tools)
     monkeypatch.setattr(provider_runtime, "_connect_mcp_tools", _fake_connect_mcp_tools)
     monkeypatch.setattr(agent_mod, "FilesystemBackend", lambda **kw: None)
-    monkeypatch.setattr(agent_mod, "create_deep_agent", lambda **kw: fake_graph)
+    captured = {}
+
+    def _fake_create_deep_agent(**kwargs):
+        captured.update(kwargs)
+        return fake_graph
+
+    monkeypatch.setattr(agent_mod, "create_deep_agent", _fake_create_deep_agent)
+    return captured
 
 
 def _diagnosis_json_message(payload=None, **message_kwargs):
@@ -107,6 +125,67 @@ def _diagnosis_json_message(payload=None, **message_kwargs):
         structured.update(payload)
     content = "```json\n" + json.dumps(structured) + "\n```"
     return SimpleNamespace(type="ai", content=content, **message_kwargs)
+
+
+def test_schema_error_action_signature_executes_only_once():
+    middleware = SchemaErrorDedupMiddleware()
+    request = SimpleNamespace(
+        tool_call={
+            "id": "call-1",
+            "name": "get_interface_metrics",
+            "args": {
+                "device": "leaf1",
+                "interface": "Ethernet0",
+                "start_time": "2026-08-02T00:00:00Z",
+                "end_time": "2026-08-02T00:01:00Z",
+            },
+        }
+    )
+    executions = 0
+
+    async def handler(_request):
+        nonlocal executions
+        executions += 1
+        return ToolMessage(
+            content="Unexpected keyword argument: start_time",
+            tool_call_id="call-1",
+            name="get_interface_metrics",
+            status="error",
+        )
+
+    first = asyncio.run(middleware.awrap_tool_call(request, handler))
+    request.tool_call["id"] = "call-2"
+    second = asyncio.run(middleware.awrap_tool_call(request, handler))
+
+    assert first.status == "error"
+    assert second.status == "error"
+    assert "Duplicate invalid tool call blocked" in second.content
+    assert executions == 1
+
+
+def test_tool_call_limit_middleware_uses_configured_run_budget():
+    middleware = ToolCallLimitMiddleware(run_limit=40, exit_behavior="continue")
+
+    assert middleware.run_limit == 40
+    assert middleware.exit_behavior == "continue"
+
+
+def test_minimal_agent_installs_real_tool_call_budget(monkeypatch):
+    fake_graph = _FakeRuntime({"messages": [_diagnosis_json_message()]})
+    captured = _patch_agent_deps(monkeypatch, fake_graph)
+    agent = MinimalDeepAgent(api_key="test-key", max_tool_calls=7)
+    context = DiagnosticContext(
+        scenario_id="budget-contract",
+        topology={"devices": {}, "links": []},
+        symptoms={"observations": {}},
+        metadata={"worker_env": {}},
+    )
+
+    asyncio.run(agent.diagnose(context))
+
+    limiter = next(item for item in captured["middleware"] if isinstance(item, ToolCallLimitMiddleware))
+    assert limiter.run_limit == 7
+    assert limiter.exit_behavior == "continue"
 
 
 def test_minimal_deepagent_diagnose_returns_public_diagnosis_result(tmp_path, monkeypatch):
@@ -211,10 +290,11 @@ def test_minimal_deepagent_openai_uses_official_base_url(monkeypatch):
     assert agent.base_url == "https://api.openai.com/v1"
 
 
-def test_openai_provider_uses_standard_openai_kwargs():
+def test_openai_provider_uses_standard_openai_kwargs(monkeypatch):
     from examples.agents.minimal_deepagent.providers import openai as openai_provider
 
-    openai_provider.ChatOpenAI.reset_mock()
+    chat_openai = MagicMock()
+    monkeypatch.setattr(openai_provider, "ChatOpenAI", chat_openai)
 
     openai_provider.build_llm(
         model="gpt-5.5",
@@ -225,7 +305,7 @@ def test_openai_provider_uses_standard_openai_kwargs():
         timeout_seconds=60,
     )
 
-    _, kwargs = openai_provider.ChatOpenAI.call_args
+    _, kwargs = chat_openai.call_args
     assert kwargs["base_url"] == "https://api.openai.com/v1"
     assert kwargs["temperature"] == 0.1
 
@@ -416,6 +496,7 @@ def test_minimal_deepagent_preserves_runtime_usage_on_agent_error(monkeypatch):
     assert result.success is False
     assert result.verdict == "inconclusive"
     assert result.metadata["error_type"] == "RuntimeError"
+    assert result.metadata["agent_failure_stage"] == "diagnose"
     assert recorder.metrics()["input_tokens"] == 17
     assert recorder.metrics()["output_tokens"] == 6
     assert recorder.metrics()["total_tokens"] == 23
@@ -424,6 +505,23 @@ def test_minimal_deepagent_preserves_runtime_usage_on_agent_error(monkeypatch):
         "get_pingmesh_hotspots",
         "get_device_interfaces",
     ]
+
+
+def test_minimal_deepagent_classifies_recursion_without_claiming_mcp_failure(monkeypatch):
+    fake_graph = _FailingRuntime(RuntimeError("Graph recursion limit reached before a stop condition"))
+    agent = MinimalDeepAgent(
+        api_key="test-key",
+        mcp_server_config={"netopsbench": {"transport": "stdio"}},
+    )
+    _patch_agent_deps(monkeypatch, fake_graph)
+
+    context = DiagnosticContext(scenario_id="scenario-recursion", topology={"devices": {}}, symptoms={})
+    result = asyncio.run(agent.diagnose(context))
+
+    assert result.success is False
+    assert result.metadata["agent_failure_stage"] == "recursion"
+    assert result.metadata["mcp_lifecycle"]["infrastructure_degraded"] is False
+    assert result.metadata["mcp_lifecycle"]["metrics"]["mcp_midcase_disconnects"] == 0
 
 
 def test_minimal_deepagent_aclose_is_safe_without_persistent_runtime():

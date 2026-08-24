@@ -18,7 +18,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "If evidence is insufficient, return verdict='inconclusive' with an empty location. "
     "Prefer Pingmesh and topology tools first, then validate with interface, routing, and log evidence. "
     "Be efficient: avoid redundant tool calls and do not repeat the same query. "
+    "Never repeat an action signature that returned a schema error. "
+    "get_interface_metrics accepts rolling time_range_minutes, not start_time/end_time. "
     "You have a limited tool-call budget — focus on the most informative tools first. "
+    "Once route/RIB evidence directly identifies a selected Null0, discard, or blackhole route, stop and return "
+    "canonical fault_type='blackhole_route'. Reserve canonical fault_type='static_route_misconfig' for a "
+    "non-discard static route whose configured next hop or selected egress is incorrect or unresolved. "
+    "Once established BGP sessions plus config evidence identify "
+    "a missing network statement, route-map, or prefix filter, stop and return "
+    "canonical fault_type='route_policy_misconfig'. "
     "When your investigation is complete, return a final answer containing one fenced JSON block that matches "
     "the DiagnosisOutput schema."
 )
@@ -33,6 +41,8 @@ def build_user_prompt(context: Any) -> str:
             topology=dict(getattr(context, "topology", {}) or {}),
             symptoms=dict(getattr(context, "symptoms", {}) or {}),
         )
+    topology = observation.get("topology") if isinstance(observation.get("topology"), dict) else {}
+    family = str(topology.get("family") or topology.get("topology_family") or "inventory-defined")
     return (
         "Diagnose the current network state and return the final structured diagnosis.\n\n"
         f"CANONICAL_OBSERVATION: {json.dumps(observation, ensure_ascii=False, sort_keys=True)}\n\n"
@@ -48,13 +58,17 @@ def build_user_prompt(context: Any) -> str:
         "8) When done, include exactly one fenced ```json block with fields: "
         "verdict, fault_type, location, evidence, confidence, reasoning.\n"
         "9) The JSON verdict MUST be exactly one of fault_detected, network_healthy, or inconclusive.\n"
-        "10) The JSON location MUST be an object, never a string: "
-        '{"device": "leaf1", "interface": "Ethernet8"}. '
+        f"10) This inventory uses topology family '{family}'. Use the actual device names and roles in the "
+        "inventory: leaf/spine and edge/aggregation/core are different fabric families. Pingmesh fields "
+        "src_leaf/dst_leaf are legacy names for the client attachment switch and may therefore contain an "
+        "edge device. Do not invent or translate role names.\n"
+        "11) The JSON location MUST be an object, never a string, and the device must come from inventory: "
+        '{"device": "edge1", "interface": "Ethernet8"}. '
         'Use {"device": null, "interface": null} when location is unknown or not applicable.\n'
-        "11) Final JSON shape example:\n"
+        "12) Final JSON shape example (replace the device with a real inventory device):\n"
         "```json\n"
         '{"verdict":"fault_detected","fault_type":"link_down",'
-        '"location":{"device":"leaf1","interface":"Ethernet8"},'
+        '"location":{"device":"edge1","interface":"Ethernet8"},'
         '"evidence":["brief tool-backed fact"],"confidence":0.8,'
         '"reasoning":"short evidence-based summary"}\n'
         "```\n"

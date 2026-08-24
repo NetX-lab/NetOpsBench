@@ -403,8 +403,7 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert run.status == "completed"
     assert agent.context is not None
     assert not hasattr(agent.context, "ground_truth")
-    assert agent.context.scenario_id.startswith("case-")
-    assert "link_down" not in agent.context.scenario_id
+    assert agent.context.scenario_id == "blind-context"
 
     episode_payload = (agent.context.symptoms or {}).get("episode") or {}
     assert "fault_type" not in episode_payload
@@ -412,7 +411,7 @@ def test_runtime_agent_context_is_sanitized_and_no_ground_truth_leak(tmp_path, m
     assert "target_interface" not in episode_payload
     assert (agent.context.symptoms or {}).get("observations") is not None
     canonical = agent.context.metadata["canonical_observation"]
-    assert canonical["case_id"] == agent.context.scenario_id
+    assert "case_id" not in canonical
     assert set(canonical["symptoms"]) == {"episode", "observations", "pingmesh_query_window"}
     assert canonical["symptoms"]["episode"] == agent.context.symptoms["episode"]
     assert canonical["symptoms"]["pingmesh_query_window"] == agent.context.symptoms["pingmesh_query_window"]
@@ -519,7 +518,7 @@ def test_runtime_agent_failure_trace_is_linked_from_results_sidecar(tmp_path, mo
     assert diagnosis["success"] is False
     assert diagnosis["error"] == "agent exploded"
     assert diagnosis["trace"]["trace_id"]
-    assert diagnosis["trace"]["case_id"].startswith("case-")
+    assert diagnosis["trace"]["case_id"].startswith("corr-")
 
     result_rows = [
         json.loads(line)
@@ -801,7 +800,7 @@ def test_run_scenario_does_not_leak_fault_ground_truth_into_agent_context(tmp_pa
     assert len(agent.contexts) == 1
     context = agent.contexts[0]
     episode = dict(context.symptoms.get("episode") or {})
-    assert episode.get("episode_id") == "ep1"
+    assert "episode_id" not in episode
     assert "description" not in episode
     assert "fault_type" not in episode
     assert "target_device" not in episode

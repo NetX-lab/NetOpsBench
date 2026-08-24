@@ -30,13 +30,16 @@ Dependencies (install with ``pip install deepagents langchain-openai langchain-m
 
 from __future__ import annotations
 
+import inspect
 import os
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langchain.agents.middleware import ToolCallLimitMiddleware
 
 from netopsbench.agents.base import DiagnosticContext
 from netopsbench.sdk.agents import DiagnosisResult
@@ -49,7 +52,7 @@ from .providers.results import (
     _error_result,
     _parse_raw_result,
 )
-from .providers.runtime import _connect_mcp_tools
+from .providers.runtime import MCPLifecycleTrace, SchemaErrorDedupMiddleware, _connect_mcp_tools
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_MAX_TOOL_CALLS = 40
@@ -116,13 +119,25 @@ class MinimalDeepAgent:
         worker_env = context.metadata.get("worker_env") if context.metadata else None
         server_config = self.mcp_server_config or builtin_mcp_server_config(workspace=repo_root, env=worker_env)
         exit_stack = AsyncExitStack()
+        mcp_lifecycle = MCPLifecycleTrace(case_id=context.scenario_id)
         trace_callback = _langchain_trace_callback(context)
         tool_calls: list[dict[str, Any]] = []
         token_counts: dict[str, int] = {}
+        result: DiagnosisResult
 
         try:
             await exit_stack.__aenter__()
-            mcp_tools = await _connect_mcp_tools(exit_stack, server_config)
+            connector_parameters = inspect.signature(_connect_mcp_tools).parameters
+            if "lifecycle" in connector_parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in connector_parameters.values()
+            ):
+                mcp_tools = await _connect_mcp_tools(
+                    exit_stack,
+                    server_config,
+                    lifecycle=mcp_lifecycle,
+                )
+            else:  # Compatibility with small public-example test doubles.
+                mcp_tools = await _connect_mcp_tools(exit_stack, server_config)
 
             llm = self._provider.build_llm(
                 model=self.model,
@@ -138,6 +153,10 @@ class MinimalDeepAgent:
                 model=llm,
                 tools=mcp_tools,
                 system_prompt=self.system_prompt,
+                middleware=[
+                    SchemaErrorDedupMiddleware(),
+                    ToolCallLimitMiddleware(run_limit=self.max_tool_calls, exit_behavior="continue"),
+                ],
                 skills=["/skills/"] if skills_root.is_dir() else [],
                 backend=FilesystemBackend(root_dir=_PACKAGE_ROOT, virtual_mode=True),
             )
@@ -154,7 +173,7 @@ class MinimalDeepAgent:
             if not structured:
                 raise ValueError("DiagnosisOutput JSON block missing or invalid in runtime result")
 
-            return _build_diagnosis_result(
+            result = _build_diagnosis_result(
                 self.name,
                 self.vendor,
                 self.model,
@@ -163,7 +182,7 @@ class MinimalDeepAgent:
                 token_counts=token_counts,
             )
         except Exception as exc:
-            return _error_result(
+            result = _error_result(
                 self.name,
                 self.vendor,
                 self.model,
@@ -173,6 +192,26 @@ class MinimalDeepAgent:
             )
         finally:
             await exit_stack.aclose()
+            mcp_lifecycle.finalize()
+
+        metadata = dict(result.metadata)
+        metadata["mcp_lifecycle"] = mcp_lifecycle.as_dict()
+        if mcp_lifecycle.infrastructure_degraded:
+            metadata["infrastructure_degraded"] = True
+        if mcp_lifecycle.recovery_exhausted:
+            metadata["agent_failure_stage"] = mcp_lifecycle.failure_stage or "mcp_transport"
+        elif not result.success:
+            error_type = str(metadata.get("error_type") or "").lower()
+            reasoning = str(result.reasoning or "").lower()
+            if "recursion" in error_type or "recursion limit" in reasoning:
+                metadata["agent_failure_stage"] = "recursion"
+            elif error_type in {"mcperror", "mcpinfrastructureerror"}:
+                metadata["agent_failure_stage"] = "mcp_transport"
+            elif "schema" in error_type or "json block missing" in reasoning:
+                metadata["agent_failure_stage"] = "result_schema"
+            else:
+                metadata["agent_failure_stage"] = "diagnose"
+        return replace(result, metadata=metadata)
 
     async def aclose(self) -> None:
         return None

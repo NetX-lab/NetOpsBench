@@ -1,0 +1,71 @@
+[
+  {
+    "name": "bgp-config-correct",
+    "result": {"verdict": "fault_detected", "fault_type": "bgp_neighbor_misconfig", "device": "leaf1", "interface": null, "confidence": 0.94, "evidence": ["Neighbor state is Active and configured peer address differs from inventory."]},
+    "expected_fault_type": "bgp_neighbor_misconfig"
+  },
+  {
+    "name": "blackhole-correct",
+    "result": {"verdict": "fault_detected", "fault_type": "blackhole_route", "device": "leaf1", "interface": null, "confidence": 0.95, "evidence": ["A discard route is installed for the affected prefix."]},
+    "expected_fault_type": "blackhole_route"
+  },
+  {
+    "name": "device-down-correct",
+    "result": {"verdict": "fault_detected", "fault_type": "device_down", "device": "leaf1", "interface": null, "confidence": 0.98, "evidence": ["The device is unreachable while peers remain reachable."]},
+    "expected_fault_type": "device_down"
+  },
+  {
+    "name": "healthy-correct-1",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.96, "evidence": ["Connectivity, BGP, routes, and interfaces are healthy."]},
+    "expected_fault_type": null
+  },
+  {
+    "name": "healthy-correct-2",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.95, "evidence": ["No persistent loss, latency, routing, or interface anomaly is present."]},
+    "expected_fault_type": null
+  },
+  {
+    "name": "healthy-correct-3",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.94, "evidence": ["All observed paths and control checks remain within healthy bounds."]},
+    "expected_fault_type": null
+  },
+  {
+    "name": "healthy-correct-4",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.93, "evidence": ["Inventory and bounded telemetry contain no fault evidence."]},
+    "expected_fault_type": null
+  },
+  {
+    "name": "static-route-correct",
+    "result": {"verdict": "fault_detected", "fault_type": "static_route_misconfig", "device": "leaf1", "interface": null, "confidence": 0.93, "evidence": ["The static next hop differs from the reachable inventory path."]},
+    "expected_fault_type": "static_route_misconfig"
+  },
+  {
+    "name": "link-flapping-alias",
+    "result": {"verdict": "fault_detected", "fault_type": "link_flap", "device": "leaf5", "interface": "eth2", "confidence": 0.92, "evidence": ["Oper state changes and correlated loss are isolated to leaf5 eth2."]},
+    "expected_fault_type": "link_flapping",
+    "expected_interface": "Ethernet4"
+  },
+  {
+    "name": "route-policy-semantic-conflict",
+    "result": {"verdict": "fault_detected", "fault_type": "bgp_neighbor_misconfig", "device": "leaf1", "interface": null, "confidence": 0.90, "evidence": ["All BGP sessions are Established; the prefix is absent because its network statement or route policy is missing."]},
+    "expected_fault_type": "bgp_neighbor_misconfig"
+  },
+  {
+    "name": "packet-loss-missed",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.86, "evidence": ["Interfaces and routes are up despite sparse Pingmesh loss."]},
+    "expected_fault_type": null,
+    "structured_evidence": [{"category": "packet_loss_rate", "value": 0.14, "source": "pingmesh"}]
+  },
+  {
+    "name": "mtu-device-only",
+    "result": {"verdict": "fault_detected", "fault_type": "mtu_mismatch", "device": "leaf5", "interface": null, "confidence": 0.72, "evidence": ["Large DF probes fail while small probes pass."]},
+    "expected_fault_type": "mtu_mismatch",
+    "structured_evidence": [{"category": "packet_size_threshold", "value": 1400, "source": "ping_test"}]
+  },
+  {
+    "name": "high-latency-missed",
+    "result": {"verdict": "network_healthy", "fault_type": null, "device": null, "interface": null, "confidence": 0.82, "evidence": ["Interfaces are up and routes exist, but one path has elevated RTT."]},
+    "expected_fault_type": null,
+    "structured_evidence": [{"category": "latency_p95", "value": 48.0, "source": "pingmesh"}]
+  }
+]

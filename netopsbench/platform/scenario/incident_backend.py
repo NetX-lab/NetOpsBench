@@ -7,7 +7,6 @@ from typing import Any
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.incident.context import (
     build_canonical_observation,
-    build_public_case_id,
     build_public_symptoms,
     build_topology_snapshot,
     extract_episode_pingmesh_query_window,
@@ -85,7 +84,13 @@ class ExecutorIncidentBackend:
             scenario.episode,
             baseline_window=self.baseline_window,
         )
-        integrity_errors = observation_integrity_errors(self.episode_result.get("observations") or {})
+        integrity_errors = observation_integrity_errors(
+            self.episode_result.get("observations") or {},
+            # Positive fault episodes may legitimately contain local probe
+            # errors/DF drops; preserve those as observations instead of
+            # aborting the episode. Healthy baselines still require zero.
+            allow_fault_local_errors=self.scenario.episode.fault_type != "none",
+        )
         if integrity_errors:
             raise RuntimeError("Incident observation is incomplete: " + "; ".join(integrity_errors))
         self.toolkit = AgentToolkit(
@@ -105,12 +110,10 @@ class ExecutorIncidentBackend:
             pingmesh_query_window=self.pingmesh_query_window,
         )
         return build_canonical_observation(
-            case_id=build_public_case_id(
-                scenario_id=scenario.id,
-                episode_result=self.episode_result,
-            ),
+            case_id=None,
             topology=self.topology,
             symptoms=self.symptoms,
+            include_case_id=False,
         )
 
     def call_tool(self, action: ToolAction) -> dict[str, Any]:

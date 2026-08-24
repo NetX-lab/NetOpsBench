@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,9 @@ from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.incident.context import (
+    assert_model_visible_payload,
     extract_episode_pingmesh_query_window,
+    sanitize_model_visible_payload,
 )
 from netopsbench.platform.incident.engine import DiagnosticSession, SessionToolGateway
 from netopsbench.platform.session.trace_store import TraceWriter
@@ -73,15 +76,18 @@ def build_runtime_diagnosis_callback(
         context_payload = {"start_time": window_start, "end_time": window_end} if window_start and window_end else {}
         atomic_write_json(context_file, context_payload)
 
-        case_id = str(diagnostic_payload["case_id"])
-        topology = diagnostic_payload["topology"]
-        symptoms = diagnostic_payload["symptoms"]
-        canonical_observation = diagnostic_payload["canonical_observation"]
+        topology = sanitize_model_visible_payload(diagnostic_payload["topology"])
+        symptoms = sanitize_model_visible_payload(diagnostic_payload["symptoms"])
+        canonical_observation = sanitize_model_visible_payload(diagnostic_payload["canonical_observation"])
+        correlation_id = f"corr-{uuid.uuid4().hex}"
+        assert_model_visible_payload(topology)
+        assert_model_visible_payload(symptoms)
+        assert_model_visible_payload(canonical_observation)
         metadata: dict[str, Any] = {"canonical_observation": canonical_observation}
         if worker_env:
             metadata["worker_env"] = worker_env
         context = DiagnosticContext(
-            scenario_id=case_id,
+            scenario_id="blind-context",
             topology=topology,
             symptoms=symptoms,
             tools=SessionToolGateway(diagnostic_session),
@@ -102,7 +108,7 @@ def build_runtime_diagnosis_callback(
             if trace_writer is not None:
                 try:
                     trace_result = trace_writer.write_case_trace(
-                        case_id=context.scenario_id,
+                        case_id=correlation_id,
                         scenario_id=scenario_id,
                         episode_result=episode_result,
                         worker=worker_name or "worker",
@@ -167,7 +173,7 @@ def build_runtime_diagnosis_callback(
         if trace_writer is not None:
             try:
                 trace_result = trace_writer.write_case_trace(
-                    case_id=context.scenario_id,
+                    case_id=correlation_id,
                     scenario_id=scenario_id,
                     episode_result=episode_result,
                     worker=worker_name or "worker",

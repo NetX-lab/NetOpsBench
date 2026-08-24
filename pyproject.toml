@@ -41,6 +41,7 @@ netopsbench-simulator = "netopsbench.sdk.simulator_service:main"
 [project.optional-dependencies]
 agent = [
     "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
     "deepagents>=0.0.12",
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",

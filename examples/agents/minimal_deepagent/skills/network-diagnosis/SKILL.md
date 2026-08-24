@@ -33,14 +33,15 @@ When low-rate Pingmesh anomalies are not persistent, current probes succeed, int
 healthy, routes are installed, and BGP is established, return `network_healthy`. Do not keep
 expanding the search solely to explain isolated loss or jitter samples.
 
-For a symmetric Pingmesh leaf pair, do not infer the faulty side from probe direction alone: an echoed reply can
-cross a discard route in either direction. Inspect the exact affected client IP on both attached switches with
+Treat Pingmesh `src_leaf`/`dst_leaf` as legacy names for client attachment switches; they may be CLOS leaves or
+fat-tree edges. For a symmetric attachment pair, do not infer the faulty side from probe direction alone: an echoed
+reply can cross a discard route in either direction. Inspect the exact affected client IP on both attachment switches with
 `get_route_table`; prefer structured `is_discard`/`discard_interface` evidence over interpreting the route legend.
 When the selected route is a discard/Null0 route, report the canonical label `blackhole_route`. Reserve
 `static_route_misconfig` for a non-discard static route whose selected next hop or egress path is incorrect.
 An exact client route is sufficient to close a route diagnosis when one endpoint selects that static route, the
 other endpoint has no matching static override, and BGP remains established. Return the diagnosis at that point;
-do not fan out into aggregation switches, broad route-table dumps, logs, ACLs, or traceroute unless the exact route
+do not fan out into transit switches, broad route-table dumps, logs, ACLs, or traceroute unless the exact route
 evidence is missing or contradictory.
 
 ## Output guidance

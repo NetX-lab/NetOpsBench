@@ -4,16 +4,54 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from typing import Any
 
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 _EPISODE_ALLOWED_KEYS = {
-    "episode_id",
     "duration_seconds",
     "stabilization_time",
 }
 _MAX_CANONICAL_ANOMALIES = 12
+_MODEL_FORBIDDEN_KEYS = frozenset(
+    {
+        "case_id",
+        "scenario_id",
+        "scenario",
+        "scenario_filename",
+        "expected",
+        "expected_result",
+        "ground_truth",
+        "fault_type",
+        "target_device",
+        "target_interface",
+        "target_prefix",
+        "injection",
+        "evaluation_result",
+        "testcase_id",
+        "episode_id",
+        "match",
+        "correct_verdict",
+        "correct_device",
+        "correct_interface",
+        "correct_fault_type",
+    }
+)
+
+# Scenario execution must retain injection metadata internally for rollback and
+# evaluator scoring, but operator-visible tool output must not announce that a
+# fault was injected.  These markers were present in v2 device-log payloads and
+# made the exploratory comparison non-blind.  Redact only the marker phrase;
+# preserve the surrounding operational observation.
+_MODEL_FORBIDDEN_VALUE_PATTERNS = (
+    (re.compile(r"(?i)\bnetopsbench[-_ ]+injected\b"), "configured"),
+    (re.compile(r"(?i)\binjected\s+at\b"), "observed at"),
+    (re.compile(r"(?i)\bfault\s+injection\b"), "fault operation"),
+    (re.compile(r"(?i)\bcontainer\s+[^\s]+\s+is\s+not\s+running\b"), "endpoint unavailable"),
+    (re.compile(r"(?i)\bcontainer\s+[^\s]+\s+not\s+found\b"), "endpoint unavailable"),
+    (re.compile(r"(?i)\bdocker\s+exec\b[^\n]*"), "endpoint operation unavailable"),
+)
 
 
 def build_topology_snapshot(toolkit: AgentToolkit) -> dict:
@@ -122,9 +160,10 @@ def build_public_symptoms(*, episode_result: dict[str, Any], pingmesh_query_wind
 
 def build_canonical_observation(
     *,
-    case_id: str,
+    case_id: str | None = None,
     topology: dict[str, Any],
     symptoms: dict[str, Any],
+    include_case_id: bool = False,
 ) -> dict[str, Any]:
     """Build the shared model-visible observation for benchmark and simulator agents."""
     devices = topology.get("devices", {}) if isinstance(topology, dict) else {}
@@ -144,8 +183,7 @@ def build_canonical_observation(
         "observations": _compact_model_observations(source_symptoms.get("observations", {})),
         "pingmesh_query_window": copy.deepcopy(source_symptoms.get("pingmesh_query_window", {})),
     }
-    return {
-        "case_id": case_id,
+    observation = {
         "topology_summary": {
             "family": str(family),
             "spines": 0 if is_fat_tree else count("spines"),
@@ -158,6 +196,48 @@ def build_canonical_observation(
         },
         "symptoms": canonical_symptoms,
     }
+    if include_case_id and case_id:
+        observation["case_id"] = str(case_id)
+    if not include_case_id:
+        assert_model_visible_payload(observation)
+    return observation
+
+
+def assert_model_visible_payload(payload: Any) -> None:
+    """Reject evaluator/scenario-control fields from model-visible payloads."""
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if str(key).strip().lower() in _MODEL_FORBIDDEN_KEYS:
+                    raise ValueError(f"model-visible payload contains forbidden field at {path}.{key}")
+                walk(child, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]")
+
+    walk(payload, "$")
+
+
+def sanitize_model_visible_payload(payload: Any) -> Any:
+    """Return a deep copy with evaluator/scenario-control fields removed."""
+
+    if isinstance(payload, dict):
+        return {
+            str(key): sanitize_model_visible_payload(value)
+            for key, value in payload.items()
+            if str(key).strip().lower() not in _MODEL_FORBIDDEN_KEYS
+        }
+    if isinstance(payload, list):
+        return [sanitize_model_visible_payload(value) for value in payload]
+    if isinstance(payload, tuple):
+        return tuple(sanitize_model_visible_payload(value) for value in payload)
+    if isinstance(payload, str):
+        value = payload
+        for pattern, replacement in _MODEL_FORBIDDEN_VALUE_PATTERNS:
+            value = pattern.sub(replacement, value)
+        return value
+    return payload
 
 
 __all__ = [
@@ -165,4 +245,6 @@ __all__ = [
     "build_public_case_id",
     "build_public_symptoms",
     "build_topology_snapshot",
+    "assert_model_visible_payload",
+    "sanitize_model_visible_payload",
 ]

@@ -85,9 +85,6 @@ def build_atif_payload(trace: dict[str, Any]) -> dict[str, Any]:
         "final_metrics": _atif_final_metrics(trace),
         "extra": {
             "framework": "netopsbench",
-            "case_id": trace.get("case_id"),
-            "scenario_id": trace.get("scenario_id"),
-            "episode_id": trace.get("episode_id"),
             "runtime_id": trace.get("runtime_id"),
             "worker": trace.get("worker"),
             "pingmesh_window": trace.get("pingmesh_window") or {},
@@ -310,7 +307,6 @@ def _context_steps(diagnostic_context: Any) -> list[dict[str, Any]]:
     if diagnostic_context is None:
         return []
     payload = {
-        "scenario_id": getattr(diagnostic_context, "scenario_id", None),
         "topology": getattr(diagnostic_context, "topology", None),
         "symptoms": getattr(diagnostic_context, "symptoms", None),
     }

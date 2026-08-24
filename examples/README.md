@@ -19,7 +19,7 @@ added the repository root to Python's import path.
 |--------|---------------|
 | `01_run_scenario.py` | Run one generated scenario with automatic provision + teardown |
 | `02_run_suite.py` | Run a small fixed suite across worker labs |
-| `03_run_scale_benchmark.py` | Run every generated scenario for one scale; supports `--scale`, `--vendor`, `--workers`, and `--repo-root` |
+| `03_run_scale_benchmark.py` | Run every generated scenario for one scale; supports original/harness selection and isolated scale profiles |
 
 ## Advanced workflows
 

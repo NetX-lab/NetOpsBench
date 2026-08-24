@@ -9,6 +9,8 @@ from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.observability.bgp_parser import parse_bgp_summary
 from netopsbench.platform.observability.influxdb import FluxQueryResult
 from netopsbench.platform.scenario import generator as _generate_scenarios_mod
+from netopsbench.platform.toolkit._core.device.connectivity_ops import ConnectivityOpsMixin
+from netopsbench.platform.toolkit._core.device.interface_parsers import parse_ip_link_stats
 from netopsbench.platform.toolkit._core.device.route_parsers import parse_route_table
 from netopsbench.platform.toolkit._core.device.telemetry_parsers import (
     parse_influx_metric_rows,
@@ -25,6 +27,51 @@ from netopsbench.platform.utils.interface_names import resolve_interface_metric_
 def _metadata() -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
         return generate_topology("xs", tmpdir)["metadata"]
+
+
+def test_parse_ip_link_stats_removes_transient_veth_peer_suffix():
+    parsed = parse_ip_link_stats("2: eth1@if123: <BROADCAST,MULTICAST,UP> mtu 1500 state UP\n")
+
+    assert parsed == [{"name": "eth1", "mtu": 1500}]
+
+
+def test_one_way_latency_capture_matches_icmp_sequences():
+    output = """\
+1723456789.100000 IP 10.0.0.1 > 10.0.0.2: ICMP echo request, id 4, seq 1, length 64
+1723456789.250000 IP 10.0.0.1 > 10.0.0.2: ICMP echo request, id 4, icmp_seq=2, length 64
+"""
+
+    assert ConnectivityOpsMixin._icmp_capture_timestamps(output) == {
+        (4, 1): 1723456789.1,
+        (4, 2): 1723456789.25,
+    }
+
+
+def test_latency_link_test_uses_addressed_l3_source(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+
+    def fake_docker_exec(container, cmd, timeout):
+        if cmd[0] == "ip":
+            address = "10.1.1.1" if container.endswith("spine1") else "10.1.1.2"
+            return subprocess.CompletedProcess(cmd, 0, f"1: Ethernet0 inet {address}/31 scope global\n", "")
+        if "tcpdump" in cmd:
+            source = cmd[cmd.index("src") + 2]
+            target = cmd[cmd.index("dst") + 2]
+            source_side = container.endswith("spine1") if source == "10.1.1.1" else container.endswith("leaf1")
+            timestamp = 1723456789.1 + (0 if source_side else 0.12)
+            output = (
+                f"{timestamp:.6f} eth0 Out IP (proto ICMP (1), length 84)\n"
+                f"    {source} > {target}: ICMP echo request, id 7, seq 1, length 64\n"
+            )
+            return subprocess.CompletedProcess(cmd, 0, output, "")
+        return subprocess.CompletedProcess(cmd, 0, "1 packets transmitted, 1 received, 0% packet loss\n", "")
+
+    monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
+
+    result = toolkit.latency_link_test("spine1", "Ethernet0", "leaf1", "Ethernet0", count=3)
+
+    assert result.success is True
+    assert result.data["directions"][0]["median_ms"] == pytest.approx(120.0, abs=0.001)
 
 
 def test_parse_route_table_brief_output():
@@ -78,6 +125,28 @@ Routing entry for 192.168.102.0/30
             "discard_interface": None,
         }
     ]
+
+
+def test_parse_route_table_accepts_lowercase_frr_status_flags():
+    routes = parse_route_table("S>q 192.168.109.0/30 [1/0] via 192.168.115.2, Ethernet16, weight 1\n")
+
+    assert routes[0]["protocol"] == "static"
+    assert routes[0]["selected"] is True
+    assert routes[0]["nexthops"] == [{"via": "192.168.115.2", "interface": "Ethernet16"}]
+
+
+def test_parse_route_table_detailed_static_route_uses_active_nexthop_as_selected():
+    routes = parse_route_table(
+        """
+Routing entry for 192.168.109.0/30
+  Known via "static", distance 1, metric 0
+  * 192.168.115.2, via Ethernet16, weight 1
+"""
+    )
+
+    assert routes[0]["protocol"] == "static"
+    assert routes[0]["selected"] is True
+    assert routes[0]["nexthops"] == [{"via": "192.168.115.2", "interface": "Ethernet16"}]
 
 
 def test_parse_route_table_marks_null0_as_discard_route():
@@ -678,6 +747,65 @@ def test_ping_test_allows_infra_source(monkeypatch):
 
     result = toolkit.ping_test("leaf1", "192.168.102.2")
     assert result.success is True
+
+
+def test_ping_link_test_resolves_peer_ip_and_binds_front_panel(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+    calls = []
+
+    def fake_docker_exec(container, cmd, timeout):
+        calls.append((container, cmd, timeout))
+        if cmd[:5] == ["ip", "-4", "-o", "address", "show"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "3: Ethernet0 inet 10.1.1.2/30 scope global Ethernet0\n",
+                "",
+            )
+        return subprocess.CompletedProcess(cmd, 0, "1 packets transmitted, 1 received, 0% packet loss\n", "")
+
+    monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
+
+    result = toolkit.ping_link_test("spine1", "leaf1", "eth1", "eth1", count=1)
+
+    assert result.success is True
+    assert result.data["destination"] == "10.1.1.2"
+    assert result.data["source_interface"] == "Ethernet0"
+    assert calls[-1][1] == ["ping", "-c", "1", "-W", "2", "-I", "Ethernet0", "10.1.1.2"]
+
+
+def test_payload_integrity_link_test_captures_both_directions(monkeypatch):
+    toolkit = AgentToolkit(topology_metadata=_metadata())
+    calls = []
+
+    def fake_docker_exec(container, cmd, timeout):
+        calls.append((container, cmd, timeout))
+        if cmd[0] == "ip":
+            address = "10.1.1.1" if container.endswith("spine1") else "10.1.1.2"
+            return subprocess.CompletedProcess(cmd, 0, f"1: Ethernet0 inet {address}/31 scope global\n", "")
+        if "tcpdump" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "20 packets captured\n20 packets received by filter\n0 packets dropped by kernel\n",
+                "",
+            )
+        return subprocess.CompletedProcess(cmd, 0, "20 packets transmitted, 20 received, 0% packet loss\n", "")
+
+    monkeypatch.setattr(toolkit, "_docker_exec", fake_docker_exec)
+
+    result = toolkit.payload_integrity_link_test(
+        "spine1",
+        "Ethernet0",
+        "leaf1",
+        "Ethernet0",
+        count=20,
+    )
+
+    assert result.success is True
+    assert len(result.data["directions"]) == 2
+    assert all(item["packets_sent"] == 20 for item in result.data["directions"])
+    assert len([item for item in calls if "tcpdump" in item[1]]) == 2
 
 
 @pytest.mark.parametrize(("source", "role"), [("spine1", "spine"), ("leaf1", "leaf")])
