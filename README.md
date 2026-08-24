@@ -24,18 +24,11 @@ NetOpsBench is an open benchmark arena for agentic network troubleshooting — r
 
 ## Why NetOpsBench
 
-Developing and evaluating agentic root cause analysis methods for network troubleshooting remains challenging, with three core bottlenecks hindering further advancement:
+Troubleshooting agents are difficult to compare when the network, incident, and evidence change from run to run. NetOpsBench turns those variables into a controlled live benchmark:
 
-![NetOpsBench motivation](docs/public/assets/Motivation.png)
-
-| Gap | The problem | How NetOpsBench closes it |
-|---|---|---|
-| **No fair comparison** | Varied network topologies, fault sets, observability tools, and evaluation metrics hinder the comparison of agentic troubleshooting strategies across the research community. | NetOpsBench unifies fault scenarios, observability access and scoring rules to support agent comparison on a shared benchmark. |
-| **Non-reproducible faults** | Real network incidents cannot be reliably reproduced or labeled with consistent ground truth, slowing iterative improvement and evaluation of troubleshooting agents. | Containerlab + SONiC-VS inject controlled, reproducible faults with stable labels, so every run is an identical, repeatable episode. |
-| **Non-Interactive Environment** | Static topology snapshots and logs cannot provide live probing and telemetry signals required by agents for diagnostic work. | NetOpsBench offers an interactive environment for agents to operate within live networks, capturing real-time Pingmesh data, gNMI telemetry and switch CLI evidence during every episode. |
-
-
-
+- **Reproducible incidents** — labeled faults run against repeatable SONiC-VS and Containerlab topologies.
+- **Interactive evidence** — agents inspect live Pingmesh, BGP, gNMI, syslog, and switch state instead of static logs.
+- **Comparable outcomes** — one evaluator measures detection, localization, efficiency, and tool use across agent strategies.
 
 ## Overview
 
@@ -47,6 +40,11 @@ It is built for researchers and engineers who want to compare LLM-backed, symbol
 
 ## News
 
+- **2026-08**: 🚀 **NetOpsBench v0.2.0** - Large-topology benchmark release.
+  - Add Xlarge CLOS and Fat-tree K=8/K=12 profiles, with 70 generated cases per large topology.
+  - Replace per-client Python Pingmesh and iperf processes with the native Rust client agent for Pingmesh and background traffic.
+  - Harden large-topology fault injection, recovery, observability, and exact runtime teardown.
+  - Publish a versioned DeepSeek validation snapshot across all seven supported scales. See the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx).
 - **2026-05**: 🎉 **Initial Release** - NetOpsBench is now available as an open arena for agentic network troubleshooting.
   - Provide public SDK with `run_scenario()` and `run_suite()` APIs to launch live network environments from Python.
   - Equip native MCP tools of complete observability utilities and pre-configured SONiC-VS network covering XS, Small, Medium and Large scales.
@@ -96,11 +94,27 @@ Scenario YAML files define the benchmark case: topology scale, traffic profile, 
 
 NetOpsBench reports detection, fault type, device/interface localization, runtime, tool calls, and token usage so troubleshooting quality and operational cost can be compared together.
 
-![Composite benchmark score](docs/public/assets/benchmark/fig_avg_score.png)
+| Scale | Topology | Switches | Clients | Cases |
+|---|---|---:|---:|---:|
+| XS | CLOS | 4 | 2 | 14 |
+| Small | CLOS | 6 | 8 | 15 |
+| Medium | CLOS | 12 | 16 | 28 |
+| Large | CLOS | 20 | 64 | 52 |
+| Xlarge | CLOS | 144 | 128 | 70 |
+| Fat-tree K=8 | Fat-tree | 80 | 128 | 70 |
+| Fat-tree K=12 | Fat-tree | 180 | 144 | 70 |
 
-Read [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx) for scoring definitions and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for an example completed suite.
+**Diagnosis score** is the mean end-to-end case score: healthy cases require the correct verdict, while fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
 
-Public agent trajectory artifacts are available in the [NetOpsBench Trace Dataset](https://huggingface.co/datasets/yyyyyt/netopsbench-trace), including Harbor/ATIF traces, run reports, and summary CSVs for reproducible analysis.
+![Diagnosis score and Fault detection F1 across all seven NetOpsBench v0.2.0 topology scales](docs/public/assets/benchmark/fig_deepseek_v02_overview.svg)
+
+The largest validated Fat-tree profile provides a compact case-level view. Each square below is one K=12 case; detailed cross-topology observability analysis remains in the full results.
+
+![All 70 Fat-tree K=12 cases grouped by fault family and diagnosis outcome](docs/public/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
+
+Read the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx), [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx), and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for the full validation snapshot and scoring definitions.
+
+The public [NetOpsBench Trace Dataset](https://huggingface.co/datasets/yyyyyt/netopsbench-trace) contains both the earlier cross-model snapshot and the [v0.2 seven-scale release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2): 319 validated DeepSeek Harbor/ATIF trajectories across XS through Fat-tree K=12. Aggregate metrics and immutable publication provenance are recorded in the [v0.2 result snapshot](docs/public/assets/benchmark/deepseek_v02_release.json).
 
 ## Learn More
 
@@ -118,10 +132,6 @@ Public agent trajectory artifacts are available in the [NetOpsBench Trace Datase
 
 - Global community: [NetOpsBench Slack](https://join.slack.com/t/netopsbench/shared_invite/zt-3zhhfangj-2U4dU_NSfCy1rcOM1dmuvQ)
 - Chinese-language community: [NetOpsBench Feishu group](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=595v4390-2a51-4db0-baa4-811821b47448)
-
-## Contributing
-
-Contributions are welcome for benchmark scenarios, fault types, SDK ergonomics, documentation, and evaluation workflows.
 
 ## License
 

@@ -29,9 +29,9 @@ Pingmesh endpoint density.
 | Small | CLOS | 2 spine + 4 leaf | 8 |
 | Medium | CLOS | 4 spine + 8 leaf | 16 |
 | Large | CLOS | 4 spine + 16 leaf | 64 |
-| XLarge | CLOS | 16 spine + 128 leaf | 128 |
-| Fat-tree K8 | Fat-tree | 16 core + 32 aggregation + 32 edge | 128 |
-| Fat-tree K12 | Fat-tree | 36 core + 72 aggregation + 72 edge | 144 |
+| Xlarge | CLOS | 16 spine + 128 leaf | 128 |
+| Fat-tree K=8 | Fat-tree | 16 core + 32 aggregation + 32 edge | 128 |
+| Fat-tree K=12 | Fat-tree | 36 core + 72 aggregation + 72 edge | 144 |
 
 The benchmark covers twelve canonical fault types:
 
@@ -51,9 +51,9 @@ Each scale combines fault cases with healthy negative samples:
 | Small | 12 | 3 | 15 |
 | Medium | 24 | 4 | 28 |
 | Large | 48 | 4 | 52 |
-| XLarge | 66 | 4 | 70 |
-| Fat-tree K8 | 66 | 4 | 70 |
-| Fat-tree K12 | 66 | 4 | 70 |
+| Xlarge | 66 | 4 | 70 |
+| Fat-tree K=8 | 66 | 4 | 70 |
+| Fat-tree K=12 | 66 | 4 | 70 |
 
 Scenarios are generated from the packaged canonical campaign spec. Running `netopsbench benchmark prepare --scales <scale>` materializes YAML files under `scenarios/generated/<scale>/`; `--spec` can select a custom campaign.
 
@@ -144,12 +144,14 @@ The judge affects only fault-type classification. Verdict, device localization, 
 | Metric | Interpretation |
 |---|---|
 | `detection_accuracy` | Fault/healthy verdict accuracy. |
-| `detection_f1` | Fault/healthy verdict F1-score used in the results plots. |
+| `detection_f1` | Fault/healthy verdict F1-score, shown publicly as **Fault detection F1**. |
 | `device_localization_rate` | Device-level troubleshooting precision. |
 | `interface_localization_rate` | Interface-level precision for applicable cases. |
 | `localization_composite_score` | Combined localization metric used for comparison. |
-| `average_score` | Mean case score over the run. |
+| `average_score` | Mean verdict-gated case score, shown publicly as **Diagnosis score**. Healthy cases require the correct verdict; fault cases receive localization credit only after the fault is detected. |
 | `avg_time_seconds` | Mean diagnosis latency per case. |
 | `avg_tool_calls` | Mean tool calls per case. |
 
 The scoring implementation lives in `netopsbench.evaluator.scorer` and session scoring helpers under `netopsbench.platform.session.scoring`.
+
+The large profiles and native client-agent lifecycle are documented in the [NetOpsBench v0.2.0 release notes](/docs/releases/v0.2.0).

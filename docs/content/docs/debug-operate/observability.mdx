@@ -120,6 +120,8 @@ or deleted.
 
 ## Cleanup
 
+Xlarge and Fat-tree labs can consume substantial CPU, memory, container, and telemetry capacity. Start with one worker, inspect `docker stats`, host memory and pressure, and confirm one complete baseline before increasing concurrency. Keeping a topology warm is useful for repeated experiments, but do not leave unused large workers running alongside a new campaign.
+
 SDK-visible runtimes:
 
 ```bash
@@ -128,6 +130,8 @@ netopsbench runtime show <runtime-name>
 netopsbench runtime teardown <runtime-name>
 netopsbench runtime teardown --all
 ```
+
+Prefer the exact runtime name. `teardown --all` is intended only when every runtime registered in the current workspace is owned by the caller; it is not a substitute for host-wide Docker cleanup. Do not use global `docker system prune`, broad container-name filters, or shared-network deletion on multi-user hosts.
 
 Manual deployment teardown:
 

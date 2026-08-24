@@ -1,51 +1,104 @@
 ---
-title: Benchmark Results
-description: Reference cross-model NetOpsBench results.
+title: NetOpsBench v0.2.0 Results
+description: Seven-scale DeepSeek release validation, diagnosis quality, observability, and cost.
 ---
 
-This page records the public trace dataset snapshot. Treat it as a reference snapshot under the documented [methodology](/docs/run-benchmarks/methodology), not as a stable model ranking. Provider defaults, model versions, prompts, and tool policies can change absolute values.
+This page reports the current NetOpsBench v0.2.0 release snapshot. It is a reproducible benchmark reference, not a permanent model ranking: provider behavior, prompts, tool policy, and benchmark contracts can change absolute values.
 
-## Experiment scope
-
-| Dimension | Values |
+| Experiment | Configuration |
 |---|---|
-| Models | Kimi K2.6, DeepSeek V4 Pro, OpenAI GPT-5.5, MiniMax M3 |
-| Topology scales | XS, Small, Medium, Large |
-| Fault types | 12 canonical types across link, routing, impairment, system, and ACL categories |
-| Quality metrics | Verdict F1-score, device localization, interface localization, composite score |
-| Efficiency metrics | Diagnosis time, tool calls, input/output tokens |
+| Agent | `minimal-deepagent` |
+| Model | `deepseek-v4-pro`, thinking disabled, temperature 0 |
+| Benchmark contract | `netopsbench-0.2-release` |
+| Coverage | 7 topology scales, 319 operational cases |
+| Validity | 319 / 319 case-valid and Agent-scored |
+| Traces | 319 Harbor/ATIF v1.7 trajectories |
 
-## Cross-scale snapshot
+## Results at a glance
 
-Each cell is `XS -> Large`.
+**Diagnosis score** is the mean verdict-gated case score. Healthy cases require the correct verdict; fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
 
-| Model | Verdict F1 (%) | Device Loc (%) | Interface Loc (%) | Composite (%) | Avg Time (s) | Avg Tools | Input Tokens (K) |
+| Scale | Cases | Diagnosis score (%) | Fault detection F1 (%) | Device loc. (%) | Interface loc. (%) | Input tokens (K) | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Kimi K2.6 | 76.2 -> 84.7 | 66.7 -> 75.0 | 71.4 -> 71.4 | 64.3 -> 74.0 | 272.0 -> 399.5 | 36.5 -> 38.8 | 367.6 -> 741.1 |
-| DeepSeek V4 Pro | 100.0 -> 97.9 | 83.3 -> 91.7 | 57.1 -> 57.1 | 78.6 -> 83.7 | 83.1 -> 83.1 | 24.9 -> 20.7 | 247.6 -> 477.3 |
-| OpenAI GPT-5.5 | 95.7 -> 95.8 | 83.3 -> 79.2 | 57.1 -> 21.4 | 75.0 -> 60.6 | 71.9 -> 85.0 | 17.9 -> 15.9 | 85.4 -> 153.7 |
-| MiniMax M3 | 80.0 -> 82.9 | 50.0 -> 62.5 | 71.4 -> 42.9 | 60.7 -> 58.7 | 214.3 -> 230.3 | 26.4 -> 24.0 | 133.3 -> 316.1 |
+| XS | 14 | 75.0 | 95.7 | 75.0 | 57.1 | 174.3 | 61.3 |
+| Small | 15 | 83.3 | 95.7 | 83.3 | 57.1 | 221.4 | 65.1 |
+| Medium | 28 | 71.4 | 85.7 | 70.8 | 42.9 | 298.4 | 79.6 |
+| Large | 52 | 70.2 | 84.3 | 68.8 | 42.9 | 405.7 | 84.3 |
+| Xlarge | 70 | 56.4 | 81.1 | 56.1 | 30.0 | 727.8 | 97.5 |
+| Fat-tree K=8 | 70 | 63.6 | 80.0 | 63.6 | 45.0 | 594.7 | 102.9 |
+| Fat-tree K=12 | 70 | 55.0 | 73.1 | 56.1 | 27.5 | 784.3 | 102.9 |
 
-The main pattern is that verdict classification remains easier than precise localization. Interface localization is the weakest metric on larger topologies.
+![Dumbbell chart comparing Diagnosis score and Fault detection F1 across all seven NetOpsBench v0.2 topology scales](/assets/benchmark/fig_deepseek_v02_overview.svg)
 
-## Quality metrics
+Three results define the release snapshot:
 
-![Verdict F1-score](/assets/benchmark/fig_verdict_f1.png)
+- Healthy precision is stable: all **25 / 25** healthy cases had zero formal Pingmesh anomaly and were diagnosed as healthy.
+- Diagnosis quality falls with topology size. CLOS Diagnosis score decreases from **75.0% on XS** to **56.4% on Xlarge**; Fat-tree decreases from **63.6% on K=8** to **55.0% on K=12**.
+- Device localization is usually strong after the Agent commits to a fault. The main loss is missed detection or non-termination; interface localization remains the weakest quality dimension on the largest topologies.
 
-![Device localization](/assets/benchmark/fig_device_loc.png)
+## Where diagnosis breaks down
 
-![Interface localization](/assets/benchmark/fig_intf_loc.png)
+The following figure separates the evidence available to the Agent from the Agent's verdict and localization. Each point is a case-level micro average across all 319 cases; interface accuracy uses only cases for which the evaluator requires an interface.
 
-![Composite score](/assets/benchmark/fig_avg_score.png)
+![Fault-family comparison of formal Pingmesh signals, correct Agent verdicts, correct device localization, and interface localization across 319 cases](/assets/benchmark/fig_deepseek_v02_evidence.svg)
 
-## Runtime cost
+| Fault family | Formal signal | Correct verdict | Correct device | Correct interface |
+|---|---:|---:|---:|---:|
+| High latency | 26 / 26 | 6 / 26 | 4 / 26 | 1 / 26 |
+| Packet loss | 25 / 26 | 5 / 26 | 3 / 26 | 0 / 26 |
+| Packet corruption | 22 / 26 | 9 / 26 | 4 / 26 | 0 / 26 |
+| MTU mismatch | 26 / 26 | 15 / 26 | 12 / 26 | 12 / 26 |
+| Link down | 18 / 26 | 25 / 26 | 25 / 26 | 23 / 26 |
+| BGP neighbor | 2 / 26 | 26 / 26 | 26 / 26 | N/A |
 
-![Average diagnosis time](/assets/benchmark/fig_avg_time.png)
+This is the central quality finding: data-plane impairment evidence is usually present, but the Agent often fails to convert it into a fault verdict. By contrast, BGP neighbor faults rarely create endpoint Pingmesh anomalies under ECMP, yet the Agent diagnoses them reliably from control-plane telemetry. Pingmesh is therefore evidence, not the only source of truth.
 
-![Tool calls](/assets/benchmark/fig_tool_calls.png)
+Trace review identifies three recurring failure modes:
 
-![Input tokens](/assets/benchmark/fig_input_tokens.png)
+1. The Agent mixes episode-window evidence with recovered live state.
+2. A single successful live ping is used to dismiss historical multi-hash Pingmesh loss.
+3. Transit attribution expands into an undirected device search and sometimes reaches the graph recursion limit.
 
-![Output tokens](/assets/benchmark/fig_output_tokens.png)
+## Large-topology behavior
 
-Compare cost metrics with localization quality, not verdict quality alone. Higher tool or token use does not automatically improve device or interface precision.
+Xlarge, Fat-tree K=8, and Fat-tree K=12 contributed **210 / 210** valid observations and Agent results. All had complete Pingmesh coverage, successful injection/recovery and cleanup, zero unexplained local probe-error cases, and four clean healthy cases per topology.
+
+| Topology | Switches | Clients | Paths | Cases | Operational | Agent-scored |
+|---|---:|---:|---:|---:|---:|---:|
+| Xlarge CLOS | 144 | 128 | 16,256 | 70 | 70 / 70 | 70 / 70 |
+| Fat-tree K=8 | 80 | 128 | 16,256 | 70 | 70 / 70 | 70 / 70 |
+| Fat-tree K=12 | 180 | 144 | 20,592 | 70 | 70 / 70 | 70 / 70 |
+
+Upper-fabric link-down and link-flapping can produce zero or only a few endpoint anomalies when ECMP reconverges before enough full-window probes are lost. The physical fault is still visible in interface and BGP telemetry. Packet corruption is similarly hash-selective because the impairment applies to one selected egress member.
+
+Access faults retain the expected blast radius: an isolated client affects `2 × (client_count - 1)` directed paths—254 paths on Xlarge and K=8, and 286 paths on K=12. High-latency and MTU faults remain well separated from healthy observations: Xlarge recorded 12–17 latency paths and 57–97 DF-loss paths, while K=12 recorded 169–242 and 247–302 respectively.
+
+### Fat-tree K=12 case-level deep dive
+
+The largest validated Fat-tree profile provides a compact view of every case. Outcome colors are mutually exclusive; “complete” means fully localized for a fault case or correctly healthy for a negative case.
+
+![All 70 Fat-tree K=12 cases grouped by fault family and categorized by diagnosis outcome](/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
+
+The K=12 distribution is a representative deep dive, not a substitute for the per-topology aggregates above.
+
+## Diagnosis cost
+
+![Three-panel chart comparing input tokens, tool calls, and diagnosis time across seven topology scales](/assets/benchmark/fig_deepseek_v02_cost.svg)
+
+Tool calls remain in a narrow range—**20.9 to 26.3 per case**—while average input context grows from **174K tokens on XS** to **784K on K12**. Diagnosis time rises from **61.3 seconds** to approximately **103 seconds**. The primary scaling cost is therefore evidence and topology volume, not an explosion in the number of tool calls.
+
+## Reproducibility
+
+| Snapshot | Agent trajectories | Selection |
+|---|---:|---|
+| XS–Large | 109 | Four complete scale runs |
+| Xlarge | 70 | Valid results selected by scenario ID from the canonical composite |
+| Fat-tree K=8 | 70 | 16 completed initial results plus 54 completed resumed results |
+| Fat-tree K=12 | 70 | Canonical composite including the validated access-link retry |
+| **Total** | **319** | One scoring sidecar per Agent trajectory |
+
+Only infrastructure/API-invalid attempts were replaced. Successful original Agent attempts were not rerun or substituted. Two unfinished K8 orphan traces were excluded because they never completed post-recovery validation.
+
+The machine-readable [release snapshot](/assets/benchmark/deepseek_v02_release.json), [fault-family analysis snapshot](/assets/benchmark/deepseek_v02_analysis.json), and [K12 case snapshot](/assets/benchmark/deepseek_v02_k12_cases.json) contain the plotted numerators, denominators, provenance, and archive references. All seven archives and their SHA-256 values are published in the [NetOpsBench Trace Dataset v0.2 release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2).
+
+The earlier four-model experiment remains available on the [Legacy Results](/docs/run-benchmarks/legacy-results) page. It used a different benchmark contract and should not be mixed with the v0.2 values above.

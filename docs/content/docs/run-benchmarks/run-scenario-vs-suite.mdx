@@ -17,7 +17,7 @@ NetOpsBench has one execution path with several entrypoints. Start with one scen
 Prepare scenario assets before these runs:
 
 ```bash
-# prepare benchmark scenarios for all topology scale (xs, small, medium, large)
+# prepare benchmark scenarios for all seven built-in topology scales
 netopsbench benchmark prepare
 ```
 
@@ -80,8 +80,29 @@ Scale choice changes both runtime cost and diagnosis difficulty:
 | `small` | More topology variety with moderate runtime cost. |
 | `medium` | Broader fabric behavior and more generated scenarios. |
 | `large` | Stress test for runtime stability, observability volume, and agent efficiency. |
+| `xlarge` | 144-switch CLOS benchmark with 128 clients and 70 cases. |
+| `fat-tree-k8` | 80-switch, three-tier Fat-tree with 128 clients and 70 cases. |
+| `fat-tree-k12` | 180-switch, three-tier Fat-tree with 144 clients and 70 cases. |
 
 Worker count controls concurrency. Each worker provisions its own lab resources. If Docker, Containerlab, or provider rate limits become unstable, reduce `--workers`.
+
+For Xlarge and Fat-tree, begin with one worker and confirm host capacity, baseline health, provider connectivity, and exact teardown before increasing concurrency:
+
+```bash
+netopsbench benchmark prepare --scales xlarge,fat-tree-k8,fat-tree-k12
+PYTHONPATH=. python examples/03_run_scale_benchmark.py \
+  --scale fat-tree-k12 --workers 1 --vendor deepseek
+```
+
+Run one prepared large profile at a time:
+
+```bash
+PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale xlarge --workers 1 --vendor deepseek
+PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale fat-tree-k8 --workers 1 --vendor deepseek
+PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale fat-tree-k12 --workers 1 --vendor deepseek
+```
+
+Preparing all three profiles does not deploy three labs. A lab is provisioned only for the selected run, and `workers=1` provisions one physical runtime worker.
 
 ## Multi-scale batches
 

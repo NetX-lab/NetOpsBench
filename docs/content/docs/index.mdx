@@ -5,6 +5,10 @@ description: Documentation map for implementing, running, and evaluating NetOpsB
 
 NetOpsBench evaluates troubleshooting agents on generated data-center network fault scenarios. A run provisions a SONiC-VS / Containerlab topology, injects a controlled fault or healthy episode, exposes runtime evidence, calls an agent, and scores the returned `DiagnosisResult` against scenario ground truth.
 
+<Callout title="NetOpsBench v0.2.0 · 2026-08" type="info">
+The current release adds Xlarge CLOS, Fat-tree K=8/K=12, and the native Rust Pingmesh/traffic client agent. Read the [v0.2.0 release notes](/docs/releases/v0.2.0).
+</Callout>
+
 These docs are organized around the agent-development workflow.
 
 ## Main path
@@ -71,4 +75,5 @@ These docs are organized around the agent-development workflow.
 
 - [System Overview](/docs/architecture/system-overview) explains the runtime loop, evidence path, worker isolation, and report aggregation.
 - [Benchmark Methodology](/docs/run-benchmarks/methodology) defines scenario coverage, scoring, negative samples, and optional semantic fault-type matching.
-- [Benchmark Results](/docs/run-benchmarks/results) records one completed cross-model run for comparison context.
+- [Benchmark Results](/docs/run-benchmarks/results) reports the current seven-scale v0.2 validation; [Legacy Results](/docs/run-benchmarks/legacy-results) preserves the earlier cross-model snapshot separately.
+- [NetOpsBench v0.2.0](/docs/releases/v0.2.0) summarizes the Xlarge, Fat-tree, native client-agent, and lifecycle release.

@@ -1,0 +1,711 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "deepseek-v02-fat-tree-k12-cases",
+  "benchmark_contract": "netopsbench-0.2-release",
+  "topology": "fat-tree-k12",
+  "agent": "minimal-deepagent",
+  "model": "deepseek-v4-pro",
+  "case_count": 70,
+  "cases": [
+    {
+      "scenario_id": "generated_acl_misconfig_fat-tree-k12_001",
+      "fault_type": "acl_misconfig",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_acl_misconfig_fat-tree-k12_002",
+      "fault_type": "acl_misconfig",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_acl_misconfig_fat-tree-k12_003",
+      "fault_type": "acl_misconfig",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": false,
+      "score": 0.5,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_acl_misconfig_fat-tree-k12_004",
+      "fault_type": "acl_misconfig",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": false,
+      "score": 0.5,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_001",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_002",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_003",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_004",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_005",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_bgp_neighbor_misconfig_fat-tree-k12_006",
+      "fault_type": "bgp_neighbor_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_001",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_002",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_003",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": true,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_004",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": true,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_005",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": true,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_blackhole_route_fat-tree-k12_006",
+      "fault_type": "blackhole_route",
+      "interface_applicable": false,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": true,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_001",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_002",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_003",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": true,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_004",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_005",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_device_down_fat-tree-k12_006",
+      "fault_type": "device_down",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_healthy_network_fat-tree-k12_001",
+      "fault_type": "healthy_network",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_healthy_network_fat-tree-k12_002",
+      "fault_type": "healthy_network",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_healthy_network_fat-tree-k12_003",
+      "fault_type": "healthy_network",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_healthy_network_fat-tree-k12_004",
+      "fault_type": "healthy_network",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_001",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_002",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_003",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_004",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_005",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_high_latency_fat-tree-k12_006",
+      "fault_type": "high_latency",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_001",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": false,
+      "score": 0.5,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_002",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": false,
+      "score": 0.5,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_003",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_004",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_005",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_down_fat-tree-k12_006",
+      "fault_type": "link_down",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_001",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_002",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_003",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_004",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_005",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_link_flapping_fat-tree-k12_006",
+      "fault_type": "link_flapping",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_001",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_002",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_003",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_004",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_005",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_mtu_mismatch_fat-tree-k12_006",
+      "fault_type": "mtu_mismatch",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_001",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_002",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": false,
+      "score": 0.5,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_003",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_004",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": true,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_005",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_corruption_fat-tree-k12_006",
+      "fault_type": "packet_corruption",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_001",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_002",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_003",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_004",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": true
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_005",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_packet_loss_fat-tree-k12_006",
+      "fault_type": "packet_loss",
+      "interface_applicable": true,
+      "correct_verdict": false,
+      "correct_device": false,
+      "correct_interface": false,
+      "score": 0.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_route_policy_misconfig_fat-tree-k12_001",
+      "fault_type": "route_policy_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_route_policy_misconfig_fat-tree-k12_002",
+      "fault_type": "route_policy_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_route_policy_misconfig_fat-tree-k12_003",
+      "fault_type": "route_policy_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_route_policy_misconfig_fat-tree-k12_004",
+      "fault_type": "route_policy_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_static_route_misconfig_fat-tree-k12_001",
+      "fault_type": "static_route_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_static_route_misconfig_fat-tree-k12_002",
+      "fault_type": "static_route_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_static_route_misconfig_fat-tree-k12_003",
+      "fault_type": "static_route_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    },
+    {
+      "scenario_id": "generated_static_route_misconfig_fat-tree-k12_004",
+      "fault_type": "static_route_misconfig",
+      "interface_applicable": false,
+      "correct_verdict": true,
+      "correct_device": true,
+      "correct_interface": true,
+      "score": 1.0,
+      "inconclusive": false
+    }
+  ]
+}

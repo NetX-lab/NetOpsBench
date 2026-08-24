@@ -2,15 +2,8 @@ name: client-agent-image
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-    paths:
-      - ".github/workflows/client-agent-image.yml"
-      - ".dockerignore"
-      - "containers/client/**"
-      - "native/client-agent/**"
   workflow_dispatch:
 
 concurrency:
@@ -38,11 +31,8 @@ jobs:
         shell: bash
         run: |
           tags="yyyyyt123/netopsbench-client:sha-${GITHUB_SHA}"
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            tags="${tags}"$'\n'"yyyyyt123/netopsbench-client:latest"
-          fi
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tags="${tags}"$'\n'"yyyyyt123/netopsbench-client:${GITHUB_REF_NAME}"
+            tags="${tags}"$'\n'"yyyyyt123/netopsbench-client:${GITHUB_REF_NAME}"$'\n'"yyyyyt123/netopsbench-client:latest"
           fi
           {
             echo "value<<EOF"
