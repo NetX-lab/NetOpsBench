@@ -9,18 +9,20 @@ This page records versioned benchmark snapshots. Treat each snapshot as a refere
 
 This 2026-08 release snapshot used `minimal-deepagent` with `deepseek-v4-pro`, thinking disabled, temperature 0, and two runtime workers for the XS–Large campaigns. All 109 cases completed under the NetOpsBench v0.2.0 runtime, Rust client-agent, traffic, and Pingmesh contract.
 
-| Scale | Cases | Primary reward (%) | Detection F1 (%) | Device loc. (%) | Interface loc. (%) | Fault type (%) | Avg time (s) | Avg tools | Input tokens (K) |
+| Scale | Cases | Diagnosis score (%) | Fault detection F1 (%) | Device loc. (%) | Interface loc. (%) | Fault type (%) | Avg time (s) | Avg tools | Input tokens (K) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | XS | 14 | 75.0 | 95.7 | 75.0 | 57.1 | 41.7 | 61.3 | 22.6 | 174.3 |
 | Small | 15 | 83.3 | 95.7 | 83.3 | 57.1 | 58.3 | 65.1 | 20.9 | 221.4 |
 | Medium | 28 | 71.4 | 85.7 | 70.8 | 42.9 | 37.5 | 79.6 | 23.5 | 298.4 |
 | Large | 52 | 70.2 | 84.3 | 68.8 | 42.9 | 45.8 | 84.3 | 25.2 | 405.7 |
 
-![DeepSeek 0.2 release quality by scale](/assets/benchmark/fig_deepseek_v02_quality.png)
+![DeepSeek 0.2 release quality across seven scales](/assets/benchmark/fig_deepseek_v02_overview.svg)
 
-Across all scales:
+The overview spans all 319 v0.2 Agent-scored cases. The table and aggregate summary in this subsection focus on the 109 XS–Large cases; Xlarge and Fat-tree details follow below.
 
-- Primary reward was **72.9%** (`79.5 / 109`).
+Across XS–Large:
+
+- Diagnosis score was **72.9%** (`79.5 / 109`). This is a verdict-gated case score, not an RL reward: healthy cases require the correct verdict, while fault cases receive credit for correct device/interface localization only after detecting the fault.
 - Verdict accuracy was **80.7%** (`88 / 109`), including **13 / 13** healthy cases and no false positive.
 - The Agent detected **75 / 96** positive cases (**78.1%**).
 - Device localization was **69 / 96** (**71.9%**) over all positive cases and **69 / 75** (**92.0%**) conditional on the Agent reporting a fault.
@@ -59,13 +61,15 @@ The machine-readable [v0.2.0 result snapshot](/assets/benchmark/deepseek_v02_rel
 
 The large-topology campaigns use composite summaries because infrastructure failures were fixed and only the affected cases were rerun. Selection is by scenario ID: a valid retry replaces an invalid infrastructure/API attempt, while successful original attempts remain unchanged.
 
-| Topology | Catalog coverage | Agent-scored | Snapshot | Primary reward (%) | Detection F1 (%) | Device loc. (%) | Device loc. given detection (%) | Interface loc. (%) | Fault type (%) | Avg time (s) | Input tokens (K) |
+| Topology | Catalog coverage | Agent-scored | Snapshot | Diagnosis score (%) | Fault detection F1 (%) | Device loc. (%) | Device loc. given detection (%) | Interface loc. (%) | Fault type (%) | Avg time (s) | Input tokens (K) |
 |---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Xlarge CLOS | 70 / 70 | 70 | Retry-adjusted 0.2 composite | 56.4 | 81.1 | 56.1 | 82.2 | 30.0 | 43.9 | 97.5 | 727.8 |
 | Fat-tree K=8 | 70 / 70 | 70 | Resumed 0.2 composite* | 63.6 | 80.0 | 63.6 | 95.5 | 45.0 | 34.8 | 102.9 | 594.7 |
 | Fat-tree K=12 | 70 / 70 | 70 | Retry-adjusted 0.2 composite | 55.0 | 73.1 | 56.1 | 97.4 | 27.5 | 30.3 | 102.9 | 784.3 |
 
-![DeepSeek large-topology results](/assets/benchmark/fig_deepseek_v02_large_topologies.png)
+![Fat-tree K=12 case outcomes grouped by fault family](/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
+
+The K=12 figure is a representative case-level deep dive for the largest validated Fat-tree profile. Each square is one of its 70 Agent-scored cases; the outcome distribution must not be assumed to apply unchanged to the other topologies.
 
 \* The K=8 composite combines 16 complete results from the initial run with 54 missing-scenario results from a resumed run. Two orphan traces produced during the interrupted process were excluded because they did not complete post-recovery validation.
 

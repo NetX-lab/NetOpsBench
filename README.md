@@ -24,18 +24,11 @@ NetOpsBench is an open benchmark arena for agentic network troubleshooting — r
 
 ## Why NetOpsBench
 
-Developing and evaluating agentic root cause analysis methods for network troubleshooting remains challenging, with three core bottlenecks hindering further advancement:
+Troubleshooting agents are difficult to compare when the network, incident, and evidence change from run to run. NetOpsBench turns those variables into a controlled live benchmark:
 
-![NetOpsBench motivation](docs/public/assets/Motivation.png)
-
-| Gap | The problem | How NetOpsBench closes it |
-|---|---|---|
-| **No fair comparison** | Varied network topologies, fault sets, observability tools, and evaluation metrics hinder the comparison of agentic troubleshooting strategies across the research community. | NetOpsBench unifies fault scenarios, observability access and scoring rules to support agent comparison on a shared benchmark. |
-| **Non-reproducible faults** | Real network incidents cannot be reliably reproduced or labeled with consistent ground truth, slowing iterative improvement and evaluation of troubleshooting agents. | Containerlab + SONiC-VS inject controlled, reproducible faults with stable labels, so every run is an identical, repeatable episode. |
-| **Non-Interactive Environment** | Static topology snapshots and logs cannot provide live probing and telemetry signals required by agents for diagnostic work. | NetOpsBench offers an interactive environment for agents to operate within live networks, capturing real-time Pingmesh data, gNMI telemetry and switch CLI evidence during every episode. |
-
-
-
+- **Reproducible incidents** — labeled faults run against repeatable SONiC-VS and Containerlab topologies.
+- **Interactive evidence** — agents inspect live Pingmesh, BGP, gNMI, syslog, and switch state instead of static logs.
+- **Comparable outcomes** — one evaluator measures detection, localization, efficiency, and tool use across agent strategies.
 
 ## Overview
 
@@ -111,7 +104,13 @@ NetOpsBench reports detection, fault type, device/interface localization, runtim
 | Fat-tree K=8 | Fat-tree | 80 | 128 | 70 |
 | Fat-tree K=12 | Fat-tree | 180 | 144 | 70 |
 
-![NetOpsBench v0.2.0 DeepSeek validation](docs/public/assets/benchmark/fig_deepseek_v02_quality.png)
+**Diagnosis score** is the mean end-to-end case score: healthy cases require the correct verdict, while fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
+
+![NetOpsBench v0.2.0 quality across seven scales](docs/public/assets/benchmark/fig_deepseek_v02_overview.svg)
+
+The largest validated Fat-tree profile provides a compact case-level view. Each square below is one K=12 case; detailed cross-topology observability analysis remains in the full results.
+
+![Fat-tree K=12 case outcomes grouped by fault family](docs/public/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
 
 Read the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx), [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx), and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for the full validation snapshot and scoring definitions.
 
@@ -133,10 +132,6 @@ The public [NetOpsBench Trace Dataset](https://huggingface.co/datasets/yyyyyt/ne
 
 - Global community: [NetOpsBench Slack](https://join.slack.com/t/netopsbench/shared_invite/zt-3zhhfangj-2U4dU_NSfCy1rcOM1dmuvQ)
 - Chinese-language community: [NetOpsBench Feishu group](https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=595v4390-2a51-4db0-baa4-811821b47448)
-
-## Contributing
-
-Contributions are welcome for benchmark scenarios, fault types, SDK ergonomics, documentation, and evaluation workflows.
 
 ## License
 

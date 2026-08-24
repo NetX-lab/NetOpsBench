@@ -13,12 +13,15 @@ metrics:
   7. Avg Input Tokens
   8. Avg Output Tokens
 
-It also produces three figures for the separately versioned NetOpsBench 0.2
-DeepSeek release rerun. The two snapshots are intentionally not mixed into one
-cross-model chart because they use different benchmark contracts.
+It also produces figures for the separately versioned NetOpsBench 0.2
+DeepSeek release rerun, including two compact README figures. The snapshots
+are intentionally not mixed into one cross-model chart because they use
+different benchmark contracts.
 
 Usage:
     python3 scripts/plot_results.py [--outdir scenario_results/figures]
+    python3 scripts/plot_results.py \
+        --readme-assets-dir docs/public/assets/benchmark
     python3 scripts/plot_results.py \
         --advisor-report-dir scenario_results/advisor_report \
         --advisor-manifest /path/to/advisor-inputs.json
@@ -229,6 +232,9 @@ LEGEND_LABELS = {
 
 DEFAULT_RELEASE_DATA = (
     Path(__file__).resolve().parents[1] / "docs" / "public" / "assets" / "benchmark" / "deepseek_v02_release.json"
+)
+DEFAULT_K12_CASE_DATA = (
+    Path(__file__).resolve().parents[1] / "docs" / "public" / "assets" / "benchmark" / "deepseek_v02_k12_cases.json"
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -562,46 +568,219 @@ def _load_release_data(path: Path) -> dict:
     return payload
 
 
-def _fig_deepseek_v02_quality(outdir: Path, release_data: dict) -> Path:
-    _apply_base_style()
-    fig, ax = plt.subplots(figsize=(5.2, 3.1))
-    scales = release_data["scales"]
-    series = [
-        ("Detection F1", "detection_f1", "#0072B2", "o", 5),
-        ("Device localization", "device_localization_rate", "#D55E00", "s", -13),
-        ("Interface localization", "interface_localization_rate", "#CC79A7", "^", 5),
-        ("Primary reward", "primary_reward", "#009E73", "D", 5),
-    ]
-    x = np.arange(len(SCALES))
-    for label, key, color, marker, label_offset in series:
-        values = [100 * float(scales[scale][key]) for scale in SCALES]
-        ax.plot(x, values, label=label, color=color, marker=marker, linewidth=1.8, markersize=4.5)
-        for position, value in zip(x, values, strict=False):
-            ax.annotate(
-                f"{value:.1f}",
-                (position, value),
-                xytext=(0, label_offset),
-                textcoords="offset points",
-                ha="center",
-                fontsize=6,
-                color=color,
-            )
-    ax.set_xticks(x)
-    ax.set_xticklabels(SCALE_LABELS)
-    ax.set_xlabel("Topology Scale (# scenarios)", labelpad=3)
-    ax.set_ylabel("Result (%)", labelpad=3)
-    ax.set_ylim(35, 105)
-    ax.set_yticks([40, 50, 60, 70, 80, 90, 100])
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(loc="lower left", frameon=False, ncol=2)
-    fig.tight_layout()
-    out = outdir / "fig_deepseek_v02_quality.pdf"
-    fig.savefig(out)
-    fig.savefig(out.with_suffix(".png"))
+def _load_k12_case_data(path: Path, release_data: dict) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("benchmark_contract") != "netopsbench-0.2-release":
+        raise ValueError(f"unsupported K12 case result contract: {path}")
+    if payload.get("topology") != "fat-tree-k12":
+        raise ValueError(f"K12 case result has the wrong topology: {path}")
+    cases = payload.get("cases", [])
+    scenario_ids = [case.get("scenario_id") for case in cases]
+    if payload.get("case_count") != 70 or len(cases) != 70 or len(set(scenario_ids)) != 70:
+        raise ValueError(f"K12 case result must contain 70 unique cases: {path}")
+    healthy = [case for case in cases if case.get("fault_type") == "healthy_network"]
+    if len(healthy) != 4:
+        raise ValueError(f"K12 case result must contain four healthy cases: {path}")
+    expected_faults = {*FAULT_ORDER, "healthy_network"}
+    actual_faults = {case.get("fault_type") for case in cases}
+    if actual_faults != expected_faults:
+        raise ValueError(f"K12 case result has unexpected fault families: {sorted(actual_faults)}")
+    score = sum(float(case["score"]) for case in cases) / len(cases)
+    expected_score = float(release_data["large_topologies"]["fat-tree-k12"]["primary_reward"])
+    if not np.isclose(score, expected_score, atol=1e-9):
+        raise ValueError(f"K12 diagnosis score {score} does not match release result {expected_score}")
+    return payload
+
+
+def _release_scale_rows(release_data: dict) -> list[dict]:
+    rows = []
+    for key, label, architecture in [
+        ("xs", "XS", "CLOS"),
+        ("small", "Small", "CLOS"),
+        ("medium", "Medium", "CLOS"),
+        ("large", "Large", "CLOS"),
+        ("xlarge", "Xlarge", "CLOS"),
+        ("fat-tree-k8", "K=8", "Fat-tree"),
+        ("fat-tree-k12", "K=12", "Fat-tree"),
+    ]:
+        source = release_data["scales"].get(key) or release_data["large_topologies"][key]
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "architecture": architecture,
+                "cases": int(source.get("cases", source.get("agent_scored_cases"))),
+                "diagnosis_score": 100 * float(source["primary_reward"]),
+                "detection_f1": 100 * float(source["detection_f1"]),
+            }
+        )
+    return rows
+
+
+def _save_readme_figure(fig, outdir: Path, stem: str) -> Path:
+    outdir.mkdir(parents=True, exist_ok=True)
+    svg = outdir / f"{stem}.svg"
+    fig.savefig(svg, facecolor="white")
+    svg.write_text(
+        "\n".join(line.rstrip() for line in svg.read_text(encoding="utf-8").splitlines()) + "\n",
+        encoding="utf-8",
+    )
+    fig.savefig(svg.with_suffix(".png"), facecolor="white")
     plt.close(fig)
-    return out
+    return svg
+
+
+def _fig_readme_release_overview(outdir: Path, release_data: dict) -> Path:
+    _apply_base_style()
+    rows = _release_scale_rows(release_data)
+    y = np.array([0, 1, 2, 3, 4, 6, 7], dtype=float)
+    fig, ax = plt.subplots(figsize=(9.2, 4.6))
+    ax.axhspan(-0.48, 4.48, color="#F8FAFC", zorder=0)
+    ax.axhspan(5.52, 7.48, color="#F0FDFA", zorder=0)
+    for position, row in zip(y, rows, strict=True):
+        low = row["diagnosis_score"]
+        high = row["detection_f1"]
+        ax.hlines(position, low, high, color="#CBD5E1", linewidth=3, zorder=2)
+        ax.scatter(low, position, s=58, color="#0F766E", edgecolor="white", linewidth=0.7, zorder=3)
+        ax.scatter(high, position, s=58, color="#2563EB", edgecolor="white", linewidth=0.7, zorder=3)
+        ax.annotate(
+            f"{low:.1f}",
+            (low, position),
+            xytext=(-8, 0),
+            textcoords="offset points",
+            ha="right",
+            va="center",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#0F766E",
+        )
+        ax.annotate(
+            f"{high:.1f}",
+            (high, position),
+            xytext=(8, 0),
+            textcoords="offset points",
+            ha="left",
+            va="center",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#2563EB",
+        )
+    ax.set_yticks(y, [f"{row['label']}   n={row['cases']}" for row in rows])
+    ax.invert_yaxis()
+    ax.set_xlim(0, 105)
+    ax.set_xticks([0, 20, 40, 60, 80, 100])
+    ax.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    ax.grid(axis="x", color="#E2E8F0", linestyle="-", linewidth=0.6)
+    ax.grid(axis="y", visible=False)
+    ax.spines[:].set_visible(False)
+    ax.tick_params(axis="both", length=0, colors="#64748B")
+    ax.text(0.01, 0.985, "CLOS", transform=ax.transAxes, va="top", color="#64748B", fontsize=7, fontweight="bold")
+    ax.text(
+        0.01,
+        0.245,
+        "FAT-TREE",
+        transform=ax.transAxes,
+        va="top",
+        color="#0F766E",
+        fontsize=7,
+        fontweight="bold",
+    )
+    handles = [
+        mpatches.Patch(color="#0F766E", label="Diagnosis score"),
+        mpatches.Patch(color="#2563EB", label="Fault detection F1"),
+    ]
+    ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1, 1.13), frameon=False, ncol=2)
+    fig.suptitle("Quality across all seven v0.2 scales", x=0.08, y=0.98, ha="left", fontsize=15, fontweight="bold")
+    fig.text(
+        0.08,
+        0.925,
+        "DeepSeek V4 Pro · minimal-deepagent · 319 Agent-scored cases · temperature 0",
+        color="#64748B",
+        fontsize=8.5,
+    )
+    fig.subplots_adjust(left=0.18, right=0.95, top=0.82, bottom=0.11)
+    return _save_readme_figure(fig, outdir, "fig_deepseek_v02_overview")
+
+
+def _k12_case_outcome(case: dict) -> str:
+    if not case["correct_verdict"]:
+        return "incorrect_verdict"
+    if case["fault_type"] == "healthy_network":
+        return "complete"
+    if case["correct_device"] and (not case["interface_applicable"] or case["correct_interface"]):
+        return "complete"
+    if case["correct_device"]:
+        return "device_only"
+    return "location_missed"
+
+
+def _fig_readme_k12_case_map(outdir: Path, case_data: dict) -> Path:
+    _apply_base_style()
+    order = [*FAULT_ORDER, "healthy_network"]
+    by_fault = {fault: [] for fault in order}
+    for case in case_data["cases"]:
+        by_fault[case["fault_type"]].append(case)
+    for cases in by_fault.values():
+        cases.sort(key=lambda case: case["scenario_id"])
+
+    colors = {
+        "complete": "#009E73",
+        "device_only": "#56B4E9",
+        "location_missed": "#E69F00",
+        "incorrect_verdict": "#CC79A7",
+    }
+    labels = {
+        "complete": "Fully localized / healthy correct",
+        "device_only": "Device correct; interface missed",
+        "location_missed": "Fault detected; location missed",
+        "incorrect_verdict": "Incorrect verdict / inconclusive",
+    }
+    fig, ax = plt.subplots(figsize=(9.2, 5.5))
+    y = np.arange(len(order))
+    for row, fault in enumerate(order):
+        if row % 2 == 0:
+            ax.axhspan(row - 0.47, row + 0.47, color="#F8FAFC", zorder=0)
+        cases = by_fault[fault]
+        outcomes = [_k12_case_outcome(case) for case in cases]
+        for column, outcome in enumerate(outcomes):
+            ax.scatter(
+                column,
+                row,
+                marker="s",
+                s=165,
+                color=colors[outcome],
+                edgecolor="white",
+                linewidth=1.0,
+                zorder=3,
+            )
+        complete = outcomes.count("complete")
+        ax.text(6.35, row, f"{complete}/{len(cases)} complete", va="center", fontsize=7.5, color="#475569")
+    ax.set_yticks(y, [FAULT_LABELS[fault] for fault in order])
+    ax.invert_yaxis()
+    ax.set_xlim(-0.55, 8.0)
+    ax.set_xticks([])
+    ax.grid(False)
+    ax.spines[:].set_visible(False)
+    ax.tick_params(axis="y", length=0, colors="#334155", labelsize=8)
+    handles = [mpatches.Patch(color=colors[key], label=labels[key]) for key in colors]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, -0.055), frameon=False, ncol=2, fontsize=7.5)
+    fig.suptitle("Fat-tree K=12: every case outcome", x=0.08, y=0.98, ha="left", fontsize=15, fontweight="bold")
+    fig.text(
+        0.08,
+        0.935,
+        "70 Agent-scored cases · each square is one benchmark case · grouped by fault family",
+        color="#64748B",
+        fontsize=8.5,
+    )
+    fig.text(
+        0.08,
+        0.012,
+        "Representative deep dive for the largest validated Fat-tree profile; distributions differ across topologies.",
+        color="#64748B",
+        fontsize=7.5,
+    )
+    fig.subplots_adjust(left=0.24, right=0.94, top=0.86, bottom=0.18)
+    return _save_readme_figure(fig, outdir, "fig_deepseek_v02_k12_cases")
 
 
 def _fig_deepseek_v02_fault_signals(outdir: Path, release_data: dict) -> Path:
@@ -642,68 +821,6 @@ def _fig_deepseek_v02_fault_signals(outdir: Path, release_data: dict) -> Path:
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.22), frameon=False, ncol=2)
     fig.tight_layout(rect=[0, 0.08, 1, 1])
     out = outdir / "fig_deepseek_v02_fault_signals.pdf"
-    fig.savefig(out)
-    fig.savefig(out.with_suffix(".png"))
-    plt.close(fig)
-    return out
-
-
-def _fig_deepseek_v02_large_topologies(outdir: Path, release_data: dict) -> Path:
-    _apply_base_style()
-    topologies = release_data["large_topologies"]
-    topology_keys = ["xlarge", "fat-tree-k8", "fat-tree-k12"]
-    topology_names = ["Xlarge", "Fat-tree K=8", "Fat-tree K=12"]
-    topology_labels = [
-        f"{name}\n({int(topologies[key]['agent_scored_cases'])})"
-        for name, key in zip(topology_names, topology_keys, strict=True)
-    ]
-    metrics = [
-        ("Primary reward", "primary_reward", "#009E73", ""),
-        ("Detection F1", "detection_f1", "#0072B2", "\\\\"),
-        ("Device localization", "device_localization_rate", "#D55E00", "////"),
-        ("Interface localization", "interface_localization_rate", "#CC79A7", ".."),
-        ("Fault type", "fault_type_accuracy", "#E69F00", "xx"),
-    ]
-
-    fig, ax = plt.subplots(figsize=(6.2, 3.5))
-    x = np.arange(len(topology_keys))
-    bar_width = 0.15
-    offsets = np.linspace(-2 * bar_width, 2 * bar_width, len(metrics))
-    for offset, (label, key, color, hatch) in zip(offsets, metrics, strict=False):
-        values = [100 * float(topologies[topology][key]) for topology in topology_keys]
-        bars = ax.bar(
-            x + offset,
-            values,
-            width=bar_width,
-            color=color,
-            hatch=hatch,
-            edgecolor="white",
-            linewidth=0.5,
-            label=label,
-            zorder=3,
-        )
-        for bar, value in zip(bars, values, strict=False):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                value + 1.3,
-                f"{value:.0f}",
-                ha="center",
-                va="bottom",
-                fontsize=5.5,
-            )
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(topology_labels)
-    ax.set_xlabel("Large topology snapshot (# Agent-scored cases)", labelpad=3)
-    ax.set_ylabel("Result (%)", labelpad=3)
-    ax.set_ylim(0, 112)
-    ax.set_yticks([0, 20, 40, 60, 80, 100])
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.24), frameon=False, ncol=3)
-    fig.tight_layout(rect=[0, 0.11, 1, 1])
-    out = outdir / "fig_deepseek_v02_large_topologies.pdf"
     fig.savefig(out)
     fig.savefig(out.with_suffix(".png"))
     plt.close(fig)
@@ -1174,8 +1291,8 @@ def _fig_advisor_overall_quality(outdir: Path, dataset: dict) -> Path:
     _apply_base_style()
     fig, ax = plt.subplots(figsize=(8.0, 4.4))
     metrics = [
-        ("Primary reward", "primary_reward", "#009E73", ""),
-        ("Detection F1", "detection_f1", "#0072B2", "\\\\"),
+        ("Diagnosis score", "primary_reward", "#009E73", ""),
+        ("Fault detection F1", "detection_f1", "#0072B2", "\\\\"),
         ("Device localization", "device_localization_rate", "#D55E00", "////"),
         ("Interface localization", "interface_localization_rate", "#CC79A7", ".."),
     ]
@@ -1469,9 +1586,9 @@ def _advisor_talking_points(dataset: dict) -> str:
                 f"- 共 {dataset['totals']['operational_cases']} 个有效 observation、"
                 f"{dataset['totals']['agent_scored_cases']} 个 Agent-scored cases。",
                 "- 20 个 healthy case 全部零正式 Pingmesh anomaly，Agent 也全部判断健康。",
-                f"- CLOS primary reward：Medium {pct(overall['medium']['primary_reward'])} → "
+                f"- CLOS diagnosis score：Medium {pct(overall['medium']['primary_reward'])} → "
                 f"Large {pct(overall['large']['primary_reward'])} → Xlarge {pct(overall['xlarge']['primary_reward'])}。",
-                f"- Fat-tree primary reward：K8 {pct(overall['fat-tree-k8']['primary_reward'])} → "
+                f"- Fat-tree diagnosis score：K8 {pct(overall['fat-tree-k8']['primary_reward'])} → "
                 f"K12 {pct(overall['fat-tree-k12']['primary_reward'])}。",
                 "- Interface localization 是最弱指标，大型拓扑约 28%–45%。",
                 "",
@@ -1549,6 +1666,17 @@ def main():
         help="Machine-readable NetOpsBench 0.2 release result snapshot",
     )
     parser.add_argument(
+        "--readme-assets-dir",
+        type=Path,
+        help="Generate only the two compact README release figures in this directory",
+    )
+    parser.add_argument(
+        "--k12-case-data",
+        type=Path,
+        default=DEFAULT_K12_CASE_DATA,
+        help="Machine-readable Fat-tree K=12 case-level result snapshot",
+    )
+    parser.add_argument(
         "--advisor-report-dir",
         type=Path,
         help="Generate only the five-topology advisor report package in this directory",
@@ -1561,6 +1689,16 @@ def main():
     args = parser.parse_args()
 
     release_data = _load_release_data(args.release_data)
+    if args.readme_assets_dir is not None:
+        case_data = _load_k12_case_data(args.k12_case_data, release_data)
+        figures = [
+            _fig_readme_release_overview(args.readme_assets_dir, release_data),
+            _fig_readme_k12_case_map(args.readme_assets_dir, case_data),
+        ]
+        print(f"Generated README release figures in {args.readme_assets_dir}/")
+        for figure in figures:
+            print(f"  {figure.name}  (+.png)")
+        return
     if args.advisor_report_dir is not None:
         if args.advisor_manifest is None:
             parser.error("--advisor-manifest is required with --advisor-report-dir")
@@ -1577,6 +1715,7 @@ def main():
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    case_data = _load_k12_case_data(args.k12_case_data, release_data)
 
     _apply_base_style()
     figs = [
@@ -1588,9 +1727,9 @@ def main():
         _fig_tool_calls(outdir),
         _fig_input_tokens(outdir),
         _fig_output_tokens(outdir),
-        _fig_deepseek_v02_quality(outdir, release_data),
+        _fig_readme_release_overview(outdir, release_data),
         _fig_deepseek_v02_fault_signals(outdir, release_data),
-        _fig_deepseek_v02_large_topologies(outdir, release_data),
+        _fig_readme_k12_case_map(outdir, case_data),
     ]
 
     print(f"Generated {len(figs)} figure(s) in {outdir}/")

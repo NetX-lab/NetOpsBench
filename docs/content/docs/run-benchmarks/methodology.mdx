@@ -144,11 +144,11 @@ The judge affects only fault-type classification. Verdict, device localization, 
 | Metric | Interpretation |
 |---|---|
 | `detection_accuracy` | Fault/healthy verdict accuracy. |
-| `detection_f1` | Fault/healthy verdict F1-score used in the results plots. |
+| `detection_f1` | Fault/healthy verdict F1-score, shown publicly as **Fault detection F1**. |
 | `device_localization_rate` | Device-level troubleshooting precision. |
 | `interface_localization_rate` | Interface-level precision for applicable cases. |
 | `localization_composite_score` | Combined localization metric used for comparison. |
-| `average_score` | Mean case score over the run. |
+| `average_score` | Mean verdict-gated case score, shown publicly as **Diagnosis score**. Healthy cases require the correct verdict; fault cases receive localization credit only after the fault is detected. |
 | `avg_time_seconds` | Mean diagnosis latency per case. |
 | `avg_tool_calls` | Mean tool calls per case. |
 
