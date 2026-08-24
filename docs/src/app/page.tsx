@@ -35,7 +35,7 @@ const pipelineStages = [
     stage: 'Environment',
     title: 'Scalable Live Networks',
     description:
-      'Supports emulation of mainstream data-center network live environments, including spine-leaf, fat-tree and rail-optimized topologies.',
+      'Supports live CLOS and Fat-tree data-center networks, from compact validation labs through Xlarge and Fat-tree K=12.',
   },
   {
     stage: 'Evidence',
@@ -86,7 +86,7 @@ export default function HomePage() {
         <div className={styles.heroContent}>
           <div className={styles.badge}>
             <span className={styles.badgeDot} />
-            Open arena · Fair benchmarks · AI infrastructure
+            NetOpsBench v0.2.0 · 2026-08
           </div>
           <h1 className={styles.heroTitle}>
             <span className={styles.heroTitleLine}>
@@ -111,6 +111,9 @@ export default function HomePage() {
             </a>
             <Link href="/docs" className={styles.ctaPrimary}>
               Read Documentation
+            </Link>
+            <Link href="/docs/releases/v0.2.0" className={styles.ctaOutlined}>
+              v0.2.0 Release Notes
             </Link>
           </div>
         </div>

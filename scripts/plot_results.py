@@ -1,8 +1,9 @@
 """
-Generate SIGCOMM/NSDI-style benchmark comparison figures.
+Generate SIGCOMM/NSDI-style benchmark result figures.
 
-Produces eight separate PDF/PNG figures comparing Kimi, DeepSeek, MiniMax, and
-OpenAI across topology scales (xs -> large) for the following metrics:
+Produces eight legacy cross-model PDF/PNG figures comparing Kimi, DeepSeek,
+MiniMax, and OpenAI across topology scales (xs -> large) for the following
+metrics:
   1. Verdict F1-score
   2. Device Localization Rate
   3. Interface Localization Rate
@@ -12,8 +13,15 @@ OpenAI across topology scales (xs -> large) for the following metrics:
   7. Avg Input Tokens
   8. Avg Output Tokens
 
+It also produces three figures for the separately versioned NetOpsBench 0.2
+DeepSeek release rerun. The two snapshots are intentionally not mixed into one
+cross-model chart because they use different benchmark contracts.
+
 Usage:
     python3 scripts/plot_results.py [--outdir scenario_results/figures]
+    python3 scripts/plot_results.py \
+        --advisor-report-dir scenario_results/advisor_report \
+        --advisor-manifest /path/to/advisor-inputs.json
 
 Requires:
     matplotlib
@@ -22,6 +30,8 @@ Requires:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from pathlib import Path
 
 import matplotlib
@@ -215,6 +225,50 @@ LEGEND_LABELS = {
     "DeepSeek": "DeepSeek V4 Pro",
     "OpenAI": "OpenAI GPT-5.5",
     "MiniMax": "MiniMax M3",
+}
+
+DEFAULT_RELEASE_DATA = (
+    Path(__file__).resolve().parents[1] / "docs" / "public" / "assets" / "benchmark" / "deepseek_v02_release.json"
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ADVISOR_TOPOLOGIES = ["medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"]
+ADVISOR_LABELS = {
+    "medium": "Medium",
+    "large": "Large",
+    "xlarge": "Xlarge",
+    "fat-tree-k8": "Fat-tree K=8",
+    "fat-tree-k12": "Fat-tree K=12",
+}
+
+FAULT_ORDER = [
+    "acl_misconfig",
+    "bgp_neighbor_misconfig",
+    "blackhole_route",
+    "device_down",
+    "high_latency",
+    "link_down",
+    "link_flapping",
+    "mtu_mismatch",
+    "packet_corruption",
+    "packet_loss",
+    "route_policy_misconfig",
+    "static_route_misconfig",
+]
+FAULT_LABELS = {
+    "acl_misconfig": "ACL misconfig",
+    "bgp_neighbor_misconfig": "BGP neighbor",
+    "blackhole_route": "Blackhole route",
+    "device_down": "Device down",
+    "high_latency": "High latency",
+    "link_down": "Link down",
+    "link_flapping": "Link flapping",
+    "mtu_mismatch": "MTU mismatch",
+    "packet_corruption": "Packet corruption",
+    "packet_loss": "Packet loss",
+    "route_policy_misconfig": "Route policy",
+    "static_route_misconfig": "Static route",
+    "healthy_network": "Healthy",
 }
 
 # ---------------------------------------------------------------------------
@@ -494,6 +548,169 @@ def _fig_output_tokens(outdir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# NetOpsBench 0.2 DeepSeek release rerun
+# ---------------------------------------------------------------------------
+
+
+def _load_release_data(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("benchmark_contract") != "netopsbench-0.2-release":
+        raise ValueError(f"unsupported release result contract: {path}")
+    missing_scales = set(SCALES) - set(payload.get("scales", {}))
+    if missing_scales:
+        raise ValueError(f"release result is missing scales {sorted(missing_scales)}: {path}")
+    return payload
+
+
+def _fig_deepseek_v02_quality(outdir: Path, release_data: dict) -> Path:
+    _apply_base_style()
+    fig, ax = plt.subplots(figsize=(5.2, 3.1))
+    scales = release_data["scales"]
+    series = [
+        ("Detection F1", "detection_f1", "#0072B2", "o", 5),
+        ("Device localization", "device_localization_rate", "#D55E00", "s", -13),
+        ("Interface localization", "interface_localization_rate", "#CC79A7", "^", 5),
+        ("Primary reward", "primary_reward", "#009E73", "D", 5),
+    ]
+    x = np.arange(len(SCALES))
+    for label, key, color, marker, label_offset in series:
+        values = [100 * float(scales[scale][key]) for scale in SCALES]
+        ax.plot(x, values, label=label, color=color, marker=marker, linewidth=1.8, markersize=4.5)
+        for position, value in zip(x, values, strict=False):
+            ax.annotate(
+                f"{value:.1f}",
+                (position, value),
+                xytext=(0, label_offset),
+                textcoords="offset points",
+                ha="center",
+                fontsize=6,
+                color=color,
+            )
+    ax.set_xticks(x)
+    ax.set_xticklabels(SCALE_LABELS)
+    ax.set_xlabel("Topology Scale (# scenarios)", labelpad=3)
+    ax.set_ylabel("Result (%)", labelpad=3)
+    ax.set_ylim(35, 105)
+    ax.set_yticks([40, 50, 60, 70, 80, 90, 100])
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="lower left", frameon=False, ncol=2)
+    fig.tight_layout()
+    out = outdir / "fig_deepseek_v02_quality.pdf"
+    fig.savefig(out)
+    fig.savefig(out.with_suffix(".png"))
+    plt.close(fig)
+    return out
+
+
+def _fig_deepseek_v02_fault_signals(outdir: Path, release_data: dict) -> Path:
+    _apply_base_style()
+    families = [(name, values) for name, values in release_data["fault_families"].items() if name != "healthy_network"]
+    families.sort(key=lambda item: (item[1]["correct_verdict"] / item[1]["cases"], item[0]))
+    labels = [name.replace("_", " ") for name, _ in families]
+    verdict = [100 * values["correct_verdict"] / values["cases"] for _, values in families]
+    pingmesh = [100 * values["pingmesh_signal_cases"] / values["cases"] for _, values in families]
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.1))
+    y = np.arange(len(families))
+    bar_height = 0.36
+    ax.barh(
+        y - bar_height / 2,
+        pingmesh,
+        height=bar_height,
+        color="#9ECAE1",
+        edgecolor="white",
+        label="Cases with Pingmesh anomaly",
+    )
+    ax.barh(
+        y + bar_height / 2,
+        verdict,
+        height=bar_height,
+        color="#D55E00",
+        edgecolor="white",
+        label="Correct Agent verdict",
+    )
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Cases in fault family (%)")
+    ax.set_xlim(0, 108)
+    ax.set_xticks([0, 20, 40, 60, 80, 100])
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.22), frameon=False, ncol=2)
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
+    out = outdir / "fig_deepseek_v02_fault_signals.pdf"
+    fig.savefig(out)
+    fig.savefig(out.with_suffix(".png"))
+    plt.close(fig)
+    return out
+
+
+def _fig_deepseek_v02_large_topologies(outdir: Path, release_data: dict) -> Path:
+    _apply_base_style()
+    topologies = release_data["large_topologies"]
+    topology_keys = ["xlarge", "fat-tree-k8", "fat-tree-k12"]
+    topology_names = ["Xlarge", "Fat-tree K=8", "Fat-tree K=12"]
+    topology_labels = [
+        f"{name}\n({int(topologies[key]['agent_scored_cases'])})"
+        for name, key in zip(topology_names, topology_keys, strict=True)
+    ]
+    metrics = [
+        ("Primary reward", "primary_reward", "#009E73", ""),
+        ("Detection F1", "detection_f1", "#0072B2", "\\\\"),
+        ("Device localization", "device_localization_rate", "#D55E00", "////"),
+        ("Interface localization", "interface_localization_rate", "#CC79A7", ".."),
+        ("Fault type", "fault_type_accuracy", "#E69F00", "xx"),
+    ]
+
+    fig, ax = plt.subplots(figsize=(6.2, 3.5))
+    x = np.arange(len(topology_keys))
+    bar_width = 0.15
+    offsets = np.linspace(-2 * bar_width, 2 * bar_width, len(metrics))
+    for offset, (label, key, color, hatch) in zip(offsets, metrics, strict=False):
+        values = [100 * float(topologies[topology][key]) for topology in topology_keys]
+        bars = ax.bar(
+            x + offset,
+            values,
+            width=bar_width,
+            color=color,
+            hatch=hatch,
+            edgecolor="white",
+            linewidth=0.5,
+            label=label,
+            zorder=3,
+        )
+        for bar, value in zip(bars, values, strict=False):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + 1.3,
+                f"{value:.0f}",
+                ha="center",
+                va="bottom",
+                fontsize=5.5,
+            )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(topology_labels)
+    ax.set_xlabel("Large topology snapshot (# Agent-scored cases)", labelpad=3)
+    ax.set_ylabel("Result (%)", labelpad=3)
+    ax.set_ylim(0, 112)
+    ax.set_yticks([0, 20, 40, 60, 80, 100])
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.24), frameon=False, ncol=3)
+    fig.tight_layout(rect=[0, 0.11, 1, 1])
+    out = outdir / "fig_deepseek_v02_large_topologies.pdf"
+    fig.savefig(out)
+    fig.savefig(out.with_suffix(".png"))
+    plt.close(fig)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Combined 2×3 overview figure
 # ---------------------------------------------------------------------------
 
@@ -563,6 +780,761 @@ def _fig_combined(outdir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Five-topology advisor report
+# ---------------------------------------------------------------------------
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _normalise_fault_type(value: str | None) -> str:
+    return "healthy_network" if value in {None, "none", "healthy_network"} else value
+
+
+def _empty_fault_metrics() -> dict:
+    return {
+        "operational_cases": 0,
+        "signal_cases": 0,
+        "agent_cases": 0,
+        "correct_verdict": 0,
+        "correct_device": 0,
+        "interface_applicable": 0,
+        "correct_interface": 0,
+    }
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _with_rates(values: dict) -> dict:
+    result = dict(values)
+    result.update(
+        {
+            "signal_rate": _rate(values["signal_cases"], values["operational_cases"]),
+            "verdict_rate": _rate(values["correct_verdict"], values["agent_cases"]),
+            "device_rate": _rate(values["correct_device"], values["agent_cases"]),
+            "interface_rate": _rate(values["correct_interface"], values["interface_applicable"]),
+        }
+    )
+    return result
+
+
+def _agent_metrics(path: Path) -> tuple[dict[str, dict], dict]:
+    rows = _read_jsonl(path)
+    scenario_ids = [str(row["scenario_id"]) for row in rows]
+    if len(scenario_ids) != len(set(scenario_ids)):
+        raise ValueError(f"duplicate Agent scenario IDs in {path}")
+
+    by_fault: dict[str, dict] = {}
+    predicted_faults = 0
+    detected_positives = 0
+    positive_cases = 0
+    correct_device = 0
+    interface_applicable = 0
+    correct_interface = 0
+    correct_fault_type = 0
+    correct_verdict = 0
+    score_total = 0.0
+    healthy_cases = 0
+    healthy_correct = 0
+    recursion_cases = 0
+
+    for row in rows:
+        details = row["details"]
+        fault_type = _normalise_fault_type(details.get("ground_truth", {}).get("fault_type"))
+        metrics = by_fault.setdefault(fault_type, _empty_fault_metrics())
+        metrics["agent_cases"] += 1
+        metrics["correct_verdict"] += int(bool(row["correct_verdict"]))
+        correct_verdict += int(bool(row["correct_verdict"]))
+        score_total += float(row["score"])
+
+        verdict = details["agent_output"]["verdict"]
+        predicted_faults += int(verdict == "fault_detected")
+        recursion_cases += int(details["agent_output"].get("metadata", {}).get("error_type") == "GraphRecursionError")
+
+        if fault_type == "healthy_network":
+            healthy_cases += 1
+            healthy_correct += int(bool(row["correct_verdict"]))
+            continue
+
+        positive_cases += 1
+        detected_positives += int(verdict == "fault_detected")
+        metrics["correct_device"] += int(bool(row["correct_device"]))
+        correct_device += int(bool(row["correct_device"]))
+        correct_fault_type += int(bool(row["correct_fault_type"]))
+        if details["interface_applicable"]:
+            metrics["interface_applicable"] += 1
+            metrics["correct_interface"] += int(bool(row["correct_interface"]))
+            interface_applicable += 1
+            correct_interface += int(bool(row["correct_interface"]))
+
+    precision = _rate(detected_positives, predicted_faults) or 0.0
+    recall = _rate(detected_positives, positive_cases) or 0.0
+    detection_f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    overall = {
+        "agent_cases": len(rows),
+        "positive_cases": positive_cases,
+        "healthy_cases": healthy_cases,
+        "healthy_correct": healthy_correct,
+        "correct_verdict": correct_verdict,
+        "detected_positives": detected_positives,
+        "predicted_faults": predicted_faults,
+        "correct_device": correct_device,
+        "interface_applicable": interface_applicable,
+        "correct_interface": correct_interface,
+        "correct_fault_type": correct_fault_type,
+        "recursion_cases": recursion_cases,
+        "primary_reward_sum": score_total,
+        "primary_reward": score_total / len(rows),
+        "detection_f1": detection_f1,
+        "device_localization_rate": correct_device / positive_cases,
+        "device_given_detection": correct_device / detected_positives,
+        "interface_localization_rate": correct_interface / interface_applicable,
+        "fault_type_accuracy": correct_fault_type / positive_cases,
+        "scenario_ids": scenario_ids,
+    }
+    return by_fault, overall
+
+
+def _observability_metrics(topology: str, path: Path) -> dict[str, dict]:
+    by_fault: dict[str, dict] = {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    if topology in {"medium", "large"}:
+        for row in payload:
+            fault_type = _normalise_fault_type(row["fault_type"])
+            metrics = by_fault.setdefault(fault_type, _empty_fault_metrics())
+            if not (row["case_valid"] and row["query_ok"] and row["coverage_status"] == "complete"):
+                raise ValueError(f"invalid observation for {row['scenario_id']}")
+            metrics["operational_cases"] += 1
+            metrics["signal_cases"] += int(row["summary"]["total_anomalies"] > 0)
+        return by_fault
+
+    if topology == "xlarge":
+        source = payload["pingmesh"]["by_family"]
+        for raw_fault, values in source.items():
+            fault_type = _normalise_fault_type(raw_fault)
+            metrics = by_fault.setdefault(fault_type, _empty_fault_metrics())
+            metrics["operational_cases"] = int(values["cases"])
+            metrics["signal_cases"] = sum(int(total) > 0 for total in values["pingmesh_totals"])
+        return by_fault
+
+    if topology == "fat-tree-k8":
+        for raw_fault, values in payload["fault_families"].items():
+            fault_type = _normalise_fault_type(raw_fault)
+            metrics = by_fault.setdefault(fault_type, _empty_fault_metrics())
+            metrics["operational_cases"] = int(values["cases"])
+            metrics["signal_cases"] = int(values["formal_anomaly_cases"])
+        return by_fault
+
+    if topology == "fat-tree-k12":
+        for raw_fault, values in payload["pingmesh_by_fault_type"].items():
+            fault_type = _normalise_fault_type(raw_fault)
+            metrics = by_fault.setdefault(fault_type, _empty_fault_metrics())
+            metrics["operational_cases"] = int(values["cases"])
+            metrics["signal_cases"] = int(values["cases_with_anomaly"])
+        return by_fault
+
+    raise ValueError(f"unsupported advisor topology: {topology}")
+
+
+def _official_overall(release_data: dict, topology: str) -> dict:
+    if topology in {"medium", "large"}:
+        values = release_data["scales"][topology]
+        operational_cases = int(values["cases"])
+        agent_cases = int(values["cases"])
+    else:
+        values = release_data["large_topologies"][topology]
+        operational_cases = int(values["operationally_valid_cases"])
+        agent_cases = int(values["agent_scored_cases"])
+    return {
+        "operational_cases": operational_cases,
+        "agent_cases": agent_cases,
+        "primary_reward": float(values["primary_reward"]),
+        "detection_f1": float(values["detection_f1"]),
+        "device_localization_rate": float(values["device_localization_rate"]),
+        "interface_localization_rate": float(values["interface_localization_rate"]),
+        "fault_type_accuracy": float(values["fault_type_accuracy"]),
+        "avg_agent_seconds": float(values["avg_agent_seconds"]),
+        "avg_tool_calls": float(values["avg_tool_calls"]),
+        "avg_input_tokens": float(values["avg_input_tokens"]),
+    }
+
+
+def _assert_close(name: str, actual: float, expected: float, tolerance: float = 0.0011) -> None:
+    if abs(actual - expected) > tolerance:
+        raise ValueError(f"{name} mismatch: derived={actual:.6f} official={expected:.6f}")
+
+
+def _load_advisor_manifest(path: Path) -> tuple[dict[str, Path], dict[str, Path], dict[str, dict[str, str]]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("topologies")
+    if not isinstance(entries, dict) or set(entries) != set(ADVISOR_TOPOLOGIES):
+        raise ValueError(f"advisor manifest must define exactly {ADVISOR_TOPOLOGIES}: {path}")
+
+    result_paths: dict[str, Path] = {}
+    observability_paths: dict[str, Path] = {}
+    provenance: dict[str, dict[str, str]] = {}
+    for topology in ADVISOR_TOPOLOGIES:
+        entry = entries[topology]
+        if not isinstance(entry, dict) or set(entry) != {"results", "observability"}:
+            raise ValueError(f"advisor manifest entry {topology!r} must define results and observability")
+        provenance[topology] = {}
+        for key, destination in (("results", result_paths), ("observability", observability_paths)):
+            raw = entry[key]
+            if not isinstance(raw, str) or not raw:
+                raise ValueError(f"advisor manifest entry {topology!r}.{key} must be a non-empty path")
+            resolved = Path(raw)
+            if not resolved.is_absolute():
+                resolved = path.parent / resolved
+            resolved = resolved.resolve()
+            if not resolved.is_file():
+                raise ValueError(f"advisor input does not exist: {resolved}")
+            destination[topology] = resolved
+            provenance[topology][key] = raw
+    return result_paths, observability_paths, provenance
+
+
+def _build_advisor_dataset(
+    release_data: dict,
+    result_paths: dict[str, Path],
+    observability_paths: dict[str, Path],
+    provenance: dict[str, dict[str, str]],
+) -> dict:
+    topologies: dict[str, dict] = {}
+    operational_ids: set[str] = set()
+    all_agent_ids: set[str] = set()
+
+    for topology in ADVISOR_TOPOLOGIES:
+        agent_faults, derived = _agent_metrics(result_paths[topology])
+        observation_faults = _observability_metrics(topology, observability_paths[topology])
+        official = _official_overall(release_data, topology)
+
+        if derived["agent_cases"] != official["agent_cases"]:
+            raise ValueError(f"Agent case count mismatch for {topology}")
+        for metric in (
+            "primary_reward",
+            "detection_f1",
+            "device_localization_rate",
+            "interface_localization_rate",
+            "fault_type_accuracy",
+        ):
+            _assert_close(f"{topology}.{metric}", derived[metric], official[metric])
+
+        faults: dict[str, dict] = {}
+        for fault_type in [*FAULT_ORDER, "healthy_network"]:
+            merged = _empty_fault_metrics()
+            for key, value in observation_faults.get(fault_type, {}).items():
+                merged[key] = value
+            for key in (
+                "agent_cases",
+                "correct_verdict",
+                "correct_device",
+                "interface_applicable",
+                "correct_interface",
+            ):
+                merged[key] = agent_faults.get(fault_type, {}).get(key, 0)
+            faults[fault_type] = _with_rates(merged)
+
+        operational_cases = sum(values["operational_cases"] for values in faults.values())
+        if operational_cases != official["operational_cases"]:
+            raise ValueError(f"operational case count mismatch for {topology}")
+
+        topology_ids = set(derived.pop("scenario_ids"))
+        if len(topology_ids) != operational_cases:
+            raise ValueError(f"operational scenario identity mismatch for {topology}")
+        if operational_ids & topology_ids:
+            raise ValueError(f"scenario IDs overlap across topologies: {topology}")
+        operational_ids.update(topology_ids)
+        all_agent_ids.update(topology_ids)
+
+        for key in (
+            "positive_cases",
+            "healthy_cases",
+            "healthy_correct",
+            "correct_verdict",
+            "detected_positives",
+            "predicted_faults",
+            "correct_device",
+            "interface_applicable",
+            "correct_interface",
+            "correct_fault_type",
+            "recursion_cases",
+            "primary_reward_sum",
+            "device_given_detection",
+        ):
+            official[key] = derived[key]
+        topologies[topology] = {"overall": official, "faults": faults}
+
+    if len(operational_ids) != 290 or len(all_agent_ids) != 290:
+        raise ValueError("advisor report requires exactly 290 operational and 290 Agent-scored scenarios")
+
+    fault_aggregate: dict[str, dict] = {}
+    for fault_type in [*FAULT_ORDER, "healthy_network"]:
+        totals = _empty_fault_metrics()
+        for topology in ADVISOR_TOPOLOGIES:
+            for key in totals:
+                totals[key] += int(topologies[topology]["faults"][fault_type][key])
+        fault_aggregate[fault_type] = _with_rates(totals)
+
+    healthy = fault_aggregate["healthy_network"]
+    if healthy["operational_cases"] != 20 or healthy["signal_cases"] != 0:
+        raise ValueError("expected 20 clean healthy observations")
+    if healthy["agent_cases"] != 20 or healthy["correct_verdict"] != 20:
+        raise ValueError("expected 20 correctly diagnosed healthy cases")
+
+    return {
+        "schema_version": 1,
+        "title": "NetOpsBench v0.2.0 five-topology DeepSeek advisor report",
+        "benchmark_contract": "netopsbench-0.2-release",
+        "model": "deepseek-v4-pro",
+        "agent": "minimal-deepagent",
+        "aggregation": "case-level micro average",
+        "totals": {
+            "operational_cases": 290,
+            "agent_scored_cases": 290,
+            "healthy_observations": 20,
+            "healthy_agent_cases": 20,
+        },
+        "topology_order": ADVISOR_TOPOLOGIES,
+        "fault_order": [*FAULT_ORDER, "healthy_network"],
+        "topologies": topologies,
+        "fault_aggregate": fault_aggregate,
+        "provenance": provenance,
+        "notes": ["Interface localization uses only evaluator-marked interface-applicable cases."],
+    }
+
+
+def _write_advisor_csv(dataset: dict, path: Path) -> None:
+    fields = [
+        "section",
+        "topology",
+        "fault_type",
+        "operational_cases",
+        "signal_cases",
+        "signal_rate",
+        "agent_cases",
+        "correct_verdict",
+        "verdict_rate",
+        "correct_device",
+        "device_rate",
+        "interface_applicable",
+        "correct_interface",
+        "interface_rate",
+        "positive_cases",
+        "healthy_cases",
+        "healthy_correct",
+        "predicted_faults",
+        "detected_positives",
+        "correct_fault_type",
+        "recursion_cases",
+        "primary_reward_sum",
+        "primary_reward",
+        "detection_f1",
+        "device_localization_rate",
+        "device_given_detection",
+        "interface_localization_rate",
+        "avg_input_tokens",
+        "avg_tool_calls",
+        "avg_agent_seconds",
+    ]
+    rows: list[dict] = []
+    for topology in ADVISOR_TOPOLOGIES:
+        rows.append({"section": "topology_overall", "topology": topology, **dataset["topologies"][topology]["overall"]})
+        for fault_type, values in dataset["topologies"][topology]["faults"].items():
+            rows.append({"section": "fault_topology", "topology": topology, "fault_type": fault_type, **values})
+    for fault_type, values in dataset["fault_aggregate"].items():
+        rows.append({"section": "fault_aggregate", "fault_type": fault_type, **values})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _advisor_architecture_background(ax) -> None:
+    ax.axvspan(-0.5, 2.5, color="#DDEBF7", alpha=0.32, zorder=0)
+    ax.axvspan(2.5, 4.5, color="#FCE4D6", alpha=0.32, zorder=0)
+    ax.axvline(2.5, color="0.45", linewidth=0.8, linestyle="--", zorder=1)
+    transform = ax.get_xaxis_transform()
+    ax.text(1.0, 1.02, "CLOS", transform=transform, ha="center", va="bottom", fontsize=8, fontweight="bold")
+    ax.text(3.5, 1.02, "Fat-tree", transform=transform, ha="center", va="bottom", fontsize=8, fontweight="bold")
+
+
+def _save_advisor_figure(fig, outdir: Path, stem: str) -> Path:
+    pdf = outdir / f"{stem}.pdf"
+    fig.savefig(pdf, bbox_inches="tight", pad_inches=0.12)
+    fig.savefig(pdf.with_suffix(".png"), dpi=300, bbox_inches="tight", pad_inches=0.12)
+    plt.close(fig)
+    return pdf
+
+
+def _fig_advisor_overall_quality(outdir: Path, dataset: dict) -> Path:
+    _apply_base_style()
+    fig, ax = plt.subplots(figsize=(8.0, 4.4))
+    metrics = [
+        ("Primary reward", "primary_reward", "#009E73", ""),
+        ("Detection F1", "detection_f1", "#0072B2", "\\\\"),
+        ("Device localization", "device_localization_rate", "#D55E00", "////"),
+        ("Interface localization", "interface_localization_rate", "#CC79A7", ".."),
+    ]
+    x = np.arange(len(ADVISOR_TOPOLOGIES))
+    width = 0.19
+    offsets = np.linspace(-1.5 * width, 1.5 * width, len(metrics))
+    _advisor_architecture_background(ax)
+    for offset, (label, key, color, hatch) in zip(offsets, metrics, strict=False):
+        values = [100 * dataset["topologies"][name]["overall"][key] for name in ADVISOR_TOPOLOGIES]
+        bars = ax.bar(
+            x + offset,
+            values,
+            width,
+            label=label,
+            color=color,
+            hatch=hatch,
+            edgecolor="white",
+            linewidth=0.5,
+            zorder=3,
+        )
+        for bar, value in zip(bars, values, strict=False):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + 1.2,
+                f"{value:.0f}",
+                ha="center",
+                va="bottom",
+                fontsize=6,
+            )
+    labels = []
+    for name in ADVISOR_TOPOLOGIES:
+        cases = dataset["topologies"][name]["overall"]["agent_cases"]
+        labels.append(f"{ADVISOR_LABELS[name]}\n(n={cases})")
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("Result (%)")
+    ax.set_ylim(0, 112)
+    ax.set_yticks([0, 20, 40, 60, 80, 100])
+    ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, frameon=False)
+    ax.set_title("Overall Benchmark Quality Across Topologies", pad=20)
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
+    return _save_advisor_figure(fig, outdir, "fig1_overall_quality")
+
+
+def _fig_advisor_evidence_to_localization(outdir: Path, dataset: dict) -> Path:
+    _apply_base_style()
+    aggregate = dataset["fault_aggregate"]
+    order = sorted(
+        FAULT_ORDER,
+        key=lambda fault: (
+            (aggregate[fault]["signal_rate"] or 0) - (aggregate[fault]["verdict_rate"] or 0),
+            fault,
+        ),
+    )
+    y = np.arange(len(order))
+    fig, (left, right) = plt.subplots(
+        1,
+        2,
+        figsize=(11.0, 6.3),
+        sharey=True,
+        gridspec_kw={"width_ratios": [2.6, 1.25], "wspace": 0.05},
+    )
+    series = [
+        ("Pingmesh signal", "signal_rate", "#0072B2", "o"),
+        ("Correct verdict", "verdict_rate", "#D55E00", "s"),
+        ("Correct device", "device_rate", "#009E73", "^"),
+    ]
+    for label, key, color, marker in series:
+        values = [100 * float(aggregate[fault][key] or 0) for fault in order]
+        left.plot(values, y, linestyle="none", marker=marker, markersize=6, color=color, label=label, zorder=3)
+    for position, fault in enumerate(order):
+        values = [100 * float(aggregate[fault][key] or 0) for _, key, _, _ in series]
+        left.hlines(position, min(values), max(values), color="0.82", linewidth=1, zorder=1)
+    labels = [
+        f"{FAULT_LABELS[fault]}  (obs {aggregate[fault]['operational_cases']}, "
+        f"agent {aggregate[fault]['agent_cases']})"
+        for fault in order
+    ]
+    left.set_yticks(y, labels)
+    left.set_xlim(-2, 104)
+    left.set_xlabel("Cases (%)")
+    left.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    left.legend(loc="lower center", bbox_to_anchor=(0.5, -0.18), frameon=False, ncol=3)
+    left.set_title("A. Evidence, detection, and device localization")
+    left.spines[["top", "right"]].set_visible(False)
+
+    for position, fault in enumerate(order):
+        values = aggregate[fault]
+        applicable = values["interface_applicable"]
+        if applicable:
+            rate = 100 * values["correct_interface"] / applicable
+            right.barh(position, rate, height=0.48, color="#CC79A7", edgecolor="white", zorder=2)
+            right.text(
+                min(rate + 2, 93),
+                position,
+                f"{values['correct_interface']}/{applicable}",
+                va="center",
+                fontsize=6.5,
+            )
+        else:
+            right.text(50, position, "N/A", ha="center", va="center", color="0.5", fontsize=7)
+    right.set_xlim(0, 104)
+    right.set_xlabel("Correct interfaces (%)")
+    right.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    right.set_title("B. Interface-applicable cases only")
+    right.spines[["top", "right", "left"]].set_visible(False)
+    right.tick_params(axis="y", left=False, labelleft=False)
+    left.invert_yaxis()
+    fig.suptitle("From Fault Evidence to Agent Localization", y=1.01, fontsize=10)
+    fig.text(
+        0.01,
+        0.01,
+        "Case-level micro aggregation. N/A means the evaluator does not require an interface for that fault family.",
+        fontsize=6.5,
+    )
+    fig.subplots_adjust(left=0.25, right=0.98, bottom=0.16, top=0.86, wspace=0.05)
+    return _save_advisor_figure(fig, outdir, "fig2_evidence_to_localization")
+
+
+def _fig_advisor_cost(outdir: Path, dataset: dict) -> Path:
+    _apply_base_style()
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.8))
+    configs = [
+        ("avg_input_tokens", "Input tokens (K)", lambda value: value / 1000, "{:.0f}"),
+        ("avg_tool_calls", "Tool calls", lambda value: value, "{:.1f}"),
+        ("avg_agent_seconds", "Diagnosis time (s)", lambda value: value, "{:.1f}"),
+    ]
+    x = np.arange(len(ADVISOR_TOPOLOGIES))
+    colors = ["#56B4E9", "#56B4E9", "#56B4E9", "#E69F00", "#E69F00"]
+    for ax, (key, ylabel, transform, value_format) in zip(axes, configs, strict=False):
+        _advisor_architecture_background(ax)
+        values = [transform(dataset["topologies"][name]["overall"][key]) for name in ADVISOR_TOPOLOGIES]
+        bars = ax.bar(x, values, width=0.62, color=colors, edgecolor="white", zorder=3)
+        for bar, value in zip(bars, values, strict=False):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + max(values) * 0.025,
+                value_format.format(value),
+                ha="center",
+                va="bottom",
+                fontsize=6.5,
+            )
+        ax.set_xticks(x, ["M", "L", "XL", "K8", "K12"])
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(0, max(values) * 1.18)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.suptitle("Diagnosis Cost Across Topologies", y=1.02, fontsize=10)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+    return _save_advisor_figure(fig, outdir, "fig3_diagnosis_cost")
+
+
+def _annotated_heatmap(
+    ax,
+    values: np.ndarray,
+    annotations: list[list[str]],
+    row_labels: list[str],
+    column_labels: list[str],
+    title: str,
+    *,
+    show_ylabels: bool = True,
+):
+    cmap = matplotlib.colormaps["YlGnBu"].copy()
+    cmap.set_bad("#E6E6E6")
+    image = ax.imshow(np.ma.masked_invalid(values), cmap=cmap, vmin=0, vmax=100, aspect="auto")
+    ax.set_xticks(np.arange(len(column_labels)), column_labels)
+    ax.set_yticks(np.arange(len(row_labels)))
+    if show_ylabels:
+        ax.set_yticklabels(row_labels)
+    else:
+        ax.tick_params(axis="y", labelleft=False)
+    ax.set_title(title)
+    ax.tick_params(length=0)
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            value = values[row, column]
+            color = "white" if not np.isnan(value) and value >= 58 else "black"
+            ax.text(column, row, annotations[row][column], ha="center", va="center", fontsize=5.8, color=color)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    return image
+
+
+def _fig_advisor_pingmesh_heatmap(outdir: Path, dataset: dict) -> Path:
+    _apply_base_style()
+    faults = [*FAULT_ORDER, "healthy_network"]
+    values = np.zeros((len(faults), len(ADVISOR_TOPOLOGIES)))
+    annotations: list[list[str]] = []
+    for row, fault in enumerate(faults):
+        labels = []
+        for column, topology in enumerate(ADVISOR_TOPOLOGIES):
+            metrics = dataset["topologies"][topology]["faults"][fault]
+            values[row, column] = 100 * float(metrics["signal_rate"] or 0)
+            expected_ecmp = fault == "bgp_neighbor_misconfig" and metrics["signal_cases"] == 0
+            expected_ecmp |= fault == "link_down" and metrics["signal_cases"] < metrics["operational_cases"]
+            suffix = "†" if expected_ecmp else ""
+            labels.append(f"{metrics['signal_cases']}/{metrics['operational_cases']}{suffix}")
+        annotations.append(labels)
+    fig, ax = plt.subplots(figsize=(8.5, 6.7))
+    image = _annotated_heatmap(
+        ax,
+        values,
+        annotations,
+        [FAULT_LABELS[fault] for fault in faults],
+        ["Medium", "Large", "Xlarge", "K8", "K12"],
+        "Cases with Formal Pingmesh Anomalies",
+    )
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.03)
+    colorbar.set_label("Signal cases (%)")
+    colorbar.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    fig.text(
+        0.01,
+        0.01,
+        "Cells show signal/valid cases. † Zero or partial signal is expected when ECMP preserves forwarding.",
+        fontsize=6.5,
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
+    return _save_advisor_figure(fig, outdir, "backup1_pingmesh_heatmap")
+
+
+def _fig_advisor_agent_heatmaps(outdir: Path, dataset: dict) -> Path:
+    _apply_base_style()
+    metrics = [
+        ("Correct verdict", "correct_verdict", "agent_cases"),
+        ("Correct device", "correct_device", "agent_cases"),
+        ("Correct interface", "correct_interface", "interface_applicable"),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(14.0, 6.4), sharey=True)
+    image = None
+    for index, (ax, (title, numerator, denominator)) in enumerate(zip(axes, metrics, strict=False)):
+        values = np.full((len(FAULT_ORDER), len(ADVISOR_TOPOLOGIES)), np.nan)
+        annotations: list[list[str]] = []
+        for row, fault in enumerate(FAULT_ORDER):
+            labels = []
+            for column, topology in enumerate(ADVISOR_TOPOLOGIES):
+                fault_metrics = dataset["topologies"][topology]["faults"][fault]
+                total = int(fault_metrics[denominator])
+                correct = int(fault_metrics[numerator])
+                if total:
+                    values[row, column] = 100 * correct / total
+                    labels.append(f"{correct}/{total}")
+                else:
+                    labels.append("N/A")
+            annotations.append(labels)
+        image = _annotated_heatmap(
+            ax,
+            values,
+            annotations,
+            [FAULT_LABELS[fault] for fault in FAULT_ORDER],
+            ["M", "L", "XL", "K8", "K12"],
+            title,
+            show_ylabels=index == 0,
+        )
+    fig.subplots_adjust(left=0.14, right=0.88, bottom=0.08, top=0.91, wspace=0.08)
+    if image is not None:
+        colorbar_axis = fig.add_axes([0.91, 0.2, 0.012, 0.62])
+        colorbar = fig.colorbar(image, cax=colorbar_axis)
+        colorbar.set_label("Correct cases (%)")
+        colorbar.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    fig.suptitle("Agent Outcomes by Fault Family and Topology", y=0.99, fontsize=10)
+    fig.text(0.01, 0.01, "N/A indicates that interface localization is not required for that case.", fontsize=6.5)
+    return _save_advisor_figure(fig, outdir, "backup2_agent_heatmaps")
+
+
+def _advisor_talking_points(dataset: dict) -> str:
+    overall = {name: dataset["topologies"][name]["overall"] for name in ADVISOR_TOPOLOGIES}
+    aggregate = dataset["fault_aggregate"]
+
+    def pct(value: float) -> str:
+        return f"{100 * value:.1f}%"
+
+    difficult = ["high_latency", "packet_loss", "packet_corruption", "mtu_mismatch"]
+    evidence_lines = [
+        f"- {FAULT_LABELS[fault]}：Pingmesh signal {pct(aggregate[fault]['signal_rate'])}，"
+        f"Agent verdict {pct(aggregate[fault]['verdict_rate'])}，device {pct(aggregate[fault]['device_rate'])}。"
+        for fault in difficult
+    ]
+    return (
+        "\n".join(
+            [
+                "# NetOpsBench 0.2 五规模结果：中文汇报提纲",
+                "",
+                "## 30 秒结论",
+                "",
+                "五个规模的基础设施和 Pingmesh observation 已经稳定；规模扩大后总体得分下降，"
+                "但 Agent 一旦确认存在故障，设备定位通常仍然准确。当前主要瓶颈是漏检、搜索不终止、"
+                "以及 exact interface/fault taxonomy，而不是 detector 没有提供信号。",
+                "",
+                "## 图 1：总体质量",
+                "",
+                f"- 共 {dataset['totals']['operational_cases']} 个有效 observation、"
+                f"{dataset['totals']['agent_scored_cases']} 个 Agent-scored cases。",
+                "- 20 个 healthy case 全部零正式 Pingmesh anomaly，Agent 也全部判断健康。",
+                f"- CLOS primary reward：Medium {pct(overall['medium']['primary_reward'])} → "
+                f"Large {pct(overall['large']['primary_reward'])} → Xlarge {pct(overall['xlarge']['primary_reward'])}。",
+                f"- Fat-tree primary reward：K8 {pct(overall['fat-tree-k8']['primary_reward'])} → "
+                f"K12 {pct(overall['fat-tree-k12']['primary_reward'])}。",
+                "- Interface localization 是最弱指标，大型拓扑约 28%–45%。",
+                "",
+                "## 图 2：有信号不等于 Agent 能正确结束诊断",
+                "",
+                *evidence_lines,
+                "- BGP/upper-fabric redundancy fault 可以没有 endpoint anomaly；这时需要依赖 BGP、interface 和 config 证据。",
+                "- 一旦 Agent 输出 fault_detected，conditional device localization："
+                f"Medium {pct(overall['medium']['device_given_detection'])}、"
+                f"Large {pct(overall['large']['device_given_detection'])}、"
+                f"Xlarge {pct(overall['xlarge']['device_given_detection'])}、"
+                f"K8 {pct(overall['fat-tree-k8']['device_given_detection'])}、"
+                f"K12 {pct(overall['fat-tree-k12']['device_given_detection'])}。",
+                f"- 五个规模共出现 {sum(value['recursion_cases'] for value in overall.values())} 次 "
+                "GraphRecursionError，是规模扩大后漏检/inconclusive 的重要来源。",
+                f"- Xlarge 的条件设备定位率为 {pct(overall['xlarge']['device_given_detection'])}，"
+                "明显低于其他四个规模约 94%–97%，是设备定位层面的主要例外。",
+                "",
+                "## 图 3：成本",
+                "",
+                f"- 平均输入从 Medium {overall['medium']['avg_input_tokens']/1000:.0f}K 增长到 "
+                f"K12 {overall['fat-tree-k12']['avg_input_tokens']/1000:.0f}K token。",
+                f"- 工具调用只在 {min(value['avg_tool_calls'] for value in overall.values()):.1f}–"
+                f"{max(value['avg_tool_calls'] for value in overall.values()):.1f} 次之间，"
+                "说明成本增长主要来自每次工具返回的数据量和上下文累积。",
+                f"- 平均诊断时间从 {min(value['avg_agent_seconds'] for value in overall.values()):.1f} 秒增长到 "
+                f"{max(value['avg_agent_seconds'] for value in overall.values()):.1f} 秒。",
+                "",
+                "## 建议导师追问时的回答",
+                "",
+                "- 为什么 BGP fault 没有 Pingmesh anomaly？ECMP 仍能转发，属于 redundancy degradation；控制面证据仍然明确。",
+                "- 为什么 device localization 总体不高？总体分母包含漏检和 inconclusive；条件定位率显示检出后的设备定位通常很高。",
+                "- 下一步优化什么？优先做工具结果压缩、证据优先级和更早停止，再改善 interface attribution；不应继续放宽 detector。",
+                "- 这些是不是统计显著性结论？不是；这是同一 0.2 contract 下的 benchmark characterization。",
+                "",
+                "## 数据口径",
+                "",
+                "- Fault-level 图采用 case-level micro aggregation。",
+                "- K12 的 70 个有效 observation 全部具有 Agent 结果和 ATIF trajectory。",
+                "- Interface accuracy 只以 evaluator 标记为 interface-applicable 的 case 为分母。",
+            ]
+        )
+        + "\n"
+    )
+
+
+def _generate_advisor_report(outdir: Path, release_data: dict, manifest_path: Path) -> list[Path]:
+    outdir.mkdir(parents=True, exist_ok=True)
+    result_paths, observability_paths, provenance = _load_advisor_manifest(manifest_path)
+    dataset = _build_advisor_dataset(release_data, result_paths, observability_paths, provenance)
+    (outdir / "presentation_metrics.json").write_text(json.dumps(dataset, indent=2, sort_keys=True), encoding="utf-8")
+    _write_advisor_csv(dataset, outdir / "presentation_metrics.csv")
+    (outdir / "talking_points_zh.md").write_text(_advisor_talking_points(dataset), encoding="utf-8")
+    return [
+        _fig_advisor_overall_quality(outdir, dataset),
+        _fig_advisor_evidence_to_localization(outdir, dataset),
+        _fig_advisor_cost(outdir, dataset),
+        _fig_advisor_pingmesh_heatmap(outdir, dataset),
+        _fig_advisor_agent_heatmaps(outdir, dataset),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -570,7 +1542,38 @@ def _fig_combined(outdir: Path) -> Path:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outdir", default="scenario_results/figures", help="Output directory for figures")
+    parser.add_argument(
+        "--release-data",
+        type=Path,
+        default=DEFAULT_RELEASE_DATA,
+        help="Machine-readable NetOpsBench 0.2 release result snapshot",
+    )
+    parser.add_argument(
+        "--advisor-report-dir",
+        type=Path,
+        help="Generate only the five-topology advisor report package in this directory",
+    )
+    parser.add_argument(
+        "--advisor-manifest",
+        type=Path,
+        help="JSON manifest mapping each advisor topology to results and observability inputs",
+    )
     args = parser.parse_args()
+
+    release_data = _load_release_data(args.release_data)
+    if args.advisor_report_dir is not None:
+        if args.advisor_manifest is None:
+            parser.error("--advisor-manifest is required with --advisor-report-dir")
+        figs = _generate_advisor_report(args.advisor_report_dir, release_data, args.advisor_manifest)
+        print(f"Generated advisor report in {args.advisor_report_dir}/")
+        for figure in figs:
+            print(f"  {figure.name}  (+.png)")
+        print("  presentation_metrics.json")
+        print("  presentation_metrics.csv")
+        print("  talking_points_zh.md")
+        return
+    if args.advisor_manifest is not None:
+        parser.error("--advisor-manifest requires --advisor-report-dir")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -585,6 +1588,9 @@ def main():
         _fig_tool_calls(outdir),
         _fig_input_tokens(outdir),
         _fig_output_tokens(outdir),
+        _fig_deepseek_v02_quality(outdir, release_data),
+        _fig_deepseek_v02_fault_signals(outdir, release_data),
+        _fig_deepseek_v02_large_topologies(outdir, release_data),
     ]
 
     print(f"Generated {len(figs)} figure(s) in {outdir}/")

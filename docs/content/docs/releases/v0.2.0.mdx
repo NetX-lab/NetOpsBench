@@ -1,0 +1,32 @@
+---
+title: NetOpsBench v0.2.0
+description: Xlarge CLOS, Fat-tree, and native client-agent release notes.
+---
+
+**Released: 2026-08**
+
+NetOpsBench v0.2.0 extends the live benchmark from the original CLOS profiles to Xlarge CLOS and two multi-tier Fat-tree profiles. It also replaces the client-side Python Pingmesh and iperf process fleet with a native Rust client agent while preserving the public observation, tool, evaluator, and SDK contracts.
+
+## Large topology profiles
+
+| Profile | Family | Switches | Clients | Cases | Operational | Agent-scored |
+|---|---|---:|---:|---:|---:|---:|
+| Xlarge | CLOS | 144 | 128 | 70 | 70 / 70 | 70 / 70 |
+| Fat-tree K=8 | Fat-tree | 80 | 128 | 70 | 70 / 70 | 70 / 70 |
+| Fat-tree K=12 | Fat-tree | 180 | 144 | 70 | 70 / 70 | 70 / 70 |
+
+Each profile contains four healthy cases and fault cases spanning physical links, devices, impairments, routing, BGP, policy, and ACL behavior. Fault placement covers access and upper-fabric tiers; endpoint Pingmesh can remain healthy when ECMP successfully preserves forwarding, while interface and control-plane telemetry still expose the degraded redundancy.
+
+## Runtime changes
+
+- A single Rust binary runs independent Pingmesh and background-traffic processes in every client.
+- Pingmesh uses compact topology configuration, kernel receive timestamps, topology-local Telegraf ingestion, and full-window anomaly semantics.
+- Background traffic is runtime-owned and health-checked as a complete flow matrix instead of being recreated for every case.
+- Fault injection and recovery use transactional state tracking, readback, convergence checks, quarantine, and exact resource cleanup.
+- Large BGP collections preserve fast transition/index data while writing stable full snapshots at a lower cadence.
+
+## Compatibility and results
+
+The stable `netopsbench.sdk` agent, scenario, report, and tool entrypoints remain available. The v0.2 result snapshot is a release-validation reference, not a permanent model ranking; provider behavior and agent strategies can change independently of the benchmark contract.
+
+See [Benchmark Results](/docs/run-benchmarks/results) for accuracy, localization, observability, cost, and trace inventory, the [public v0.2 trace release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2) for all 319 ATIF trajectories, and [Benchmark Methodology](/docs/run-benchmarks/methodology) for the exact scoring and detector semantics.

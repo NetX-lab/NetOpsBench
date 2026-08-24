@@ -5,6 +5,8 @@ description: The shortest path from a fresh clone to one completed NetOpsBench r
 
 This page verifies that the host can run one benchmark case. It stops after the first `BenchmarkReport`; agent implementation and larger benchmark runs are covered separately.
 
+Use XS for installation verification even when the eventual target is Xlarge or Fat-tree. It exercises the same SDK, native client-agent, observability, fault, scoring, and cleanup path with a much smaller resource footprint.
+
 ## Requirements
 
 <Callout title="Linux host required" type="warn">
@@ -82,6 +84,8 @@ PYTHONPATH=. python examples/01_run_scenario.py --vendor openai
 ```
 
 The run provisions an XS topology, starts observability, injects one generated fault, calls the reference agent, scores the returned diagnosis, and writes a `BenchmarkReport`.
+
+`netopsbench benchmark prepare` only generates topology and scenario assets. It does not deploy a lab, start telemetry, or reserve resources; deployment begins when a session or runtime command is executed.
 
 ## After success
 
