@@ -114,7 +114,7 @@ The largest validated Fat-tree profile provides a compact case-level view. Each 
 
 Read the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx), [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx), and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for the full validation snapshot and scoring definitions.
 
-The public [NetOpsBench Trace Dataset](https://huggingface.co/datasets/yyyyyt/netopsbench-trace) contains both the earlier cross-model snapshot and the [v0.2 seven-scale release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2): 319 validated DeepSeek Harbor/ATIF trajectories across XS through Fat-tree K=12. Aggregate metrics and immutable publication provenance are recorded in the [v0.2 result snapshot](docs/public/assets/benchmark/deepseek_v02_release.json).
+The public [v0.2 trace release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2) contains 319 validated DeepSeek Harbor/ATIF trajectories across XS through Fat-tree K=12. Aggregate metrics and immutable publication provenance are recorded in the [v0.2 result snapshot](docs/public/assets/benchmark/deepseek_v02_release.json).
 
 ## Learn More
 
