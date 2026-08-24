@@ -106,11 +106,11 @@ NetOpsBench reports detection, fault type, device/interface localization, runtim
 
 **Diagnosis score** is the mean end-to-end case score: healthy cases require the correct verdict, while fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
 
-![NetOpsBench v0.2.0 quality across seven scales](docs/public/assets/benchmark/fig_deepseek_v02_overview.svg)
+![Diagnosis score and Fault detection F1 across all seven NetOpsBench v0.2.0 topology scales](docs/public/assets/benchmark/fig_deepseek_v02_overview.svg)
 
 The largest validated Fat-tree profile provides a compact case-level view. Each square below is one K=12 case; detailed cross-topology observability analysis remains in the full results.
 
-![Fat-tree K=12 case outcomes grouped by fault family](docs/public/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
+![All 70 Fat-tree K=12 cases grouped by fault family and diagnosis outcome](docs/public/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
 
 Read the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx), [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx), and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for the full validation snapshot and scoring definitions.
 

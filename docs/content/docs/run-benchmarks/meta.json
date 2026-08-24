@@ -1,4 +1,4 @@
 {
   "title": "Benchmark Runs",
-  "pages": ["run-scenario-vs-suite", "interactive-simulator", "methodology", "results"]
+  "pages": ["run-scenario-vs-suite", "interactive-simulator", "methodology", "results", "legacy-results"]
 }

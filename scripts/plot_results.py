@@ -14,7 +14,8 @@ metrics:
   8. Avg Output Tokens
 
 It also produces figures for the separately versioned NetOpsBench 0.2
-DeepSeek release rerun, including two compact README figures. The snapshots
+DeepSeek release rerun, including two compact README figures and two detailed
+Results-page figures. The snapshots
 are intentionally not mixed into one cross-model chart because they use
 different benchmark contracts.
 
@@ -235,6 +236,9 @@ DEFAULT_RELEASE_DATA = (
 )
 DEFAULT_K12_CASE_DATA = (
     Path(__file__).resolve().parents[1] / "docs" / "public" / "assets" / "benchmark" / "deepseek_v02_k12_cases.json"
+)
+DEFAULT_ANALYSIS_DATA = (
+    Path(__file__).resolve().parents[1] / "docs" / "public" / "assets" / "benchmark" / "deepseek_v02_analysis.json"
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -592,6 +596,36 @@ def _load_k12_case_data(path: Path, release_data: dict) -> dict:
     return payload
 
 
+def _load_analysis_data(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("benchmark_contract") != "netopsbench-0.2-release":
+        raise ValueError(f"unsupported release analysis contract: {path}")
+    totals = payload.get("totals", {})
+    expected_totals = {"operational_cases": 319, "agent_scored_cases": 319, "atif_trajectories": 319}
+    if any(int(totals.get(key, -1)) != value for key, value in expected_totals.items()):
+        raise ValueError(f"release analysis must contain 319 operational, Agent, and ATIF cases: {path}")
+    expected_faults = {*FAULT_ORDER, "healthy_network"}
+    families = payload.get("fault_families", {})
+    if set(families) != expected_faults:
+        raise ValueError(f"release analysis has unexpected fault families: {sorted(families)}")
+    for fault_type, values in families.items():
+        operational = int(values["operational_cases"])
+        agent_cases = int(values["agent_cases"])
+        applicable = int(values["interface_applicable"])
+        if operational != agent_cases:
+            raise ValueError(f"{fault_type} has mismatched operational and Agent case counts")
+        for numerator, denominator in (
+            ("signal_cases", operational),
+            ("correct_verdict", agent_cases),
+            ("correct_device", agent_cases),
+            ("correct_interface", applicable),
+        ):
+            value = int(values[numerator])
+            if value < 0 or value > denominator:
+                raise ValueError(f"{fault_type}.{numerator} exceeds its denominator")
+    return payload
+
+
 def _release_scale_rows(release_data: dict) -> list[dict]:
     rows = []
     for key, label, architecture in [
@@ -617,7 +651,7 @@ def _release_scale_rows(release_data: dict) -> list[dict]:
     return rows
 
 
-def _save_readme_figure(fig, outdir: Path, stem: str) -> Path:
+def _save_release_figure(fig, outdir: Path, stem: str) -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
     svg = outdir / f"{stem}.svg"
     fig.savefig(svg, facecolor="white")
@@ -630,11 +664,17 @@ def _save_readme_figure(fig, outdir: Path, stem: str) -> Path:
     return svg
 
 
+def _release_figure_header(fig, title: str, subtitle: str):
+    title_text = fig.text(0.075, 0.965, title, ha="left", va="top", fontsize=14, fontweight="bold")
+    subtitle_text = fig.text(0.075, 0.885, subtitle, ha="left", va="top", color="#64748B", fontsize=8.5)
+    return title_text, subtitle_text
+
+
 def _fig_readme_release_overview(outdir: Path, release_data: dict) -> Path:
     _apply_base_style()
     rows = _release_scale_rows(release_data)
     y = np.array([0, 1, 2, 3, 4, 6, 7], dtype=float)
-    fig, ax = plt.subplots(figsize=(9.2, 4.6))
+    fig, ax = plt.subplots(figsize=(9.2, 4.85))
     ax.axhspan(-0.48, 4.48, color="#F8FAFC", zorder=0)
     ax.axhspan(5.52, 7.48, color="#F0FDFA", zorder=0)
     for position, row in zip(y, rows, strict=True):
@@ -689,17 +729,14 @@ def _fig_readme_release_overview(outdir: Path, release_data: dict) -> Path:
         mpatches.Patch(color="#0F766E", label="Diagnosis score"),
         mpatches.Patch(color="#2563EB", label="Fault detection F1"),
     ]
-    ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1, 1.13), frameon=False, ncol=2)
-    fig.suptitle("Quality across all seven v0.2 scales", x=0.08, y=0.98, ha="left", fontsize=15, fontweight="bold")
-    fig.text(
-        0.08,
-        0.925,
-        "DeepSeek V4 Pro · minimal-deepagent · 319 Agent-scored cases · temperature 0",
-        color="#64748B",
-        fontsize=8.5,
+    ax.legend(handles=handles, loc="upper right", bbox_to_anchor=(1, 1.12), frameon=False, ncol=2)
+    _release_figure_header(
+        fig,
+        "Diagnosis quality across seven scales",
+        "DeepSeek V4 Pro · 319 cases · temperature 0",
     )
-    fig.subplots_adjust(left=0.18, right=0.95, top=0.82, bottom=0.11)
-    return _save_readme_figure(fig, outdir, "fig_deepseek_v02_overview")
+    fig.subplots_adjust(left=0.18, right=0.95, top=0.78, bottom=0.11)
+    return _save_release_figure(fig, outdir, "fig_deepseek_v02_overview")
 
 
 def _k12_case_outcome(case: dict) -> str:
@@ -735,7 +772,7 @@ def _fig_readme_k12_case_map(outdir: Path, case_data: dict) -> Path:
         "location_missed": "Fault detected; location missed",
         "incorrect_verdict": "Incorrect verdict / inconclusive",
     }
-    fig, ax = plt.subplots(figsize=(9.2, 5.5))
+    fig, ax = plt.subplots(figsize=(9.2, 5.75))
     y = np.arange(len(order))
     for row, fault in enumerate(order):
         if row % 2 == 0:
@@ -764,13 +801,10 @@ def _fig_readme_k12_case_map(outdir: Path, case_data: dict) -> Path:
     ax.tick_params(axis="y", length=0, colors="#334155", labelsize=8)
     handles = [mpatches.Patch(color=colors[key], label=labels[key]) for key in colors]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0, -0.055), frameon=False, ncol=2, fontsize=7.5)
-    fig.suptitle("Fat-tree K=12: every case outcome", x=0.08, y=0.98, ha="left", fontsize=15, fontweight="bold")
-    fig.text(
-        0.08,
-        0.935,
-        "70 Agent-scored cases · each square is one benchmark case · grouped by fault family",
-        color="#64748B",
-        fontsize=8.5,
+    _release_figure_header(
+        fig,
+        "Fat-tree K=12 case outcomes",
+        "70 cases · one square per case · grouped by fault family",
     )
     fig.text(
         0.08,
@@ -779,52 +813,121 @@ def _fig_readme_k12_case_map(outdir: Path, case_data: dict) -> Path:
         color="#64748B",
         fontsize=7.5,
     )
-    fig.subplots_adjust(left=0.24, right=0.94, top=0.86, bottom=0.18)
-    return _save_readme_figure(fig, outdir, "fig_deepseek_v02_k12_cases")
+    fig.subplots_adjust(left=0.24, right=0.94, top=0.81, bottom=0.18)
+    return _save_release_figure(fig, outdir, "fig_deepseek_v02_k12_cases")
 
 
-def _fig_deepseek_v02_fault_signals(outdir: Path, release_data: dict) -> Path:
+def _fig_release_evidence(outdir: Path, analysis_data: dict) -> Path:
     _apply_base_style()
-    families = [(name, values) for name, values in release_data["fault_families"].items() if name != "healthy_network"]
-    families.sort(key=lambda item: (item[1]["correct_verdict"] / item[1]["cases"], item[0]))
-    labels = [name.replace("_", " ") for name, _ in families]
-    verdict = [100 * values["correct_verdict"] / values["cases"] for _, values in families]
-    pingmesh = [100 * values["pingmesh_signal_cases"] / values["cases"] for _, values in families]
+    aggregate = analysis_data["fault_families"]
+    order = sorted(
+        FAULT_ORDER,
+        key=lambda fault: (
+            aggregate[fault]["signal_rate"] - aggregate[fault]["verdict_rate"],
+            fault,
+        ),
+    )
+    y = np.arange(len(order))
+    fig, (left, right) = plt.subplots(
+        1,
+        2,
+        figsize=(9.2, 6.2),
+        sharey=True,
+        gridspec_kw={"width_ratios": [2.65, 1.2], "wspace": 0.04},
+    )
+    series = [
+        ("Formal Pingmesh signal", "signal_rate", "#2563EB", "o"),
+        ("Correct verdict", "verdict_rate", "#D97706", "s"),
+        ("Correct device", "device_rate", "#0F766E", "^"),
+    ]
+    for label, key, color, marker in series:
+        values = [100 * float(aggregate[fault][key]) for fault in order]
+        left.plot(values, y, linestyle="none", marker=marker, markersize=5.5, color=color, label=label, zorder=3)
+    for position, fault in enumerate(order):
+        values = [100 * float(aggregate[fault][key]) for _, key, _, _ in series]
+        left.hlines(position, min(values), max(values), color="#CBD5E1", linewidth=1, zorder=1)
+    left.set_yticks(y, [f"{FAULT_LABELS[fault]}  n={aggregate[fault]['agent_cases']}" for fault in order])
+    left.set_xlim(-2, 104)
+    left.set_xlabel("Cases in fault family")
+    left.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    left.legend(loc="lower center", bbox_to_anchor=(0.5, -0.16), frameon=False, ncol=3, fontsize=7)
+    left.set_title("A. Evidence, verdict, and device", fontsize=9, pad=10)
+    left.spines[["top", "right"]].set_visible(False)
 
-    fig, ax = plt.subplots(figsize=(6.2, 4.1))
-    y = np.arange(len(families))
-    bar_height = 0.36
-    ax.barh(
-        y - bar_height / 2,
-        pingmesh,
-        height=bar_height,
-        color="#9ECAE1",
-        edgecolor="white",
-        label="Cases with Pingmesh anomaly",
+    for position, fault in enumerate(order):
+        values = aggregate[fault]
+        applicable = int(values["interface_applicable"])
+        if applicable:
+            correct = int(values["correct_interface"])
+            rate = 100 * correct / applicable
+            right.barh(position, rate, height=0.48, color="#A855F7", edgecolor="white", zorder=2)
+            right.text(min(rate + 2, 88), position, f"{correct}/{applicable}", va="center", fontsize=7)
+        else:
+            right.text(50, position, "N/A", ha="center", va="center", color="#94A3B8", fontsize=7)
+    right.set_xlim(0, 104)
+    right.set_xlabel("Correct interfaces")
+    right.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(xmax=100, decimals=0))
+    right.set_title("B. Interface-applicable cases", fontsize=9, pad=10)
+    right.spines[["top", "right", "left"]].set_visible(False)
+    right.tick_params(axis="y", left=False, labelleft=False)
+    left.invert_yaxis()
+    _release_figure_header(
+        fig,
+        "Where diagnosis breaks down",
+        "Case-level micro aggregation across all 319 v0.2 cases",
     )
-    ax.barh(
-        y + bar_height / 2,
-        verdict,
-        height=bar_height,
-        color="#D55E00",
-        edgecolor="white",
-        label="Correct Agent verdict",
+    fig.text(
+        0.075,
+        0.018,
+        "N/A means the evaluator does not require interface localization for that fault family.",
+        color="#64748B",
+        fontsize=7.5,
     )
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels)
-    ax.set_xlabel("Cases in fault family (%)")
-    ax.set_xlim(0, 108)
-    ax.set_xticks([0, 20, 40, 60, 80, 100])
-    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:.0f}%"))
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.22), frameon=False, ncol=2)
-    fig.tight_layout(rect=[0, 0.08, 1, 1])
-    out = outdir / "fig_deepseek_v02_fault_signals.pdf"
-    fig.savefig(out)
-    fig.savefig(out.with_suffix(".png"))
-    plt.close(fig)
-    return out
+    fig.subplots_adjust(left=0.25, right=0.97, bottom=0.15, top=0.78, wspace=0.04)
+    return _save_release_figure(fig, outdir, "fig_deepseek_v02_evidence")
+
+
+def _fig_release_cost(outdir: Path, release_data: dict) -> Path:
+    _apply_base_style()
+    rows = _release_scale_rows(release_data)
+    fig, axes = plt.subplots(1, 3, figsize=(9.2, 4.25))
+    configs = [
+        ("avg_input_tokens", "Input tokens (K)", lambda value: value / 1000, "{:.0f}"),
+        ("avg_tool_calls", "Tool calls", lambda value: value, "{:.1f}"),
+        ("avg_agent_seconds", "Diagnosis time (s)", lambda value: value, "{:.1f}"),
+    ]
+    keys = [row["key"] for row in rows]
+    labels = [row["label"] for row in rows]
+    colors = ["#60A5FA" if row["architecture"] == "CLOS" else "#14B8A6" for row in rows]
+    x = np.arange(len(rows))
+    for ax, (key, ylabel, transform, value_format) in zip(axes, configs, strict=True):
+        values = []
+        for topology in keys:
+            source = release_data["scales"].get(topology) or release_data["large_topologies"][topology]
+            values.append(transform(float(source[key])))
+        bars = ax.bar(x, values, width=0.68, color=colors, edgecolor="white", zorder=3)
+        for bar, value in zip(bars, values, strict=True):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + max(values) * 0.025,
+                value_format.format(value),
+                ha="center",
+                va="bottom",
+                fontsize=6.5,
+            )
+        ax.axvline(4.5, color="#CBD5E1", linewidth=0.8, linestyle="--", zorder=1)
+        ax.set_xticks(x, labels, rotation=35, ha="right")
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(0, max(values) * 1.2)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.grid(axis="y", color="#E2E8F0", linewidth=0.6, zorder=0)
+    _release_figure_header(
+        fig,
+        "Diagnosis cost as topology scale grows",
+        "Tool usage stays comparatively stable while context and runtime increase",
+    )
+    fig.subplots_adjust(left=0.075, right=0.98, bottom=0.23, top=0.76, wspace=0.34)
+    return _save_release_figure(fig, outdir, "fig_deepseek_v02_cost")
 
 
 # ---------------------------------------------------------------------------
@@ -1668,13 +1771,19 @@ def main():
     parser.add_argument(
         "--readme-assets-dir",
         type=Path,
-        help="Generate only the two compact README release figures in this directory",
+        help="Generate the four public v0.2 release figures in this directory",
     )
     parser.add_argument(
         "--k12-case-data",
         type=Path,
         default=DEFAULT_K12_CASE_DATA,
         help="Machine-readable Fat-tree K=12 case-level result snapshot",
+    )
+    parser.add_argument(
+        "--analysis-data",
+        type=Path,
+        default=DEFAULT_ANALYSIS_DATA,
+        help="Machine-readable all-scale fault-family analysis snapshot",
     )
     parser.add_argument(
         "--advisor-report-dir",
@@ -1691,11 +1800,14 @@ def main():
     release_data = _load_release_data(args.release_data)
     if args.readme_assets_dir is not None:
         case_data = _load_k12_case_data(args.k12_case_data, release_data)
+        analysis_data = _load_analysis_data(args.analysis_data)
         figures = [
             _fig_readme_release_overview(args.readme_assets_dir, release_data),
+            _fig_release_evidence(args.readme_assets_dir, analysis_data),
             _fig_readme_k12_case_map(args.readme_assets_dir, case_data),
+            _fig_release_cost(args.readme_assets_dir, release_data),
         ]
-        print(f"Generated README release figures in {args.readme_assets_dir}/")
+        print(f"Generated public release figures in {args.readme_assets_dir}/")
         for figure in figures:
             print(f"  {figure.name}  (+.png)")
         return
@@ -1716,6 +1828,7 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     case_data = _load_k12_case_data(args.k12_case_data, release_data)
+    analysis_data = _load_analysis_data(args.analysis_data)
 
     _apply_base_style()
     figs = [
@@ -1728,8 +1841,9 @@ def main():
         _fig_input_tokens(outdir),
         _fig_output_tokens(outdir),
         _fig_readme_release_overview(outdir, release_data),
-        _fig_deepseek_v02_fault_signals(outdir, release_data),
+        _fig_release_evidence(outdir, analysis_data),
         _fig_readme_k12_case_map(outdir, case_data),
+        _fig_release_cost(outdir, release_data),
     ]
 
     print(f"Generated {len(figs)} figure(s) in {outdir}/")
