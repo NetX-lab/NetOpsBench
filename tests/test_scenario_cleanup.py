@@ -16,6 +16,7 @@ def shared_recovery_clock(monkeypatch):
 
 def _scenario() -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="cleanup-case",
         name="cleanup-case",
         description="cleanup boundary test",
@@ -33,11 +34,10 @@ def _runner(*, active_faults, timeout_seconds=10):
     runner = object.__new__(ScenarioExecutor)
     from netopsbench.models.recovery import RecoveryPolicy
 
-    runner.recovery_policy = RecoveryPolicy(mode="full_window")
+    runner.recovery_policy = RecoveryPolicy()
     runner.begin_case()
     runner.traffic_controller = None
     runner.runtime_worker = None
-    runner.post_recovery_wait_seconds = 0
     runner._baseline_handoff = executor_module.BaselineHandoff()
     runner._recovering = True
     runner.injector = SimpleNamespace(active_faults=list(active_faults))
@@ -46,6 +46,23 @@ def _runner(*, active_faults, timeout_seconds=10):
             health_timeout_seconds=timeout_seconds, experiment=SimpleNamespace(recovery_timeout_seconds=timeout_seconds)
         )
     )
+    runner._cancel_event = None
+    runner._baseline_scope = lambda _: None
+    runner.minimum_baseline_seconds = 4
+    runner._capture_baseline_window = lambda: executor_module._capture_observation_window_impl(
+        runner, runner.minimum_baseline_seconds, name="baseline"
+    )
+    runner._merge_observation_windows = lambda windows, *a, **k: {
+        "data_source_status": "ok",
+        "coverage_status": "complete",
+        "_baseline_coverage": {"coverage_status": "complete"},
+        "_baseline_health": {
+            "absolute_unreachable_paths": 0,
+            "absolute_packet_loss_paths": 0,
+            "absolute_network_mtu_paths": 0,
+        },
+        "pingmesh_metrics": {"quality": {"current_paths_observed": 1}},
+    }
     return runner
 
 
@@ -68,7 +85,7 @@ def test_clean_scenario_boundary_does_not_retry_or_sleep(monkeypatch):
         "duration_seconds": 0.0,
         "errors": [],
         "validation_level": "full_window",
-        "full_validation_reason": None,
+        "full_validation_reason": "custom_callback",
         "state_validation": {},
         "recovery_policy": runner.recovery_policy.model_dump(mode="json"),
         "recovery": [{"type": "link_down", "recovered": True}],
@@ -86,21 +103,13 @@ def test_explicit_sdk_baseline_can_recover_without_a_handoff_identity(monkeypatc
 
     def recover():
         runner.injector.active_faults.clear()
-        return [{"type": "link_down", "recovered": True}]
+        return [{"type": "link_down", "recovered": True, "readback_verified": True}]
 
     runner._recover_fault = recover
-    runner._wait_and_observe = lambda *a, **kw: {
-        "start_time": "2026-01-01T00:00:00Z",
-        "end_time": "2026-01-01T00:00:30Z",
-        "duration_seconds": 30,
-        "data_source_status": "ok",
-        "coverage_status": "complete",
-        "_baseline_coverage": {"coverage_status": "complete"},
-        "pingmesh_metrics": {"quality": {"current_paths_observed": 2}},
-    }
     result = runner._cleanup_after_scenario(_scenario(), None, baseline_window={"duration_seconds": 30})
     assert result["success"] is True
-    assert "validated_baseline" in result
+    assert result["validation_level"] == "state_checked"
+    assert "validated_baseline" not in result
     assert "validated_baseline_scope" not in result
 
 
@@ -294,7 +303,10 @@ def test_observation_that_reaches_deadline_is_not_published_as_healthy(monkeypat
         return {"data_source_status": "ok", "coverage_status": "complete"}
 
     runner._recover_fault = recover
-    runner._wait_and_observe = observe
+    runner.calibrate = lambda scenario, reason, deadline: (
+        observe(runner.minimum_baseline_seconds, baseline_window={}, deadline=deadline),
+        setattr(runner._baseline_handoff, "window", {"duration_seconds": runner.minimum_baseline_seconds}),
+    )
     monkeypatch.setattr(executor_module, "monotonic", lambda: clock[0])
     cleanup = runner._cleanup_after_scenario(_scenario(), None, baseline_window={"duration_seconds": 1})
     assert cleanup["success"] is False
@@ -322,6 +334,7 @@ def test_observation_stops_after_a_sleep_exhausts_its_budget(monkeypatch):
 
 def test_recovery_budget_is_explicit_and_not_derived_from_baseline(monkeypatch):
     runner = _runner(active_faults=[{"type": "link_down"}], timeout_seconds=120)
+    runner.minimum_baseline_seconds = 60
     clock = [100.0]
 
     def recover():
@@ -344,7 +357,10 @@ def test_recovery_budget_is_explicit_and_not_derived_from_baseline(monkeypatch):
         }
 
     runner._recover_fault = recover
-    runner._wait_and_observe = observe
+    runner.calibrate = lambda scenario, reason, deadline: (
+        observe(runner.minimum_baseline_seconds, baseline_window={}, deadline=deadline),
+        setattr(runner._baseline_handoff, "window", {"duration_seconds": runner.minimum_baseline_seconds}),
+    )
     monkeypatch.setattr(executor_module, "monotonic", lambda: clock[0])
     cleanup = runner._cleanup_after_scenario(_scenario(), None, baseline_window={"duration_seconds": 60})
     assert cleanup["success"] is True
@@ -372,7 +388,6 @@ def test_state_checked_readback_avoids_window_custom_callback_requires_calibrati
 
     runner._recover_fault = recover
     runner.calibrate = calibrate
-    runner._wait_and_observe = lambda *a, **k: pytest.fail("Legacy window path used")
     result = runner._cleanup_after_scenario(_scenario(), {}, baseline_window=window)
     assert result["success"]
     assert result["validation_level"] == ("state_checked" if verified else "full_window")

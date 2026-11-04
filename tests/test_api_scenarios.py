@@ -23,15 +23,16 @@ def test_recovery_policy_authoring_and_legacy_roundtrip(tmp_path):
         metadata={"negative_sample": True},
     )
     new = manager.create(**kwargs)
-    assert RecoveryPolicy.from_metadata(new.metadata).mode == "state_checked"
-    legacy_mode = manager.create(**kwargs, recovery_policy=RecoveryPolicy(mode="full_window"))
-    assert RecoveryPolicy.from_metadata(legacy_mode.metadata).mode == "full_window"
+    assert RecoveryPolicy.from_metadata(new.metadata).version == 2
     old = new.model_copy(deep=True)
     old.metadata.pop("recovery_policy")
     digest = old.digest
-    loaded = manager.load(manager.save(old, tmp_path / "legacy.yaml"))
-    assert loaded.digest == digest and "recovery_policy" not in loaded.metadata
-    assert RecoveryPolicy.from_metadata(loaded.metadata).mode == "full_window"
+    path = manager.save(old, tmp_path / "legacy.yaml")
+    with pytest.raises(ScenarioValidationError, match="migrate"):
+        manager.load(path)
+    from netopsbench.platform.scenario.parser import parse_scenario_file
+
+    assert parse_scenario_file(path).digest == digest
     with pytest.raises(ScenarioValidationError, match="only once"):
         manager.create(**{**kwargs, "metadata": {"recovery_policy": {}}}, recovery_policy={})
 
@@ -154,7 +155,7 @@ def test_validate_scenario_does_not_mutate_fault_type_alias():
         scenario_id="alias_case",
         name="Alias Case",
         topology_scale="xs",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="static_route_misconfiguration",

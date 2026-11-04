@@ -27,6 +27,9 @@ class _FakeRunner:
             "episode": {},
         }
 
+    def final_calibration(self, scenario, **kwargs):
+        return {"success": True}
+
     def close(self):
         type(self).closed += 1
 
@@ -52,6 +55,7 @@ class _FakeEvaluator:
 
 def _scenario(scenario_id: str) -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id=scenario_id,
         name=scenario_id,
         description="test",
@@ -134,6 +138,9 @@ def test_acceptance_continues_only_after_recovered_agent_failure(
                 }
             return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
 
+        def final_calibration(self, scenario, **kwargs):
+            return {"success": True}
+
         def close(self):
             closed.append(True)
 
@@ -153,7 +160,6 @@ def test_acceptance_continues_only_after_recovered_agent_failure(
         trace_writer=None,
         fault_registry=None,
         minimum_baseline_seconds=None,
-        post_recovery_wait_seconds=0,
         scale_registry=None,
         worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
         scenarios=[_scenario("first"), _scenario("second")],
@@ -418,6 +424,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
             "executed_count": 2,
             "skipped_count": 0,
             "success": True,
+            "final_calibration": {"success": True},
         },
     ]
     assert runtime.metadata["quarantined"] is True
@@ -495,7 +502,7 @@ def test_final_calibration_is_reported_and_failure_quarantines_without_rescoring
         def run_scenario(self, scenario, diagnosis_callback=None):
             return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
 
-        def final_calibration(self, scenario):
+        def final_calibration(self, scenario, **kwargs):
             calls.append("calibration")
             if failed:
                 raise RuntimeError("late loss")
@@ -518,7 +525,6 @@ def test_final_calibration_is_reported_and_failure_quarantines_without_rescoring
         trace_writer=None,
         fault_registry=None,
         minimum_baseline_seconds=None,
-        post_recovery_wait_seconds=0,
         scale_registry=None,
         worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
         scenarios=[case],

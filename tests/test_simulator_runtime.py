@@ -36,6 +36,7 @@ from netopsbench.sdk.simulators import SimulatorManager
 
 def _scenario(*, healthy: bool = False) -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="scenario-1",
         name="scenario-1",
         topology_scale="xs",
@@ -545,7 +546,9 @@ def test_observation_integrity_does_not_reject_real_network_anomalies():
 @pytest.mark.parametrize("failure", [None, "Background traffic matrix incomplete", "Healthy baseline is unavailable"])
 def test_simulator_delegates_preparation_and_quarantines_failed_preparation(monkeypatch, failure):
     events = []
-    runner = SimpleNamespace(topology_dir="unused", begin_case=lambda: None)
+    runner = SimpleNamespace(
+        topology_dir="unused", begin_case=lambda: None, _baseline_handoff=SimpleNamespace(clear=lambda reason: None)
+    )
     worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
     record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
     leases = SimpleNamespace(
@@ -585,7 +588,9 @@ def test_simulator_delegates_preparation_and_quarantines_failed_preparation(monk
 
 def test_simulator_invalid_topology_releases_lease_without_quarantine(monkeypatch):
     events = []
-    runner = SimpleNamespace(topology_dir="unused", begin_case=lambda: None)
+    runner = SimpleNamespace(
+        topology_dir="unused", begin_case=lambda: None, _baseline_handoff=SimpleNamespace(clear=lambda reason: None)
+    )
     worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
     record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
 

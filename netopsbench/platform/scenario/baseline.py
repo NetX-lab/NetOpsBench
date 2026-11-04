@@ -1,4 +1,4 @@
-"""Short-lived, single-consumer handoff of a worker's verified healthy window.
+"""Bounded reusable handoff of a worker's verified healthy window.
 
 This stores window identity, never telemetry rows. Each consumer queries InfluxDB
 again so late arrivals remain visible. Ownership ends with the suite's executor.
@@ -15,8 +15,7 @@ from pathlib import Path
 
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-MAX_WINDOW_AGE_SECONDS = 120
-RECALIBRATE_SECONDS = 600
+MAX_WINDOW_AGE_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -107,8 +106,7 @@ class BaselineHandoff:
     last_reason: str = "no_verified_window"
     last_verified_end: datetime | None = None
     uses: int = 0
-    reusable: bool = False
-    max_cases: int = 5
+    max_cases: int = 10
     max_age_seconds: int = MAX_WINDOW_AGE_SECONDS
     ready: bool = False
 
@@ -118,32 +116,22 @@ class BaselineHandoff:
         self.uses = 0
         self.ready = False
 
-    def fresh_epoch(self, window: dict | None = None) -> None:
-        self.clear()
-        self.epoch = time.monotonic()
-        if window is not None:
-            self.last_verified_end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
-
     def take(self, scope: RuntimeScope | None, minimum_seconds: int) -> tuple[dict | None, str]:
         window, previous_scope = self.window, self.scope
         self.last_changes = scope_changes(previous_scope, scope)
         if window is None:
             return None, self.last_reason
-        if not self.reusable:
-            self.window = None  # Legacy windows have one consumer.
-        elif not self.ready:
+        if not self.ready:
             return None, "previous_case_not_verified"
         elif self.uses >= self.max_cases:
             return None, "case_limit"
         self.ready = False  # Failure/interruption cannot silently reuse this window.
-        if window is None:
-            return None, self.last_reason
         self.last_reason = "window_already_consumed"
         if not scope:
             return None, "scope_unavailable"
         if scope != previous_scope:
             return None, "scope_changed"
-        if self.epoch is None or (not self.reusable and not 0 <= time.monotonic() - self.epoch <= RECALIBRATE_SECONDS):
+        if self.epoch is None:
             return None, "recalibration_due"
         reason = window_error(window, minimum_seconds, max_age_seconds=self.max_age_seconds)
         if reason:
@@ -196,10 +184,6 @@ def window_error(window: dict, minimum_seconds: int, *, max_age_seconds: int = M
     except (KeyError, TypeError, ValueError, OverflowError):
         return "invalid_window"
     return None
-
-
-def valid_window(window: dict, minimum_seconds: int) -> bool:
-    return window_error(window, minimum_seconds) is None
 
 
 def runtime_scope(runner, scenario) -> RuntimeScope | None:

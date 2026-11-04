@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 from netopsbench.config import config
@@ -227,35 +226,6 @@ def analyze_observation_windows(
     }
 
 
-def wait_and_observe(
-    runner,
-    duration: int,
-    *,
-    baseline_window: dict,
-    deadline: float | None = None,
-    timings=None,
-) -> dict:
-    """Capture and analyze one observation window."""
-    with timings.measure_step("recovery", "window_wait") if timings is not None else nullcontext():
-        window = capture_observation_window(runner, duration, name="steady", deadline=deadline)
-    with timings.measure_step("recovery", "window_query") if timings is not None else nullcontext() as step:
-        result = analyze_observation_windows(
-            runner,
-            [window],
-            total_duration_seconds=duration,
-            baseline_window=baseline_window,
-            deadline=deadline,
-        )
-        if step is not None:
-            # These two reads overlap. Keep their audit timings separate from
-            # the surrounding wall time rather than summing them as elapsed time.
-            step["ingestion"] = {
-                "baseline": (result.get("_baseline_coverage") or {}).get("ingestion", {}),
-                "current": (result.get("_coverage_audit") or {}).get("ingestion", {}),
-            }
-        return result
-
-
 __all__ = [
     "analyze_observation_windows",
     "baseline_gate_errors",
@@ -264,5 +234,4 @@ __all__ = [
     "capture_observation_window",
     "complete_window_seconds",
     "observation_integrity_errors",
-    "wait_and_observe",
 ]

@@ -103,7 +103,8 @@ def test_create_run_report_preserves_topology_scale_and_agent_name(tmp_path: Pat
     assert public["raw"]["purpose"] == "benchmark"
 
 
-def test_session_report_keeps_execution_and_cleanup_failures_separate(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("execution_error", [ValueError, KeyboardInterrupt])
+def test_session_report_keeps_execution_and_cleanup_failures_separate(tmp_path: Path, monkeypatch, execution_error):
     class FailingRuntime:
         id = "runtime-1"
         scale = "xs"
@@ -116,12 +117,12 @@ def test_session_report_keeps_execution_and_cleanup_failures_separate(tmp_path: 
     monkeypatch.setattr(orchestrator, "_provision_runtime", lambda **_kwargs: FailingRuntime())
 
     def fail_execution(**_kwargs):
-        raise ValueError("execution exploded")
+        raise execution_error("execution exploded")
 
     monkeypatch.setattr(orchestrator, "_execute_on_runtime_pool", fail_execution)
-    scenario = SimpleNamespace(id="scenario-1", scale="xs")
+    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 2}})
 
-    with pytest.raises(ValueError, match="execution exploded") as raised:
+    with pytest.raises(execution_error, match="execution exploded") as raised:
         orchestrator._run_with_platform_runtime(
             mode="scenario",
             scenarios=[scenario],
@@ -140,7 +141,7 @@ def test_session_report_keeps_execution_and_cleanup_failures_separate(tmp_path: 
     report = json.loads(reports[0].read_text())
     assert report["status"] == "failed"
     assert report["raw"]["teardown"] == "failed"
-    assert report["raw"]["execution_failure"] == {"type": "ValueError", "message": "execution exploded"}
+    assert report["raw"]["execution_failure"] == {"type": execution_error.__name__, "message": "execution exploded"}
     assert report["raw"]["cleanup_failure"] == {"type": "OSError", "message": "cleanup exploded"}
 
 
@@ -172,7 +173,7 @@ def test_session_writes_performed_only_after_successful_teardown(tmp_path: Path,
         return SimpleNamespace(refresh=lambda: None)
 
     monkeypatch.setattr(orchestrator, "_execute_on_runtime_pool", execute)
-    scenario = SimpleNamespace(id="scenario-1", scale="xs")
+    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 2}})
     orchestrator._run_with_platform_runtime(
         mode="scenario",
         scenarios=[scenario],

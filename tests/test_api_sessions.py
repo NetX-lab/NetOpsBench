@@ -71,7 +71,6 @@ def _install_real_runtime_mocks(monkeypatch):
             topology_dir,
             topology_metadata=None,
             minimum_baseline_seconds=5,
-            post_recovery_wait_seconds=2,
             influxdb_url=None,
             influxdb_token=None,
             influxdb_org=None,
@@ -150,8 +149,8 @@ def _install_real_runtime_mocks(monkeypatch):
                 },
             }
 
-        def final_calibration(self, scenario):
-            return {"success": True, "reason": "run_end"}
+        def final_calibration(self, scenario, **kwargs):
+            return {"success": True, "reason": "run_end", "destroy_after_run": kwargs["destroy_after_run"]}
 
         def close(self):
             return None
@@ -301,6 +300,7 @@ def test_run_on_runtime_scenario_supports_handle_and_path_without_teardown(tmp_p
         artifacts_dir=tmp_path / "existing-runs",
     )
 
+    assert first.report().raw["worker_summaries"][0]["final_calibration"]["destroy_after_run"] is False
     assert first.runtime_id == "existing-runtime"
     assert second.runtime_id == "existing-runtime"
     assert bench.runtimes.get("existing-runtime") is not None
@@ -751,6 +751,8 @@ def test_keep_runtime_false_tears_down_runtime_and_true_preserves_it(tmp_path, m
     removed = bench.sessions.run_scenario(scenario=scenario, agent=DummyAgent(), keep_runtime=False)
     preserved = bench.sessions.run_scenario(scenario=scenario, agent=DummyAgent(), keep_runtime=True)
 
+    assert removed.report().raw["worker_summaries"][0]["final_calibration"]["destroy_after_run"] is True
+    assert preserved.report().raw["worker_summaries"][0]["final_calibration"]["destroy_after_run"] is False
     assert bench.runtimes.get(removed.runtime_id) is None
     assert not (tmp_path / ".netopsbench" / "runtimes" / removed.runtime_id).exists()
     assert bench.runtimes.get(preserved.runtime_id) is not None
@@ -821,6 +823,7 @@ def test_acceptance_control_reuses_executor_checkpoints_and_stops_after_failed_c
     executions, checkpoints, closes, builds = [], [], [], []
     scenarios = [
         ScenarioSpec(
+            metadata={"recovery_policy": {"version": 2}},
             scenario_id=str(i),
             name=str(i),
             topology_scale="xs",
@@ -837,6 +840,9 @@ def test_acceptance_control_reuses_executor_checkpoints_and_stops_after_failed_c
         def run_scenario(self, scenario, diagnosis_callback=None):
             executions.append(scenario.id)
             return {"case_valid": True, "success": scenario.id == "0", "cleanup": {"success": True}, "episode": {}}
+
+        def final_calibration(self, scenario, **kwargs):
+            return {"success": True}
 
         def close(self):
             closes.append(True)
@@ -859,7 +865,6 @@ def test_acceptance_control_reuses_executor_checkpoints_and_stops_after_failed_c
         trace_writer=None,
         fault_registry=None,
         minimum_baseline_seconds=60,
-        post_recovery_wait_seconds=2,
         scale_registry=None,
         worker=worker,
         scenarios=scenarios,

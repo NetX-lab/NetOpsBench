@@ -8,8 +8,8 @@ description: 每例验证撤销与转发状态，独立校准全网健康基线�
 新生成的 campaign 和 SDK 新建场景显式记录 `metadata.recovery_policy`。
 `state_checked` 每例验证修改撤销、容器、接口、BGP、FIB、流量与基础连通；
 它不表示每例完成了全网 Pingmesh 数据面验证。故障观察窗口、采样率、诊断工具
-和评分不变。`full_window` 保留完整恢复窗口；历史场景缺少策略字段时仍走旧模式，
-不会为旧场景补字段或改变 scale/campaign 摘要。
+和评分不变。恢复策略 v2 只保留这一条执行流程；旧模式及其固定等待已移除。
+旧场景必须显式迁移后执行，历史报告仍可读取。
 
 没有引入逐 case 的恢复计划、新探针、client-agent 协议或 Batfish。
 
@@ -27,7 +27,7 @@ flowchart TD
   U -->|失败| Q[清除基线资格并隔离]
   S -->|未收敛 / 缺必要证据| Q
   C2 -->|失败| Q
-  R --> N[下一例，或运行末尾完整校准]
+  R --> N[下一例；结束时按环境去向校准或销毁]
 ```
 
 ## 配置及迁移
@@ -41,23 +41,24 @@ case = bench.scenarios.create(
     episode={"episode_id": "diagnosis", "fault_type": "none", "duration_seconds": 30},
     metadata={"negative_sample": True},
     recovery_policy=RecoveryPolicy(
-        mode="state_checked", baseline_max_cases=5, baseline_max_age_seconds=600,
+        baseline_max_cases=10, baseline_max_age_seconds=600,
     ),
 )
 ```
 
-CLI 在生成新案例时选择模式，不在执行冻结 campaign 时覆盖：
+新生成场景默认使用版本 2（10 次、600 秒）。不再提供 `--recovery-mode`。
+旧版本或没有恢复策略的场景会在部署前报错；显式迁移到新目录：
 
 ```bash
-netopsbench scenario generate --scale medium --recovery-mode state_checked
-netopsbench benchmark prepare --scales xs,medium --recovery-mode full_window
+netopsbench scenario migrate scenarios/generated/medium --out scenarios/migrated/medium-v2
+netopsbench scenario validate scenarios/migrated/medium-v2/CASE.yaml
 ```
 
-生成 spec 的顶层 `recovery_policy` 支持相同字段；版本字段为 `version: 1`。
-SDK 未显式传参的新建场景默认使用新模式；加载旧文件不会改变其模式。
-两个基线复用上限仅用于 `state_checked`；`full_window` 保留原有单次消费及
-基线时效规则。
-对照实验应生成独立的两个 campaign，不原地编辑冻结案例。
+迁移保留 testcase ID、故障参数及 experiment 配置，记录源文件和场景摘要，
+写入新的 campaign 身份及 `migration.json`，不覆盖原文件或既有输出目录。
+冻结 campaign 不做原地升级。SDK `RecoveryPolicy` 保留名称，但移除 `mode` 参数。
+生成 spec 的 `recovery_policy` 仅接受 `version: 2`、`baseline_max_cases` 和
+`baseline_max_age_seconds`；未指定的新建配置使用默认值。
 
 ## 每例检查与失败处理
 
@@ -93,14 +94,16 @@ SDK 未显式传参的新建场景默认使用新模式；加载旧文件不会�
 
 ## 基线和校准
 
-原始健康窗口最多用于 5 个案例，窗口结束距今最多 600 秒；开始使用时计数，
+原始健康窗口最多用于 10 个案例，窗口结束距今最多 600 秒；开始使用时计数，
 诊断失败不退还次数。状态恢复成功只恢复复用资格，不延长窗口时间。
 只有新的、完整验证过的窗口才能刷新基线。
 
 首次、次数/年龄到期、流量或环境身份变化时，在注入前校准。身份变化后不拿旧
 环境的窗口作新环境的比较基线。不缓存可能漏掉晚到记录的遥测查询结果。
 
-批量 worker 完成后执行最终校准，紧邻结束的有效完整校准可以复用。失败将
+平台拥有且确定立即销毁的 runtime 跳过末尾校准，记录 `runtime_will_be_destroyed`，
+销毁失败仍标记清理失败。保留、外部或去向未知的 runtime 执行末尾校准；
+紧邻结束的有效完整校准可以复用。校准失败将
 worker 隔离并使运行失败，案例原始评分保留。结果写入独立的
 `raw/<worker>/final_calibration.json` 和 worker summary。
 
@@ -118,11 +121,10 @@ worker 隔离并使运行失败，案例原始评分保留。结果写入独立�
 
 验收脚本 `scripts/validate_runtime_refactor.py` 支持：
 
-- `--recovery-mode`：相同案例序列的模式对照。
-- `--shadow`：恢复通过后额外完整校准，影子耗时独立记录。
+- `--shadow`：恢复通过后额外完整校准，影子耗时独立记录，不更新正式基线和校准状态。
 - `--all-mechanisms` / `--all-cases`：子机制或全部生成位置覆盖。
 - `--readback-negatives`：仅抑制撤销写操作，仍从真实设备读取状态，检查不能错误放行；随后解除抑制执行正常恢复。
-- `--tool-profile minimal`：只调用拓扑与 Pingmesh 汇总，排除模型耗时；两种恢复模式必须使用相同 profile。
+- `--tool-profile minimal`：只调用拓扑与 Pingmesh 汇总，排除模型耗时；两个版本必须使用相同 profile。
 - `--batch-repeats 3 --sequence-repeats 2`：在三个独立 runtime 上重复整批序列，包含首次、周期和末尾校准；不与逐类型 `--repeats` 混用。
 - `--compact-sequence`：性能运行使用健康样本和选定故障的连续序列；正确性验收仍独立执行影子检查。
 
@@ -133,7 +135,13 @@ worker 隔离并使运行失败，案例原始评分保留。结果写入独立�
 真实验收和完整序列性能记录保存在 `.netopsbench/state-recovery-*`；它们是本地
 产物，不作为源码提交。
 
-## 离线验收（2026-11-04）
+本轮删除依据与 v2 验收见 [Recovery v2 audit](./recovery-v2-audit)。
+
+## 历史验收：bf09430（2026-11-04）
+
+以下数据属于 v1 提交 bf09430，不能作为 v2 的验收结果。
+
+### 离线验收
 
 最终代码执行 `python -m pytest -q -m 'not real'`：**1272 通过，8 项 real 测试
 未纳入该次离线执行**，耗时 278.96 秒；包含干净 wheel 安装后的入口验证。
@@ -145,7 +153,7 @@ worker 隔离并使运行失败，案例原始评分保留。结果写入独立�
 旧场景摘要兼容，以及并行查询和跨批次计数隔离。日志位于
 `.netopsbench/state-recovery-verification/`。
 
-## 真实恢复验收（2026-11-04）
+### 真实恢复验收（v1）
 
 以下为专用隔离环境、确定性工具调用的实测；正确性验收包含额外影子窗口，
 不用于性能对比。medium 和 k=8 的正确性验收曾并行运行，性能运行另行串行执行。
@@ -170,7 +178,7 @@ k=18 的本次容量预检未通过：当时可用内存约 142.84 GB，含余�
 145.72 GB；未强行部署，**k=18 正确性和性能均未实测**。预检记录位于
 `.netopsbench/state-recovery-verification/capacity.json`。
 
-## 性能对照（2026-11-04）
+### 性能对照（v1）
 
 medium，1 个 worker，12 个路由设备、16 个 client、64 条背景流；使用现有镜像缓存。
 每批依次运行 `healthy → loss → ECMP → healthy → loss → ECMP`，观察窗口均为
@@ -208,7 +216,7 @@ P50/P95 由各模式 18 次恢复测量计算，故障例为 12 次，P95 使用
 这验证了减少重复健康窗口的收益，不能解释成所有计算开销都下降。结果仅适用于
 本次 medium 短序列，不外推到 BGP 重试较多的序列、长时间 LLM 诊断或未实测的 k=18。
 
-复现每批的关键参数：
+以下命令仅适用于独立检出的历史提交 bf09430：
 
 ```bash
 PYTHONPATH=. python scripts/validate_runtime_refactor.py \

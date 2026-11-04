@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,6 +21,10 @@ def observation_clock(monkeypatch):
         return {**_healthy_observation(duration), "name": kwargs.get("name", "window")}
 
     monkeypatch.setattr("netopsbench.platform.scenario.observation.capture_observation_window", capture)
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    monkeypatch.setattr(ScenarioExecutor, "_baseline_scope", lambda *a: RuntimeScope({}, {}, {}))
+    monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **k: {"nodes": {}})
 
 
 def _metadata() -> dict:
@@ -29,6 +34,7 @@ def _metadata() -> dict:
 
 def _healthy_scenario() -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="healthy_001",
         name="healthy",
         topology_scale="xs",
@@ -44,8 +50,8 @@ def _healthy_scenario() -> ScenarioSpec:
 
 def _healthy_observation(duration: int) -> dict:
     return {
-        "start_time": "2026-01-01T00:00:00Z",
-        "end_time": "2026-01-01T00:01:00Z",
+        "start_time": (datetime.now(UTC) - timedelta(seconds=duration)).isoformat(),
+        "end_time": datetime.now(UTC).isoformat(),
         "duration_seconds": duration,
         "pingmesh_metrics": {
             "summary": {
@@ -57,6 +63,11 @@ def _healthy_observation(duration: int) -> dict:
             },
             "quality": {"current_paths_observed": 2, "local_df_mtu_drops": 0},
             "anomalies": [],
+        },
+        "_baseline_health": {
+            "absolute_unreachable_paths": 0,
+            "absolute_packet_loss_paths": 0,
+            "absolute_network_mtu_paths": 0,
         },
         "anomalies_detected": False,
         "coverage_status": "complete",

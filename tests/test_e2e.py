@@ -851,7 +851,7 @@ episode:
                 scenario_id="configdb_interface_case",
                 name="ConfigDB interface case",
                 topology_scale="medium",
-                metadata={"difficulty": "easy"},
+                metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
                 episode=EpisodeSpec(
                     episode_id="diagnosis",
                     fault_type="link_down",

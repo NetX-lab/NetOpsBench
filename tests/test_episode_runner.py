@@ -16,29 +16,19 @@ class StubExecutor:
     def __init__(
         self,
         *,
-        post_recovery_wait_seconds: float = 0,
         injection_success: bool = True,
         observe_payload: dict[str, Any] | None = None,
     ):
         self.timings = PhaseTimings()
         self.observation_timeout_seconds = 60
-        self.post_recovery_wait_seconds = post_recovery_wait_seconds
         self._injection_success = injection_success
         self._observe_payload = observe_payload or {"observed": True}
         self.calls: list[str] = []
         self.baseline_windows: list[dict[str, Any] | None] = []
 
-    def _offer_healthy_window(self, observation):
-        self.healthy_candidate = observation
-
     def _inject_fault(self, episode):
         self.calls.append("inject")
         return {"success": self._injection_success, "fault_type": episode.fault_type}
-
-    def _wait_and_observe(self, seconds, *, baseline_window):
-        self.calls.append(f"observe:{seconds}")
-        self.baseline_windows.append(baseline_window)
-        return {"duration": seconds, **self._observe_payload}
 
     def _capture_observation_window(self, seconds, name):
         self.calls.append(f"capture:{name}:{seconds}")
@@ -85,7 +75,7 @@ def test_healthy_episode_is_observed_without_fault_actions():
     )
 
     assert result["state"] == "active"
-    assert executor.healthy_candidate is result["observations"]
+    assert result["observations"]["observed"] is True
     assert executor.calls == ["capture:full:2", "merge"]
 
 

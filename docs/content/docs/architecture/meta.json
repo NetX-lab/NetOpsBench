@@ -4,6 +4,7 @@
     "system-overview",
     "runtime-audit",
     "core-simplification",
-    "state-checked-recovery"
+    "state-checked-recovery",
+    "recovery-v2-audit"
   ]
 }

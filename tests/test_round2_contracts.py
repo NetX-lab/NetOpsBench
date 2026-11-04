@@ -16,7 +16,6 @@ def test_case_reset_preserves_runtime_state_and_clears_all_case_evidence(tmp_pat
     runner = ScenarioExecutor(topology_dir=str(tmp_path))
     traffic = runner.traffic_controller = object()
     handoff = runner._baseline_handoff
-    runner._healthy_baseline_candidate = {"old": True}
     runner._case_frr_before = {"old": True}
     runner._case_initial_scope = object()
     runner._case_routes = {"old": True}
@@ -27,7 +26,7 @@ def test_case_reset_preserves_runtime_state_and_clears_all_case_evidence(tmp_pat
     assert runner.traffic_controller is traffic
     assert runner._baseline_handoff is handoff
     assert runner.timings.phases == {}
-    assert runner._healthy_baseline_candidate is runner._case_frr_before is None
+    assert runner._case_frr_before is None
     assert runner._case_initial_scope is runner._case_routes is None
     assert runner._case_affected_pairs == runner._case_probe_pairs == []
 

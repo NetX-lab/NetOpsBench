@@ -217,7 +217,7 @@ def test_incident_keeps_route_validation_private_and_supports_explicit_route_que
     from netopsbench.platform.scenario.baseline import BaselineHandoff
 
     executor = SimpleNamespace(
-        recovery_policy=RecoveryPolicy(mode="full_window"),
+        recovery_policy=RecoveryPolicy(),
         topology_dir="unused",
         _traffic_config=None,
         _cancel_event=None,
@@ -241,10 +241,31 @@ def test_incident_keeps_route_validation_private_and_supports_explicit_route_que
         influxdb_bucket="bucket",
         topology_id="topology",
     )
-    monkeypatch.setattr(incident_backend, "baseline_gate_errors", lambda value: [])
+    from datetime import UTC, datetime, timedelta
+
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    scope = RuntimeScope({}, {}, {})
+    executor._baseline_scope = lambda _: scope
+    executor.calibrate = lambda case, reason: executor._baseline_handoff.publish(
+        {
+            "start_time": (datetime.now(UTC) - timedelta(seconds=30)).isoformat(),
+            "end_time": datetime.now(UTC).isoformat(),
+            "duration_seconds": 30,
+        },
+        scope,
+        case.id,
+        30,
+        verified=True,
+    )
     backend = incident_backend.ExecutorIncidentBackend(executor)
     canonical = backend.prepare(
-        SimpleNamespace(id="private-case", scale="medium", episode=episode, metadata={"fault_catalog_version": 2})
+        SimpleNamespace(
+            id="private-case",
+            scale="medium",
+            episode=episode,
+            metadata={"fault_catalog_version": 2, "recovery_policy": {"version": 2}},
+        )
     )
     assert backend.symptoms["observations"] == observations
     assert canonical["symptoms"]["observations"] == observations

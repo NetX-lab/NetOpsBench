@@ -19,7 +19,7 @@ from netopsbench.models.topology import (
 from netopsbench.platform.pingmesh._detector_analysis import DetectorAnalysisMixin
 from netopsbench.platform.pingmesh._detector_query import SnapshotQueryResult
 from netopsbench.platform.pingmesh.detector import Anomaly, AnomalyDetector
-from netopsbench.platform.scenario.observation import wait_and_observe
+from netopsbench.platform.scenario.observation import analyze_observation_windows, capture_observation_window
 from netopsbench.platform.toolkit._core.common import ToolResult
 from netopsbench.platform.toolkit.mcp import context as mcp_context
 from netopsbench.platform.toolkit.mcp import observability as fastmcp_server
@@ -1114,9 +1114,10 @@ def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monke
     )
 
     deadline = time.monotonic() + 10
-    observations = wait_and_observe(
+    observations = analyze_observation_windows(
         runner,
-        duration=0,
+        [capture_observation_window(runner, 0, name="steady", deadline=deadline)],
+        total_duration_seconds=0,
         baseline_window={"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:01:00Z"},
         deadline=deadline,
     )

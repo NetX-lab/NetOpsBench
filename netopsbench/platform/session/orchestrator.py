@@ -148,6 +148,10 @@ class SessionOrchestrator:
         artifacts_dir: str | Path | None,
         trace: bool,
     ) -> Any:
+        from netopsbench.models.recovery import RecoveryPolicy
+
+        for scenario in scenarios:
+            RecoveryPolicy.from_metadata(scenario.metadata)
         started_at = self._timestamp()
         run_id = reserve_run_id(self._artifacts_root(artifacts_dir), started_at=started_at)
         runtime_id = f"{run_id}-runtime"
@@ -157,8 +161,8 @@ class SessionOrchestrator:
             name=runtime_id,
             root_dir=root_dir,
         )
-        execution_failure: Exception | None = None
-        cleanup_failure: Exception | None = None
+        execution_failure: BaseException | None = None
+        cleanup_failure: BaseException | None = None
         handle: Any | None = None
         try:
             handle = self._execute_on_runtime_pool(
@@ -173,12 +177,12 @@ class SessionOrchestrator:
                 teardown=("preserved" if keep_runtime else "pending"),
                 started_at=started_at,
             )
-        except Exception as exc:
+        except BaseException as exc:
             execution_failure = exc
         if not keep_runtime:
             try:
                 runtime.teardown()
-            except Exception as exc:
+            except BaseException as exc:
                 cleanup_failure = exc
         teardown = "preserved" if keep_runtime else ("failed" if cleanup_failure is not None else "performed")
         self._finalize_lifecycle_report(
@@ -263,6 +267,7 @@ class SessionOrchestrator:
             trace_writer=trace_writer,
             fault_registry=getattr(getattr(self.platform, "faults", None), "spec_registry", None),
             control=control,
+            destroy_after_run=runtime_owner == "platform" and teardown == "pending",
         )
         aggregate_report = (
             Evaluator().generate_report(
@@ -350,15 +355,15 @@ class SessionOrchestrator:
         started_at: datetime,
         runtime_owner: str,
         teardown: str,
-        execution_failure: Exception | None,
-        cleanup_failure: Exception | None,
+        execution_failure: BaseException | None,
+        cleanup_failure: BaseException | None,
     ) -> None:
         artifact_dir = self._artifacts_root(artifacts_dir) / run_id
         report_path = artifact_dir / "report.json"
         metadata_path = artifact_dir / "metadata.json"
         completed_at = self._timestamp()
 
-        def failure_payload(error: Exception | None) -> dict[str, str] | None:
+        def failure_payload(error: BaseException | None) -> dict[str, str] | None:
             if error is None:
                 return None
             return {"type": type(error).__name__, "message": str(error)}

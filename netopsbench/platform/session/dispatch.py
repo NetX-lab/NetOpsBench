@@ -117,7 +117,6 @@ def _build_scenario_executor(
     worker: RuntimeIdentity,
     fault_registry: Any,
     minimum_baseline_seconds: int | None,
-    post_recovery_wait_seconds: int,
     scale_registry: ScaleRegistry,
     effects_only: bool = False,
 ) -> ScenarioExecutor:
@@ -125,7 +124,6 @@ def _build_scenario_executor(
         topology_dir=str(worker_context.topology_dir),
         topology_metadata=load_topology_metadata(worker_context.topology_dir),
         minimum_baseline_seconds=minimum_baseline_seconds,
-        post_recovery_wait_seconds=post_recovery_wait_seconds,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
         fault_registry=fault_registry,
@@ -149,11 +147,11 @@ def _run_worker(
     trace_writer: TraceWriter | None,
     fault_registry: Any,
     minimum_baseline_seconds: int | None,
-    post_recovery_wait_seconds: int,
     scale_registry: ScaleRegistry,
     worker: RuntimeIdentity,
     scenarios: list[ScenarioSpec],
     control: ExecutionControl | None = None,
+    destroy_after_run: bool = False,
 ) -> WorkerRunResult:
     worker_context = build_worker_execution_context(worker, worker.topology_dir)
     for scenario in scenarios:
@@ -165,7 +163,6 @@ def _run_worker(
         worker=worker,
         fault_registry=fault_registry,
         minimum_baseline_seconds=minimum_baseline_seconds,
-        post_recovery_wait_seconds=post_recovery_wait_seconds,
         scale_registry=scale_registry,
         **({"effects_only": True} if control and control.effects_only else {}),
     )
@@ -307,19 +304,16 @@ def _run_worker(
                     )
                 break
         if executed_count and not any(item.get("cleanup_failed") for item in scenario_summaries):
-            from netopsbench.models.recovery import RecoveryPolicy
-
-            if RecoveryPolicy.from_metadata(scenario.metadata).mode == "state_checked":
-                try:
-                    final_calibration = runner.final_calibration(scenario)
-                except BaseException as exc:
-                    worker_success = False
-                    final_calibration = {"success": False, "error": str(exc)}
-                    runtime.mark_quarantined("final_calibration_failure", [worker.worker_id])
-                    if not isinstance(exc, Exception):
-                        persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
-                        raise
-                persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
+            try:
+                final_calibration = runner.final_calibration(scenario, destroy_after_run=destroy_after_run)
+            except BaseException as exc:
+                worker_success = False
+                final_calibration = {"success": False, "error": str(exc)}
+                runtime.mark_quarantined("final_calibration_failure", [worker.worker_id])
+                if not isinstance(exc, Exception):
+                    persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
+                    raise
+            persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
     finally:
         runner.close()
 
@@ -358,10 +352,14 @@ def execute_on_runtime_pool(
     trace_writer: TraceWriter | None = None,
     fault_registry: Any = None,
     minimum_baseline_seconds: int | None = None,
-    post_recovery_wait_seconds: int = 2,
     control: ExecutionControl | None = None,
+    destroy_after_run: bool = False,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    for scenario in scenarios:
+        RecoveryPolicy.from_metadata(scenario.metadata)
     if runtime.state != "warm" or bool(runtime.metadata.get("quarantined")):
         raise RuntimeError(
             f"Runtime {runtime.id!r} is not eligible for execution: "
@@ -380,11 +378,11 @@ def execute_on_runtime_pool(
             trace_writer=trace_writer,
             fault_registry=fault_registry,
             minimum_baseline_seconds=minimum_baseline_seconds,
-            post_recovery_wait_seconds=post_recovery_wait_seconds,
             scale_registry=runtime.scale_registry,
             worker=worker,
             scenarios=assigned,
             control=control,
+            destroy_after_run=destroy_after_run,
         ),
     )
     cleanup_failures = sorted(

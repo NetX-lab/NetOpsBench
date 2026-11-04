@@ -21,19 +21,21 @@ def window(age=0):
 
 def test_policy_does_not_rewrite_legacy_metadata():
     metadata = {"experiment": {"observation_seconds": 30}}
-    assert RecoveryPolicy.from_metadata(metadata).mode == "full_window"
+    with pytest.raises(ValueError, match="migrate"):
+        RecoveryPolicy.from_metadata(metadata)
     assert "recovery_policy" not in metadata
-    assert RecoveryPolicy().mode == "state_checked"
+    assert RecoveryPolicy().version == 2
+    assert RecoveryPolicy().baseline_max_cases == 10
     with pytest.raises(ValueError):
-        RecoveryPolicy(version=2)
+        RecoveryPolicy(version=1)
 
 
-def test_baseline_five_uses_and_interrupted_consumer():
-    h = BaselineHandoff(reusable=True, max_cases=5, max_age_seconds=600)
+def test_baseline_ten_uses_and_interrupted_consumer():
+    h = BaselineHandoff(max_cases=10, max_age_seconds=600)
     scope = RuntimeScope({}, {}, {})
     w = window()
     assert h.publish(w, scope, "initial", 30, verified=True)
-    for i in range(5):
+    for i in range(10):
         assert h.take(scope, 30)[0] == w
         assert h.uses == i + 1
         assert h.take(scope, 30) == (None, "previous_case_not_verified")
@@ -44,14 +46,14 @@ def test_baseline_five_uses_and_interrupted_consumer():
 
 @pytest.mark.parametrize("age,allowed", [(599, True), (601, False)])
 def test_reusable_age_is_original_window_age(age, allowed):
-    h = BaselineHandoff(reusable=True, max_age_seconds=600)
+    h = BaselineHandoff(max_age_seconds=600)
     scope = RuntimeScope({}, {}, {})
     assert h.publish(window(age), scope, "initial", 30, verified=True) is allowed
     assert (h.take(scope, 30)[0] is not None) is allowed
 
 
 def test_identity_change_and_failure_invalidate_reuse():
-    h = BaselineHandoff(reusable=True, max_age_seconds=600)
+    h = BaselineHandoff(max_age_seconds=600)
     h.publish(window(), RuntimeScope({"generation": 1}, {}, {}), "initial", 30, verified=True)
     assert h.take(RuntimeScope({"generation": 2}, {}, {}), 30)[1] == "scope_changed"
     h.clear("recovery_failed")
@@ -198,3 +200,19 @@ def test_frr_recovery_exit_zero_does_not_hide_config_drift(monkeypatch):
     }
     monkeypatch.setattr(handler, "_run", lambda *args: "router bgp 65001\n neighbor 10.1.1.1 password wrong\n")
     assert handler.recover(fault)["recovered"] is False
+
+
+def test_terminal_destroy_skips_window_but_never_accepts_active_faults():
+    from netopsbench.platform.scenario.executor import ScenarioExecutor
+
+    runner = object.__new__(ScenarioExecutor)
+    runner.injector = SimpleNamespace(active_faults=[])
+    runner.calibrate = lambda *a, **k: pytest.fail("destroy path must not collect a window")
+    assert runner.final_calibration(None, destroy_after_run=True) == {
+        "status": "skipped",
+        "reason": "runtime_will_be_destroyed",
+        "validation_level": "state_checked",
+    }
+    runner.injector.active_faults.append({"residual": True})
+    with pytest.raises(RuntimeError, match="unresolved"):
+        runner.final_calibration(None, destroy_after_run=True)

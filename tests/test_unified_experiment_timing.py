@@ -41,7 +41,6 @@ def test_observation_is_one_capture_with_analysis_slices():
         timings=PhaseTimings(),
         observation_timeout_seconds=60,
         _inject_fault=lambda _: {"success": True},
-        _offer_healthy_window=lambda observation: None,
     )
     runner._capture_observation_window = lambda duration, name: (
         captures.append((duration, name))
@@ -127,9 +126,8 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
     runner = object.__new__(ScenarioExecutor)
     from netopsbench.models.recovery import RecoveryPolicy
 
-    runner.recovery_policy = RecoveryPolicy(mode="full_window")
+    runner.recovery_policy = RecoveryPolicy()
     runner.begin_case()
-    runner.post_recovery_wait_seconds = 0
     runner.traffic_controller = None
     runner.runtime_worker = None
     runner.injector = SimpleNamespace(active_faults=[{"type": "link_down"}])
@@ -147,7 +145,13 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
     monkeypatch.setattr(module, "monotonic", lambda: clock[0])
     monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
     result = runner._cleanup_after_scenario(
-        ScenarioSpec(scenario_id="late", name="late", episode=EpisodeSpec(episode_id="a", fault_type="link_down")), None
+        ScenarioSpec(
+            metadata={"recovery_policy": {"version": 2}},
+            scenario_id="late",
+            name="late",
+            episode=EpisodeSpec(episode_id="a", fault_type="link_down"),
+        ),
+        None,
     )
     assert result["success"] is False
     assert result["status"] == "recovery_timeout"
@@ -203,15 +207,36 @@ def test_recovery_window_and_ingestion_timings_are_separate(monkeypatch):
     def analyze(*args, **kwargs):
         clock[0] += 10
         return {
+            "_baseline_health": {
+                "absolute_unreachable_paths": 0,
+                "absolute_packet_loss_paths": 0,
+                "absolute_network_mtu_paths": 0,
+            },
             "_baseline_coverage": {"ingestion": {"query_requests": 21}},
             "_coverage_audit": {"ingestion": {"query_requests": 21}},
         }
 
-    monkeypatch.setattr(observation, "capture_observation_window", capture)
-    monkeypatch.setattr(observation, "analyze_observation_windows", analyze)
-    with timings.measure("recovery"):
-        observation.wait_and_observe(SimpleNamespace(), 42, baseline_window=reference, timings=timings)
-    steps = timings.phases["recovery"]["steps"]
+    from netopsbench.models.profiles import default_scale_registry
+    from netopsbench.platform.scenario.baseline import BaselineHandoff
+    from netopsbench.platform.scenario.executor import ScenarioExecutor
+
+    runner = object.__new__(ScenarioExecutor)
+    runner.timings = timings
+    runner.injector = SimpleNamespace(active_faults=[])
+    runner._recovering = True
+    runner.runtime_worker = None
+    runner.manifest = SimpleNamespace(scale="xs")
+    runner.scale_registry = default_scale_registry()
+    runner.experiment = runner.scale_registry.get("xs").experiment
+    runner.minimum_baseline_seconds = 42
+    runner._baseline_handoff = BaselineHandoff()
+    runner._baseline_scope = lambda _: None
+    runner._capture_baseline_window = capture
+    runner._merge_observation_windows = analyze
+    reference["duration_seconds"] = 42
+    monkeypatch.setattr(observation, "baseline_gate_errors", lambda _: [])
+    runner.calibrate(SimpleNamespace(id="case"), "test")
+    steps = timings.phases["calibration"]["steps"]
     assert steps["window_wait"]["actual_seconds"] == 42
     assert steps["window_query"]["actual_seconds"] == 10
     assert steps["window_query"]["ingestion"] == {"baseline": {"query_requests": 21}, "current": {"query_requests": 21}}
@@ -340,7 +365,19 @@ def test_fresh_baseline_is_one_capture_and_checks_absolute_health(tmp_path, monk
         sleeps.append(seconds)
         clock[0] += seconds
 
+    from datetime import UTC, datetime, timedelta
+
+    epoch = datetime.now(UTC)
+
+    class ClockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return epoch + timedelta(seconds=clock[0])
+
+    monkeypatch.setattr("netopsbench.platform.scenario.baseline.datetime", ClockDatetime)
+    monkeypatch.setattr("netopsbench.platform.scenario.observation.datetime", ClockDatetime)
     monkeypatch.setattr("netopsbench.platform.scenario.observation.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("netopsbench.platform.scenario.timing.monotonic", lambda: clock[0])
     runner = ScenarioExecutor(topology_dir=str(tmp_path), topology_metadata=metadata, sleep_fn=advance)
     monkeypatch.setattr(runner, "_setup_traffic", lambda *_: {})
     monkeypatch.setattr(runner, "_stop_traffic", lambda: None)
@@ -363,21 +400,26 @@ def test_fresh_baseline_is_one_capture_and_checks_absolute_health(tmp_path, monk
             "pingmesh_metrics": {"summary": {"total_anomalies": 0}, "quality": {"current_paths_observed": 2}},
         }
 
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    monkeypatch.setattr(runner, "_baseline_scope", lambda _: RuntimeScope({}, {}, {}))
+    monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **k: {"nodes": {}})
     monkeypatch.setattr(runner, "_merge_observation_windows", analyze)
     case = ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="healthy",
         name="healthy",
         topology_scale="xs",
         episode=EpisodeSpec(episode_id="a", fault_type="none", duration_seconds=30, stabilization_time=0),
     )
     result = runner.run_scenario(case)
-    assert result["success"] is not unhealthy
+    assert result["success"] is not unhealthy, result.get("error", result.get("episode"))
     assert len(sleeps) == (30 if unhealthy else 60)
     assert sum(w[0]["name"] == "baseline" for w in reads) == 1
     if unhealthy:
         assert "absolute_unreachable_paths=1" in result["error"]
     else:
-        assert result["phase_timings"]["baseline"]["planned_seconds"] == 30
+        assert result["phase_timings"]["calibration"]["steps"]["window_wait"]["actual_seconds"] == 30
         assert result["phase_timings"]["diagnosis"]["status"] == "skipped"
 
 
@@ -444,7 +486,6 @@ def test_healthy_and_fault_cases_share_the_same_public_window_shape():
             timings=PhaseTimings(),
             observation_timeout_seconds=60,
             _inject_fault=lambda _: {"success": True},
-            _offer_healthy_window=lambda observation: None,
         )
         runner._capture_observation_window = lambda duration, name: {
             "start_time": "2026-10-24T00:00:00Z",

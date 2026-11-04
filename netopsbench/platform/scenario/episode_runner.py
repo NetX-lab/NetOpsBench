@@ -88,8 +88,6 @@ def observe_episode(
         observations = executor._merge_observation_windows(
             windows, total_duration_seconds=episode.duration_seconds, baseline_window=baseline_window
         )
-    if episode.is_healthy:
-        executor._offer_healthy_window(observations)
     coverage = observations.pop("_coverage_audit", None)
     observations.pop("_baseline_health", None)
     result["observations"] = observations

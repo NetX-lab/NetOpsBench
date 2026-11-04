@@ -70,7 +70,7 @@ def test_custom_pingmesh_policy_derives_complete_window_without_scale_name():
     assert manifest.require_pingmesh_plan().settings.complete_window_seconds == 66
 
 
-def test_executor_recovery_wait_covers_one_pingmesh_cycle(tmp_path):
+def test_executor_uses_v2_without_fixed_recovery_wait(tmp_path):
     metadata = _minimal_canonical_topology()
     metadata["pingmesh"]["cycle_interval_seconds"] = 3
     from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
@@ -82,10 +82,10 @@ def test_executor_recovery_wait_covers_one_pingmesh_cycle(tmp_path):
     runner = ScenarioExecutor(
         topology_dir=str(tmp_path),
         topology_metadata=metadata,
-        post_recovery_wait_seconds=1,
     )
 
-    assert runner.post_recovery_wait_seconds == 3
+    assert runner.recovery_policy.version == 2
+    assert not hasattr(runner, "post_recovery_wait_seconds")
 
 
 def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
@@ -93,6 +93,7 @@ def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
     scenario_path.write_text(
         yaml.safe_dump(
             {
+                "metadata": {"recovery_policy": {"version": 2}},
                 "scenario_id": "baseline_only",
                 "name": "Baseline Only",
                 "description": "No fault episode",
@@ -121,6 +122,7 @@ def test_validate_scenario_accepts_xlarge_scale(tmp_path):
     scenario_path.write_text(
         yaml.safe_dump(
             {
+                "metadata": {"recovery_policy": {"version": 2}},
                 "scenario_id": "generated_healthy_network_xlarge_001",
                 "name": "XLarge healthy case",
                 "description": "No fault episode",
@@ -167,7 +169,7 @@ def test_parse_scenario_preserves_episode_parameters(tmp_path):
                 "description": "parameter parsing",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"difficulty": "medium"},
+                "metadata": {"recovery_policy": {"version": 2}, "difficulty": "medium"},
                 "episode": {
                     "episode_id": "diagnosis",
                     "description": "fault",
@@ -205,7 +207,7 @@ def test_validate_scenario_rejects_blackhole_route_without_target_prefix(tmp_pat
                 "description": "missing required prefix",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"difficulty": "medium"},
+                "metadata": {"recovery_policy": {"version": 2}, "difficulty": "medium"},
                 "episode": {
                     "episode_id": "diagnosis",
                     "description": "fault",
@@ -232,7 +234,7 @@ def test_validate_scenario_accepts_runtime_registered_fault():
         scenario_id="synthetic",
         name="Synthetic",
         topology_scale="xs",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="synthetic_schema_fault",
@@ -247,7 +249,7 @@ def test_validate_scenario_enforces_blackhole_route_target_prefix():
         scenario_id="blackhole_case",
         name="Blackhole case",
         topology_scale="xs",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="blackhole_route",
@@ -272,7 +274,7 @@ def test_validate_scenario_runs_custom_fault_spec_validator():
         scenario_id="synthetic_validator",
         name="Synthetic Validator",
         topology_scale="xs",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="synthetic_validated_fault",
@@ -292,7 +294,7 @@ def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
         scenario_id="fat_tree_agg_fault",
         name="Fat-tree aggregation fault",
         topology_scale="fat-tree-k8",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="link_down",
@@ -313,6 +315,7 @@ def test_validate_scenario_topology_rejects_window_shorter_than_manifest_require
     topology_dir = tmp_path / "generated_topology_xs"
     generate_topology("xs", str(topology_dir), name="xs-window")
     scenario = ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="short-window",
         name="Short observation window",
         topology_scale="xs",
@@ -343,6 +346,7 @@ def test_validate_scenario_topology_rejects_legacy_grouped_topology(tmp_path):
         encoding="utf-8",
     )
     scenario = ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="legacy_schema",
         name="Legacy schema",
         topology_scale="xs",
@@ -433,7 +437,17 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
         events.append("traffic_ready")
         return {"scale": scale, "profile": profile}
 
-    baseline = {"start_time": "baseline-start", "end_time": "baseline-end", "duration_seconds": 7}
+    from datetime import UTC, datetime, timedelta
+
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    baseline = {
+        "start_time": (datetime.now(UTC) - timedelta(seconds=7)).isoformat(),
+        "end_time": datetime.now(UTC).isoformat(),
+        "duration_seconds": 7,
+    }
+    monkeypatch.setattr(runner, "_baseline_scope", lambda _: RuntimeScope({}, {}, {}))
+    monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **k: {"nodes": {}})
 
     def capture_baseline():
         events.append("baseline_captured")
@@ -442,16 +456,7 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
     def observe(windows, total_duration_seconds, *, baseline_window):
         is_validation = len([event for event in events if event.endswith("_observed")]) == 0
         events.append("validation_observed" if is_validation else "current_observed")
-        assert baseline_window == (
-            baseline
-            if is_validation
-            else {
-                "name": "baseline",
-                "start_time": "2026-01-01T00:00:00Z",
-                "end_time": "2026-01-01T00:00:07Z",
-                "duration_seconds": 7,
-            }
-        )
+        assert baseline_window == baseline
         return {
             "start_time": "2026-01-01T00:00:00Z",
             "end_time": "2026-01-01T00:00:07Z",
@@ -466,6 +471,11 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
                 },
                 "quality": {"current_paths_observed": 2, "local_df_mtu_drops": 0},
                 "anomalies": [],
+            },
+            "_baseline_health": {
+                "absolute_unreachable_paths": 0,
+                "absolute_packet_loss_paths": 0,
+                "absolute_network_mtu_paths": 0,
             },
             "anomalies_detected": False,
             "coverage_status": "complete",
@@ -490,6 +500,7 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
     monkeypatch.setattr(runner, "_recover_fault", lambda: {"success": True})
 
     scenario = ScenarioSpec(
+        metadata={"recovery_policy": {"version": 2}},
         scenario_id="no-persist",
         name="No Persist",
         description="test",

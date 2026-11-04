@@ -19,9 +19,16 @@ from scripts import validate_pingmesh_scales as cli
 BACKEND = {"provider": "upstream", "containerlab_version": "test"}
 
 
-@pytest.mark.parametrize("change", [None, "imported_image", "content", "source", "agent", "backend", "health", "case", "fingerprint"])
+@pytest.mark.parametrize(
+    "change", [None, "imported_image", "content", "source", "agent", "backend", "health", "case", "fingerprint"]
+)
 def test_codex_qualification_requires_matching_frozen_evidence(tmp_path, change):
-    identity = {"model": "gpt-6.1-sol", "service_tier": "default", "image_id": "sha256:test", "image_content_sha256": "same-content"}
+    identity = {
+        "model": "gpt-6.1-sol",
+        "service_tier": "default",
+        "image_id": "sha256:test",
+        "image_content_sha256": "same-content",
+    }
     receipt = {
         "schema_version": 1,
         "status": "passed",
@@ -31,8 +38,15 @@ def test_codex_qualification_requires_matching_frozen_evidence(tmp_path, change)
         "agent_identity": identity,
         "source_tree_sha256": "frozen-source",
         "cases": [
-            {"id": f"xs-{fault}", "fault_type": fault, "status": "completed", "valid": True,
-             "diagnosis_complete": True, "cleanup_failed": False, "score": 0}
+            {
+                "id": f"xs-{fault}",
+                "fault_type": fault,
+                "status": "completed",
+                "valid": True,
+                "diagnosis_complete": True,
+                "cleanup_failed": False,
+                "score": 0,
+            }
             for fault in ("none", "link_down", "device_down", "bgp_auth_mismatch")
         ],
     }
@@ -241,6 +255,7 @@ def test_completed_campaign_returns_without_constructing_agent_or_executor(tmp_p
     path = tmp_path / "low-score.yaml"
     save_scenario_file(
         ScenarioSpec(
+            metadata={"recovery_policy": {"version": 2}},
             scenario_id="low-score",
             name="low-score",
             topology_scale="xs",
@@ -315,6 +330,7 @@ def test_run_cases_records_case_failure_and_continues_without_retry(monkeypatch,
         path = tmp_path / f"{name}.yaml"
         save_scenario_file(
             ScenarioSpec(
+                metadata={"recovery_policy": {"version": 2}},
                 scenario_id=name,
                 name=name,
                 topology_scale="xs",
@@ -630,6 +646,7 @@ def test_case_set_and_contents_are_immutable_on_resume(tmp_path, change):
     def case(name, filename=None):
         return save_scenario_file(
             ScenarioSpec(
+                metadata={"recovery_policy": {"version": 2}},
                 scenario_id=name,
                 name=name,
                 topology_scale="xs",

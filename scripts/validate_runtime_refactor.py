@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Isolated deterministic runtime audit, with no model calls or shortened windows.
 
-Run with PYTHONPATH pointing to either source tree for comparable measurements.
+For version comparisons, run each snapshot's driver with PYTHONPATH pointing
+to that snapshot; this driver only generates recovery policy v2.
 One repetition runs a coverage suite with fault/healthy pairs on a fresh lab.
 Multiple repetitions measure every requested type (plus healthy) on its own
 fresh lab, cold and reused, followed by a healthy check after each fault pair.
@@ -161,6 +162,23 @@ def verify_residual_rejected(runner, fault_type):
     return {"passed": True, "suppressed_write_count": len(suppressed), "results": results}
 
 
+def verify_shadow(runner, case):
+    """Audit data-plane health without publishing a production baseline."""
+    from copy import deepcopy
+
+    started = time.monotonic()
+    baseline = deepcopy(runner._baseline_handoff)
+    last_calibration = runner._last_calibration
+    calibration_current = runner._calibration_current
+    try:
+        runner.calibrate(case, "shadow_validation")
+        return {"seconds": time.monotonic() - started, **runner._last_calibration}
+    finally:
+        runner._baseline_handoff = baseline
+        runner._last_calibration = last_calibration
+        runner._calibration_current = calibration_current
+
+
 def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -171,7 +189,7 @@ def run(args):
         source_hash.update(path.read_bytes())
     report = {
         "scale": args.scale,
-        "recovery_mode": args.recovery_mode,
+        "recovery_policy": {"version": 2, "baseline_max_cases": 10, "baseline_max_age_seconds": 600},
         "tool_profile": args.tool_profile,
         "repetitions": [],
         "status": "running",
@@ -220,7 +238,7 @@ def run(args):
                 record["runtime_spec"] = runtime.describe()
                 worker = runtime.workers[0]
                 paths = generate(
-                    {"fault_catalog_version": 2, "recovery_policy": {"mode": args.recovery_mode}},
+                    {"fault_catalog_version": 2, "recovery_policy": {"version": 2}},
                     load_topology(args.scale, str(worker.topology_dir)),
                     output / f"scenarios-{repetition + 1}-{cold_type or 'suite'}",
                     seed=42,
@@ -276,17 +294,15 @@ def run(args):
                         "result": result,
                         "negative_readbacks": negative_checks,
                     }
-                    if args.shadow and result.get("success") and runner.recovery_policy.mode == "state_checked":
-                        shadow_started = time.monotonic()
-                        runner.calibrate(case, "shadow_validation")
-                        item["shadow"] = {"seconds": time.monotonic() - shadow_started, **runner._last_calibration}
+                    if args.shadow and result.get("success"):
+                        item["shadow"] = verify_shadow(runner, case)
                     record["cases"].append(item)
                     save()
                     if not result.get("case_valid") or not result.get("success") or result.get("cleanup_failed"):
                         raise RuntimeError(f"Case validation/recovery failed: {case.id}")
                 before = counts.snapshot()
                 final_started = time.monotonic()
-                calibration = runner.final_calibration(sequence[-1])
+                calibration = runner.final_calibration(sequence[-1], destroy_after_run=True)
                 record["final_calibration"] = {
                     "seconds": time.monotonic() - final_started,
                     "result": calibration,
@@ -326,9 +342,8 @@ def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", required=True)
-    parser.add_argument("--recovery-mode", choices=["state_checked", "full_window"], default="state_checked")
     parser.add_argument("--all-mechanisms", action="store_true")
-    parser.add_argument("--sequence-repeats", type=int, choices=range(1, 4), default=1)
+    parser.add_argument("--sequence-repeats", type=int, choices=range(1, 5), default=1)
     parser.add_argument("--tool-profile", choices=["full", "minimal"], default="full")
     parser.add_argument("--all-cases", action="store_true")
     parser.add_argument("--readback-negatives", action="store_true")
@@ -352,6 +367,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.repeats > 1 and args.batch_repeats > 1:
         parser.error("Choose either per-type --repeats or whole-suite --batch-repeats")
-    if args.compact_sequence and (args.shadow or args.repeats > 1):
-        parser.error("--compact-sequence is only for whole-suite performance runs without shadow checks")
+    if args.compact_sequence and args.repeats > 1:
+        parser.error("--compact-sequence requires whole-suite repetitions")
     raise SystemExit(run(args))

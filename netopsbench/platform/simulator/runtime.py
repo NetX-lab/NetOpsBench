@@ -285,6 +285,9 @@ class RuntimeEpisodeBackend:
         self.topology_dir: str | None = None
 
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
+        from netopsbench.models.recovery import RecoveryPolicy
+
+        RecoveryPolicy.from_metadata(scenario.metadata)
         self.record = self.leases.acquire(scenario.scale)
         runner = self.record.runner
         if runner is None:
@@ -302,11 +305,8 @@ class RuntimeEpisodeBackend:
         # benchmark execution. An unhealthy lease is handled by incident cleanup.
         runner.begin_case()
         # Every prepare acquires a new lease; no cross-user baseline handoff.
-        from netopsbench.models.recovery import RecoveryPolicy
-
-        if RecoveryPolicy.from_metadata(scenario.metadata).mode == "state_checked":
-            runner._baseline_handoff.clear("lease_transfer")
-            runner._calibration_current = False
+        runner._baseline_handoff.clear("lease_transfer")
+        runner._calibration_current = False
         self.delegate = ExecutorIncidentBackend(
             runner,
             influxdb_bucket=worker.bucket,
