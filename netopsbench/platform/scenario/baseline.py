@@ -106,10 +106,17 @@ class BaselineHandoff:
     last_changes: list[str] | None = None
     last_reason: str = "no_verified_window"
     last_verified_end: datetime | None = None
+    uses: int = 0
+    reusable: bool = False
+    max_cases: int = 5
+    max_age_seconds: int = MAX_WINDOW_AGE_SECONDS
+    ready: bool = False
 
     def clear(self, reason: str = "no_verified_window") -> None:
         self.window = self.scope = self.source = self.epoch = None
         self.last_reason = reason
+        self.uses = 0
+        self.ready = False
 
     def fresh_epoch(self, window: dict | None = None) -> None:
         self.clear()
@@ -120,7 +127,15 @@ class BaselineHandoff:
     def take(self, scope: RuntimeScope | None, minimum_seconds: int) -> tuple[dict | None, str]:
         window, previous_scope = self.window, self.scope
         self.last_changes = scope_changes(previous_scope, scope)
-        self.window = None  # A failed or interrupted consumer cannot pass it on.
+        if window is None:
+            return None, self.last_reason
+        if not self.reusable:
+            self.window = None  # Legacy windows have one consumer.
+        elif not self.ready:
+            return None, "previous_case_not_verified"
+        elif self.uses >= self.max_cases:
+            return None, "case_limit"
+        self.ready = False  # Failure/interruption cannot silently reuse this window.
         if window is None:
             return None, self.last_reason
         self.last_reason = "window_already_consumed"
@@ -128,17 +143,22 @@ class BaselineHandoff:
             return None, "scope_unavailable"
         if scope != previous_scope:
             return None, "scope_changed"
-        if self.epoch is None or not 0 <= time.monotonic() - self.epoch <= RECALIBRATE_SECONDS:
+        if self.epoch is None or (not self.reusable and not 0 <= time.monotonic() - self.epoch <= RECALIBRATE_SECONDS):
             return None, "recalibration_due"
-        reason = window_error(window, minimum_seconds)
+        reason = window_error(window, minimum_seconds, max_age_seconds=self.max_age_seconds)
         if reason:
             return None, reason
+        self.uses += 1
         return dict(window), "verified_previous_case"
 
     def publish(
         self, window: dict, scope: RuntimeScope | None, source: str, minimum_seconds: int, *, verified: bool = False
     ) -> bool:
-        reason = "scope_unavailable" if not scope else window_error(window, minimum_seconds)
+        reason = (
+            "scope_unavailable"
+            if not scope
+            else window_error(window, minimum_seconds, max_age_seconds=self.max_age_seconds)
+        )
         if reason:
             self.window = None
             self.last_reason = reason
@@ -149,16 +169,18 @@ class BaselineHandoff:
             # Republishing a prior window cannot extend the calibration epoch.
             self.epoch = time.monotonic()
             self.last_verified_end = end
+            self.uses = 0
         if self.epoch is None:
             self.window = None
             self.last_reason = "calibration_missing"
             return False
         self.window, self.scope, self.source = dict(window), scope, source
+        self.ready = True
         self.last_reason = "verified_window_published" if verified else "window_published"
         return True
 
 
-def window_error(window: dict, minimum_seconds: int) -> str | None:
+def window_error(window: dict, minimum_seconds: int, *, max_age_seconds: int = MAX_WINDOW_AGE_SECONDS) -> str | None:
     try:
         start = datetime.fromisoformat(window["start_time"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
@@ -169,7 +191,7 @@ def window_error(window: dict, minimum_seconds: int) -> str | None:
         age = (datetime.now(UTC) - end).total_seconds()
         if age < 0:
             return "future_window"
-        if age > MAX_WINDOW_AGE_SECONDS:
+        if age > max_age_seconds:
             return "expired_window"
     except (KeyError, TypeError, ValueError, OverflowError):
         return "invalid_window"

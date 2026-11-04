@@ -172,7 +172,9 @@ def test_topology_cli_help_includes_generate(capsys):
 def test_cli_scenario_generate_uses_existing_default_spec(tmp_path, monkeypatch, capsys):
     calls = {}
 
-    def fake_generate(workspace, *, scale, spec, topology_dir=None, out=None, seed=42, scale_registry=None):
+    def fake_generate(
+        workspace, *, scale, spec, topology_dir=None, out=None, seed=42, scale_registry=None, recovery_mode=None
+    ):
         calls.update(
             workspace=workspace,
             scale=scale,
@@ -455,7 +457,9 @@ def test_cli_benchmark_prepare_runs_topology_then_scenario_generation(tmp_path, 
         print(f"topology:{scale}")
         return 0
 
-    def fake_generate_scenarios(workspace, *, scale, spec, topology_dir=None, out=None, seed=42, scale_registry=None):
+    def fake_generate_scenarios(
+        workspace, *, scale, spec, topology_dir=None, out=None, seed=42, scale_registry=None, recovery_mode=None
+    ):
         scenario_calls.append((workspace, scale, spec, topology_dir, out, seed))
         print(f"scenarios:{scale}")
         return 0

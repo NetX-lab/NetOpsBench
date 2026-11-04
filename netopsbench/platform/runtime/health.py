@@ -201,6 +201,8 @@ def check_worker_health(
     cancel_event=None,
     route_snapshot: dict | None = None,
     expected_routes: dict | None = None,
+    state_only: bool = False,
+    recovery_audit: dict | None = None,
 ) -> list[str]:
     """Check health within one elapsed-time budget, including all retries."""
     started = time.monotonic()
@@ -223,6 +225,8 @@ def check_worker_health(
             control=control,
             route_snapshot=route_snapshot,
             expected_routes=expected_routes,
+            state_only=state_only,
+            recovery_audit=recovery_audit,
         )
     except (TimeoutError, subprocess.TimeoutExpired):
         return ["Worker health check deadline exceeded"]
@@ -263,6 +267,8 @@ def _check_worker_health(
     control: OperationControl,
     route_snapshot: dict | None = None,
     expected_routes: dict | None = None,
+    state_only: bool = False,
+    recovery_audit: dict | None = None,
 ) -> list[str]:
     """Run all health checks and return a list of error messages (empty = healthy).
 
@@ -332,12 +338,33 @@ def _check_worker_health(
         )
         return errors
 
+    if state_only:
+        names = [clab_container_name(lab_name, d.name) for d in topo.devices]
+        inspected = safe_run(
+            [
+                *docker_prefix(),
+                "docker",
+                "inspect",
+                "--format",
+                "{{.Name}} {{.State.Running}} {{.State.OOMKilled}}",
+                *names,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            control=control,
+        )
+        actual = {tuple(line.lstrip("/").split()) for line in inspected.stdout.splitlines()}
+        if inspected.returncode or actual != {(name, "true", "false") for name in names}:
+            return ["Runtime container identities or running state do not match"]
+
     bgp_device = routed[0].name if routed else "spine1"
     convergence_targets = _convergence_targets(topo, all_routing_devices=all_routing_devices)
     obs_device = edge_switches[0].name if edge_switches else (routed[0].name if routed else bgp_device)
     syslog_marker = f"NETOPSBENCH_HEALTH_{lab_name}_{time.time_ns()}"
     # Allow collector ingestion to overlap all-device convergence checks.
-    if collector_ip:
+    if collector_ip and not state_only:
         _docker_exec(
             clab_container_name(lab_name, bgp_device),
             "bash",
@@ -373,6 +400,33 @@ def _check_worker_health(
                     {"nodes": {device.name: expected_routes["nodes"].get(device.name, {})}},
                     {"nodes": {device.name: node_snapshot}},
                 )
+        if state_only:
+            from netopsbench.platform.observability.bgp_parser import parse_bgp_summary
+            from netopsbench.platform.utils.interface_names import to_sonic_interface
+
+            expected = (expected_routes or {}).get("nodes", {}).get(device.name)
+            issues = route_errors.setdefault(device.name, [])
+            if expected is None or expected.get("bgp_collection_ok") is not True:
+                issues.append("Missing pre-injection BGP evidence")
+            else:
+                wanted = {
+                    (row["neighbor"], row["asn"])
+                    for row in expected.get("bgp", [])
+                    if row.get("state") == "Established"
+                }
+                present = {
+                    (row["neighbor"], row["asn"]) for row in parse_bgp_summary(bgp) if row.get("state") == "Established"
+                }
+                if wanted != present:
+                    issues.append("BGP neighbor identities not restored")
+            required_interfaces = {
+                to_sonic_interface(e.interface)
+                for link in topo.links
+                for e in link.endpoints
+                if e.device == device.name
+            }
+            if not required_interfaces.issubset(_parse_active_interfaces(interfaces)):
+                issues.append("Expected interface identities not active")
         network_interfaces[device.name] = _parse_active_interfaces(interfaces)
         return (
             device.name,
@@ -384,6 +438,7 @@ def _check_worker_health(
 
     pending: dict[str, tuple[int, int, int, int]] = {}
     pending_devices = list(convergence_targets)
+    stable_passes = 0
     for attempt in range(retries):
         network_states = _parallel_check(network_state, pending_devices, 16, control)
         pending = {
@@ -391,11 +446,21 @@ def _check_worker_health(
             for device, established, expected_bgp, active, expected_active in network_states
             if established < expected_bgp or active < expected_active or route_errors.get(device)
         }
+        if recovery_audit is not None:
+            recovery_audit["network_rounds"] = recovery_audit.get("network_rounds", 0) + 1
+            recovery_audit["had_errors"] = recovery_audit.get("had_errors", False) or bool(pending)
         if not pending:
-            break
-        pending_devices = [device for device in pending_devices if device.name in pending]
+            stable_passes = stable_passes + 1 if len(pending_devices) == len(convergence_targets) else 0
+            if not state_only or stable_passes == 2:
+                break
+            pending_devices = list(convergence_targets)
+        else:
+            stable_passes = 0
+            pending_devices = [device for device in pending_devices if device.name in pending]
         if attempt + 1 < retries:
             control.sleep(delay)
+    if state_only and stable_passes < 2 and not pending:
+        return ["Insufficient stable network observations"]
     if pending:
         details = ", ".join(
             f"{device}(bgp={state[0]}/{state[1]},if={state[2]}/{state[3]})"
@@ -431,6 +496,8 @@ def _check_worker_health(
         if ret.returncode == 0:
             connectivity_ok = True
             break
+        if recovery_audit is not None:
+            recovery_audit["had_errors"] = True
         control.sleep(delay)
     if not connectivity_ok:
         errors.append(f"client connectivity failed from {src_container} to {dst_ip}")
@@ -466,6 +533,8 @@ def _check_worker_health(
             failed_agents = [name for name, ready in agent_states if not ready]
             if not failed_agents:
                 break
+            if recovery_audit is not None:
+                recovery_audit["had_errors"] = True
             failed_set = set(failed_agents)
             pending_agents = [client for client in pending_agents if str(client.get("name", "")).strip() in failed_set]
             if attempt + 1 < retries:
@@ -474,6 +543,11 @@ def _check_worker_health(
             preview = ", ".join(sorted(failed_agents)[:12])
             errors.append(f"Native Pingmesh process is not ready on {len(failed_agents)} clients: {preview}")
             return errors
+
+    if state_only:
+        if recovery_audit is not None:
+            recovery_audit["collected_at"] = time.time()
+        return errors
 
     # [5/5] InfluxDB observability path
     logger.info("[5/5] Checking InfluxDB observability path...")

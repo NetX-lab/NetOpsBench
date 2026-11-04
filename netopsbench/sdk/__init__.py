@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 _EXPORT_MAP: dict[str, tuple[str, str]] = {
+    "RecoveryPolicy": ("netopsbench.models.recovery", "RecoveryPolicy"),
     "NetOpsBench": ("netopsbench.sdk.core", "NetOpsBench"),
     "ScenarioSpec": ("netopsbench.sdk.types", "ScenarioSpec"),
     "EpisodeSpec": ("netopsbench.sdk.types", "EpisodeSpec"),

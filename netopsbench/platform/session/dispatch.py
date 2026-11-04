@@ -178,6 +178,7 @@ def _run_worker(
     worker_success = True
 
     executed_count = 0
+    final_calibration = None
     try:
         for scenario_index, scenario in enumerate(scenarios):
             if control and control.cancel_event and control.cancel_event.is_set():
@@ -305,6 +306,20 @@ def _run_worker(
                         }
                     )
                 break
+        if executed_count and not any(item.get("cleanup_failed") for item in scenario_summaries):
+            from netopsbench.models.recovery import RecoveryPolicy
+
+            if RecoveryPolicy.from_metadata(scenario.metadata).mode == "state_checked":
+                try:
+                    final_calibration = runner.final_calibration(scenario)
+                except BaseException as exc:
+                    worker_success = False
+                    final_calibration = {"success": False, "error": str(exc)}
+                    runtime.mark_quarantined("final_calibration_failure", [worker.worker_id])
+                    if not isinstance(exc, Exception):
+                        persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
+                        raise
+                persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
     finally:
         runner.close()
 
@@ -316,6 +331,7 @@ def _run_worker(
         "executed_count": executed_count,
         "skipped_count": len(scenarios) - executed_count,
         "success": worker_success,
+        **({"final_calibration": final_calibration} if final_calibration is not None else {}),
     }
     return evaluations, scenario_summaries, worker_summary
 

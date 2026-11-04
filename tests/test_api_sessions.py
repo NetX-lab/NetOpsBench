@@ -150,6 +150,9 @@ def _install_real_runtime_mocks(monkeypatch):
                 },
             }
 
+        def final_calibration(self, scenario):
+            return {"success": True, "reason": "run_end"}
+
         def close(self):
             return None
 

@@ -37,6 +37,12 @@ def validate_scenario(
     registry = fault_registry or create_fault_registry()
     scales = scale_registry or default_scale_registry()
     errors: list[str] = []
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    try:
+        RecoveryPolicy.from_metadata(scenario.metadata)
+    except ValueError as exc:
+        errors.append(f"Invalid recovery_policy: {exc}")
 
     if not scenario.scenario_id:
         errors.append("Missing scenario_id")

@@ -204,6 +204,7 @@ class ImpairmentHandler:
             "interface": sonic_if,
             "restored_mtu": target_mtu,
             "recovered": recovered,
+            "readback_verified": recovered,
             "error": (
                 None if recovered else result.stderr or f"effective MTU is {effective_mtu}, expected {target_mtu}"
             ),
@@ -315,5 +316,6 @@ class ImpairmentHandler:
             "device": device,
             "interface": linux_if,
             "recovered": recovered,
+            "readback_verified": recovered,
             "error": None if recovered else result.stderr or "netem qdisc remained installed",
         }

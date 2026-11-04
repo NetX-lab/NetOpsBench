@@ -479,3 +479,53 @@ def test_invalid_case_with_cleanup_failure_still_quarantines_runtime(tmp_path, m
     assert result.evaluations == []
     assert runtime.state == "quarantined"
     assert runtime.metadata["quarantined_workers"] == ["worker-1"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_final_calibration_is_reported_and_failure_quarantines_without_rescoring(tmp_path, monkeypatch, failed):
+    import netopsbench.platform.session.dispatch as dispatch
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    calls, quarantined = [], []
+    score = object()
+
+    class Runner:
+        evaluator = object()
+
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+        def final_calibration(self, scenario):
+            calls.append("calibration")
+            if failed:
+                raise RuntimeError("late loss")
+            return {"success": True}
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(dispatch, "_build_scenario_executor", lambda *a, **k: Runner())
+    monkeypatch.setattr(dispatch, "build_worker_execution_context", lambda *a: SimpleNamespace(topology_dir=tmp_path))
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "score_scenario_episode", lambda *a, **k: calls.append("score") or [score])
+    case = _scenario("one")
+    case.metadata["recovery_policy"] = RecoveryPolicy().model_dump()
+    evaluations, summaries, worker = dispatch._run_worker(
+        runtime=SimpleNamespace(id="runtime", mark_quarantined=lambda *a: quarantined.append(a)),
+        agent=None,
+        raw_dir=tmp_path,
+        trace_writer=None,
+        fault_registry=None,
+        minimum_baseline_seconds=None,
+        post_recovery_wait_seconds=0,
+        scale_registry=None,
+        worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
+        scenarios=[case],
+    )
+    assert evaluations == [score]
+    assert calls == ["score", "calibration", "close"]
+    assert worker["success"] is (not failed)
+    assert bool(quarantined) is failed
+    assert summaries[0]["status"] == "completed"
+    assert (tmp_path / "worker-1" / "final_calibration.json").exists()

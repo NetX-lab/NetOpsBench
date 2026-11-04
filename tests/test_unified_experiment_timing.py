@@ -125,6 +125,9 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
 
     clock = [0.0]
     runner = object.__new__(ScenarioExecutor)
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    runner.recovery_policy = RecoveryPolicy(mode="full_window")
     runner.begin_case()
     runner.post_recovery_wait_seconds = 0
     runner.traffic_controller = None

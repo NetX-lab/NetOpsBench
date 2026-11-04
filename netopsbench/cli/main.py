@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--topology-dir", help="Generated topology directory (default: lab-topology/generated_topology_<scale>)"
     )
     scenario_generate.add_argument("--out", help="Output directory (default: scenarios/generated/<scale>)")
+    scenario_generate.add_argument("--recovery-mode", choices=["full_window", "state_checked"])
     scenario_generate.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation")
 
     result_parser = subparsers.add_parser("result", help="Inspect benchmark results")
@@ -84,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated scale list (default: benchmark profiles; XS is explicit validation)",
     )
     benchmark_prepare.add_argument("--spec", help="Scenario generation spec file (default: packaged campaign)")
+    benchmark_prepare.add_argument("--recovery-mode", choices=["full_window", "state_checked"])
     benchmark_prepare.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation")
 
     return parser
@@ -181,11 +183,14 @@ def _generate_scenarios(
     out: Path | None = None,
     seed: int = 42,
     scale_registry: ScaleRegistry | None = None,
+    recovery_mode: str | None = None,
 ) -> int:
     spec_path = Path(spec)
     topo_dir = Path(topology_dir) if topology_dir is not None else _default_topology_output_dir(workspace, scale)
     out_dir = Path(out) if out is not None else _default_scenario_output_dir(workspace, scale)
     loaded_spec = scenario_generator.load_yaml(spec_path)
+    if recovery_mode is not None:
+        loaded_spec["recovery_policy"] = {**loaded_spec.get("recovery_policy", {}), "mode": recovery_mode}
     topology = scenario_generator.load_topology(scale, str(topo_dir))
     removed = scenario_generator.cleanup_existing_outputs(out_dir)
     if removed:
@@ -249,6 +254,7 @@ def _cmd_scenario(bench: NetOpsBench, args: argparse.Namespace) -> int:
             topology_dir=topology_dir,
             out=out,
             seed=args.seed,
+            recovery_mode=args.recovery_mode,
             scale_registry=bench.scales.registry,
         )
     raise AssertionError(f"unhandled scenario action: {args.scenario_action}")
@@ -320,6 +326,7 @@ def _cmd_benchmark(bench: NetOpsBench, args: argparse.Namespace) -> int:
                 topology_dir=topo_dir,
                 out=scenario_dir,
                 seed=args.seed,
+                recovery_mode=args.recovery_mode,
                 scale_registry=bench.scales.registry,
             )
         print("Benchmark assets ready")

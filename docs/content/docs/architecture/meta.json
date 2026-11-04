@@ -3,6 +3,7 @@
   "pages": [
     "system-overview",
     "runtime-audit",
-    "core-simplification"
+    "core-simplification",
+    "state-checked-recovery"
   ]
 }

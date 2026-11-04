@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
@@ -223,8 +224,12 @@ class AnomalyDetector(DetectorIngestionMixin, DetectorQueryMixin, DetectorCovera
         else:
             # Both reads remain fresh; HTTP concurrency is process-wide bounded.
             with ThreadPoolExecutor(max_workers=2) as executor:
-                baseline_future = executor.submit(self._query_covered_snapshot, baseline_start, baseline_end, **budget)
-                current_future = executor.submit(self._query_covered_snapshot, current_start, current_end, **budget)
+                baseline_future = executor.submit(
+                    copy_context().run, self._query_covered_snapshot, baseline_start, baseline_end, **budget
+                )
+                current_future = executor.submit(
+                    copy_context().run, self._query_covered_snapshot, current_start, current_end, **budget
+                )
                 baseline, baseline_coverage = baseline_future.result()
                 current, current_coverage = current_future.result()
         query_status = self._error_status(baseline, current)

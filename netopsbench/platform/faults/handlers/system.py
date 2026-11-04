@@ -274,6 +274,7 @@ class SystemHandler:
             "type": "device_down",
             "device": device,
             "recovered": ready,
+            "readback_verified": ready,
             "container_running": self._cmd.container_is_running(container),
             "sonic_ready": ready,
             "retryable": retryable,

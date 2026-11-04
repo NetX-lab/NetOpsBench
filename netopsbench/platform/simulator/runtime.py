@@ -301,6 +301,12 @@ class RuntimeEpisodeBackend:
         # Preparation, traffic, baseline identity and recovery are shared with
         # benchmark execution. An unhealthy lease is handled by incident cleanup.
         runner.begin_case()
+        # Every prepare acquires a new lease; no cross-user baseline handoff.
+        from netopsbench.models.recovery import RecoveryPolicy
+
+        if RecoveryPolicy.from_metadata(scenario.metadata).mode == "state_checked":
+            runner._baseline_handoff.clear("lease_transfer")
+            runner._calibration_current = False
         self.delegate = ExecutorIncidentBackend(
             runner,
             influxdb_bucket=worker.bucket,

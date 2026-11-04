@@ -203,6 +203,7 @@ class StaticRouteHandler:
             "device": device,
             "prefix": target_prefix,
             "recovered": removed,
+            "readback_verified": removed,
             "error": None if removed else result.stderr or "blackhole route remained in running config",
         }
 
@@ -309,5 +310,6 @@ class StaticRouteHandler:
             "target_ip": target_ip,
             "wrong_nexthop": wrong_nexthop,
             "recovered": removed,
+            "readback_verified": removed,
             "error": None if removed else result.stderr or "static route remained in running config",
         }

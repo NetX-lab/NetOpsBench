@@ -216,22 +216,46 @@ def test_queued_snapshot_shards_share_deadline_and_stop_http(monkeypatch):
 
 def test_parallel_baseline_and_current_queries_receive_same_deadline(monkeypatch):
     from netopsbench.platform.pingmesh.detector import AnomalyDetector
+    from netopsbench.platform.utils.measurements import count_operation, measurement_scope
 
     detector = object.__new__(AnomalyDetector)
     budgets = []
 
     def query(_start, _end, *, deadline):
         budgets.append(deadline)
+        count_operation("influx_queries")
         return SnapshotQueryResult(status="error", rows=[], error="deadline exceeded"), {}
 
     monkeypatch.setattr(detector, "_query_covered_snapshot", query)
     monkeypatch.setattr(detector, "_build_report", lambda **kwargs: kwargs)
     deadline = time.monotonic() + 1
-    report = detector.generate_windowed_anomaly_report(
-        baseline_start="b1", baseline_end="b2", current_start="c1", current_end="c2", windows=[], deadline=deadline
-    )
+    counts = {}
+    with measurement_scope(counts):
+        report = detector.generate_windowed_anomaly_report(
+            baseline_start="b1", baseline_end="b2", current_start="c1", current_end="c2", windows=[], deadline=deadline
+        )
     assert report["query_status"]["ok"] is False
     assert budgets == [deadline, deadline]
+    assert counts == {"influx_queries": 2}
+
+
+def test_snapshot_shards_preserve_phase_counts_and_control(monkeypatch):
+    from netopsbench.platform.utils.control import OperationControl, current_operation_control, operation_scope
+    from netopsbench.platform.utils.measurements import count_operation, measurement_scope
+
+    control = OperationControl(deadline=time.monotonic() + 10)
+
+    def query(*_args, **_kwargs):
+        assert current_operation_control() == control
+        count_operation("influx_queries")
+        return SimpleNamespace(status="ok", text="", error=None)
+
+    monkeypatch.setattr(_detector_query, "query_flux", query)
+    counts = {}
+    with operation_scope(control), measurement_scope(counts):
+        result = _Detector([f"client{i}" for i in range(64)])._query_snapshot("start", "end")
+    assert result.status == "ok" and result.request_count > 1
+    assert counts == {"influx_queries": result.request_count}
 
 
 def test_snapshot_csv_honors_reordered_table_headers():

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from netopsbench.evaluator.scorer import Evaluator
 from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
+from netopsbench.models.recovery import RecoveryPolicy
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.faults.injector import FaultInjector
@@ -28,7 +29,7 @@ from netopsbench.platform.topology.topology_utils import coerce_topology_manifes
 from netopsbench.platform.traffic.controller import TrafficController
 from netopsbench.platform.traffic.scenario_execution import setup_traffic as _setup_traffic_impl
 from netopsbench.platform.traffic.scenario_execution import stop_traffic as _stop_traffic_impl
-from netopsbench.platform.utils.control import OperationControl, operation_scope
+from netopsbench.platform.utils.control import OperationControl, current_operation_control, operation_scope
 from netopsbench.platform.utils.measurements import count_operation
 
 from .baseline import BaselineHandoff, RuntimeScope, frr_snapshot, restored_scope_errors, runtime_scope, scope_changes
@@ -133,6 +134,9 @@ class ScenarioExecutor:
         self._candidate_scope = None
         self._traffic_config = None
         self._pingmesh_runtime_start = None
+        self.recovery_policy = RecoveryPolicy(mode="full_window")
+        self._last_calibration = None
+        self._calibration_current = False
         self.begin_case()
 
     def begin_case(self) -> None:
@@ -236,6 +240,87 @@ class ScenarioExecutor:
     def _capture_observation_window(self, duration: int, name: str) -> dict:
         return _capture_observation_window_impl(self, duration, name=name)
 
+    def calibrate(self, scenario, reason, *, deadline=None):
+        """Full environment and data-plane validation; independent of fault undo."""
+        from .observation import baseline_gate_errors
+
+        if self.injector.active_faults:
+            raise RuntimeError("Cannot calibrate a runtime with unresolved faults")
+        deadline = deadline or monotonic() + self.experiment.recovery_timeout_seconds
+        phase = "calibration"
+        sequence = 1
+        while phase in self.timings.phases:
+            sequence += 1
+            phase = f"calibration_{sequence}"
+        with (
+            self.timings.measure(phase) as measurement,
+            operation_scope(OperationControl(None if self._recovering else self._cancel_event, deadline)),
+        ):
+            measurement["reason"] = reason
+            with self.timings.measure_step(phase, "environment"):
+                if self.runtime_worker is not None:
+                    errors = check_worker_health(
+                        self.runtime_worker,
+                        scale_registry=self.scale_registry,
+                        all_routing_devices=True,
+                        deadline=deadline,
+                        route_snapshot={"nodes": {}},
+                        expected_routes=self._case_routes,
+                    )
+                    if errors:
+                        raise RuntimeError("Calibration environment failed: " + "; ".join(errors))
+            before = self._baseline_scope(scenario)
+            with self.timings.measure_step(phase, "window_wait"):
+                window = self._capture_baseline_window()
+            with self.timings.measure_step(phase, "window_query"):
+                observation = self._merge_observation_windows(
+                    [window],
+                    int(window["duration_seconds"]),
+                    baseline_window=(self._baseline_handoff.window if before == self._baseline_handoff.scope else None)
+                    or window,
+                )
+            errors = baseline_gate_errors(observation)
+            after = self._baseline_scope(scenario)
+            if errors or (self.runtime_worker is not None and (before is None or after != before)):
+                raise RuntimeError("Calibration failed: " + "; ".join(errors or ["runtime identity changed"]))
+            current_operation_control().remaining()
+            handoff = self._baseline_handoff
+            handoff.publish(window, after, scenario.id, self.minimum_baseline_seconds, verified=True)
+            if self.runtime_worker is not None and not handoff.ready:
+                raise RuntimeError("Calibration baseline could not be published")
+            self._last_calibration = {
+                "success": True,
+                "reason": reason,
+                "window": dict(window),
+                "validation_level": "full_window",
+                "scope": after.digest if after else None,
+                "phase_timing": measurement,
+            }
+            self._calibration_current = True
+            return dict(window)
+
+    def final_calibration(self, scenario):
+        if self.recovery_policy.mode != "state_checked":
+            return None
+        handoff = self._baseline_handoff
+        scope = self._baseline_scope(scenario)
+        from .baseline import window_error
+
+        if (
+            self._calibration_current
+            and handoff.ready
+            and scope == handoff.scope
+            and window_error(handoff.window, self.minimum_baseline_seconds, max_age_seconds=handoff.max_age_seconds)
+            is None
+        ):
+            return {**self._last_calibration, "reused": True}
+        try:
+            self.calibrate(scenario, "run_end")
+        except BaseException:
+            handoff.clear("final_calibration_failed")
+            raise
+        return self._last_calibration
+
     def _recover_fault(self):
         return _recover_fault_impl(self)
 
@@ -270,6 +355,9 @@ class ScenarioExecutor:
         post_recovery_waited = False
         convergence_pending = False
         terminal_recovery_failure = False
+        state_checked = self.recovery_policy.mode == "state_checked"
+        state_audit = {}
+        full_validation_reason = None
         prior_recovery = episode_result.get("recovery") if isinstance(episode_result, dict) else None
         recovery_results = prior_recovery
 
@@ -300,7 +388,7 @@ class ScenarioExecutor:
                     errors.append(f"fault_recovery: {type(exc).__name__}: {exc}")
 
             if recovery_complete:
-                if recovery_attempted and recovery_results and not post_recovery_waited:
+                if not state_checked and recovery_attempted and recovery_results and not post_recovery_waited:
                     post_recovery_wait = self.post_recovery_wait_seconds
                     if post_recovery_wait:
                         with self.timings.measure_step("recovery", "post_restore_wait"):
@@ -326,6 +414,7 @@ class ScenarioExecutor:
                                 deadline=deadline,
                                 route_snapshot=route_snapshot,
                                 expected_routes=self._case_routes,
+                                **({"state_only": True, "recovery_audit": state_audit} if state_checked else {}),
                             )
                         )
                 if convergence_errors:
@@ -340,7 +429,21 @@ class ScenarioExecutor:
                 validated_baseline = None
                 verified_scope = None
                 config_proof = None
-                if recovery_attempted and baseline_window is not None:
+                verified_callbacks = all(item.get("readback_verified") is True for item in (recovery_results or []))
+                full_validation_reason = (
+                    "legacy_mode"
+                    if not state_checked and recovery_attempted
+                    else (
+                        "custom_callback"
+                        if state_checked and not verified_callbacks
+                        else (
+                            "recovery_retried"
+                            if state_checked and (attempts > 1 or state_audit.get("had_errors"))
+                            else None
+                        )
+                    )
+                )
+                if (recovery_attempted or full_validation_reason) and baseline_window is not None:
                     try:
                         with self.timings.measure_step("recovery", "configuration_identity"):
                             if self._case_frr_before is not None:
@@ -367,11 +470,18 @@ class ScenarioExecutor:
                                         "status": "recovery_identity_changed",
                                         "scope_changes": changed,
                                     }
-                        validation = self._wait_and_observe(
-                            int(baseline_window["duration_seconds"]),
-                            baseline_window=baseline_window,
-                            deadline=deadline,
-                        )
+                        validation = None
+                        if full_validation_reason:
+                            if state_checked:
+                                self.calibrate(scenario, full_validation_reason, deadline=deadline)
+                                validation = None
+                                validated_baseline = dict(self._baseline_handoff.window)
+                            else:
+                                validation = self._wait_and_observe(
+                                    int(baseline_window["duration_seconds"]),
+                                    baseline_window=baseline_window,
+                                    deadline=deadline,
+                                )
                         if monotonic() >= deadline:
                             raise TimeoutError("Recovery deadline exceeded during observation validation")
                         if runtime_worker is not None and window_scope is not None:
@@ -394,7 +504,7 @@ class ScenarioExecutor:
                         }
                     from .observation import baseline_gate_errors
 
-                    baseline_errors = baseline_gate_errors(validation)
+                    baseline_errors = baseline_gate_errors(validation) if validation is not None else []
                     if baseline_errors:
                         errors.extend(f"post_recovery_baseline: {error}" for error in baseline_errors)
                         return {
@@ -404,12 +514,13 @@ class ScenarioExecutor:
                             "duration_seconds": max(0.0, monotonic() - started),
                             "errors": list(dict.fromkeys(errors)),
                         }
-                    validated_baseline = {
-                        "name": "baseline",
-                        "start_time": validation["start_time"],
-                        "end_time": validation["end_time"],
-                        "duration_seconds": validation["duration_seconds"],
-                    }
+                    if validation is not None:
+                        validated_baseline = {
+                            "name": "baseline",
+                            "start_time": validation["start_time"],
+                            "end_time": validation["end_time"],
+                            "duration_seconds": validation["duration_seconds"],
+                        }
                 if monotonic() >= deadline:
                     errors.append("Recovery deadline exceeded")
                     break
@@ -419,8 +530,14 @@ class ScenarioExecutor:
                     "attempts": attempts,
                     "duration_seconds": max(0.0, monotonic() - started),
                     "errors": list(dict.fromkeys(errors)),
+                    "validation_level": (
+                        "state_checked" if state_checked and not full_validation_reason else "full_window"
+                    ),
+                    "full_validation_reason": full_validation_reason,
+                    "state_validation": state_audit,
+                    "recovery_policy": self.recovery_policy.model_dump(mode="json"),
                 }
-                if runtime_worker is not None:
+                if runtime_worker is not None and not state_checked:
                     from netopsbench.platform.observability.routes import verify_route_recovery
 
                     with self.timings.measure_step("recovery", "route_validation"):
@@ -434,6 +551,8 @@ class ScenarioExecutor:
                     result["validated_baseline"] = validated_baseline
                     if verified_scope is not None:
                         result["validated_baseline_scope"] = verified_scope
+                if state_checked and verified_scope is not None:
+                    result["restored_scope"] = verified_scope
                 if config_proof is not None:
                     result["configuration_recovery"] = config_proof
                 return result

@@ -170,6 +170,7 @@ def test_link_flapping_recovery_verifies_both_physical_endpoints():
             "device": "spine1",
             "interface": "Ethernet0",
             "recovered": True,
+            "readback_verified": True,
             "error": None,
         }
     ]

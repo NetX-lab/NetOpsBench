@@ -31,6 +31,9 @@ def _scenario() -> ScenarioSpec:
 
 def _runner(*, active_faults, timeout_seconds=10):
     runner = object.__new__(ScenarioExecutor)
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    runner.recovery_policy = RecoveryPolicy(mode="full_window")
     runner.begin_case()
     runner.traffic_controller = None
     runner.runtime_worker = None
@@ -64,6 +67,10 @@ def test_clean_scenario_boundary_does_not_retry_or_sleep(monkeypatch):
         "attempts": 1,
         "duration_seconds": 0.0,
         "errors": [],
+        "validation_level": "full_window",
+        "full_validation_reason": None,
+        "state_validation": {},
+        "recovery_policy": runner.recovery_policy.model_dump(mode="json"),
         "recovery": [{"type": "link_down", "recovered": True}],
     }
     assert calls == []
@@ -343,3 +350,30 @@ def test_recovery_budget_is_explicit_and_not_derived_from_baseline(monkeypatch):
     assert cleanup["success"] is True
     assert cleanup["duration_seconds"] == 68
     assert cleanup["validated_baseline"]["duration_seconds"] == 60
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_state_checked_readback_avoids_window_custom_callback_requires_calibration(verified):
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    runner = _runner(active_faults=[{"type": "link_down"}], timeout_seconds=60)
+    runner.recovery_policy = RecoveryPolicy()
+    runner._baseline_scope = lambda scenario: None
+    calls = []
+    window = {"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:00:30Z", "duration_seconds": 30}
+
+    def recover():
+        runner.injector.active_faults.clear()
+        return [{"recovered": True, "readback_verified": verified}]
+
+    def calibrate(scenario, reason, **kwargs):
+        calls.append(reason)
+        runner._baseline_handoff.window = dict(window)
+
+    runner._recover_fault = recover
+    runner.calibrate = calibrate
+    runner._wait_and_observe = lambda *a, **k: pytest.fail("Legacy window path used")
+    result = runner._cleanup_after_scenario(_scenario(), {}, baseline_window=window)
+    assert result["success"]
+    assert result["validation_level"] == ("state_checked" if verified else "full_window")
+    assert calls == ([] if verified else ["custom_callback"])

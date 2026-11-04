@@ -430,6 +430,17 @@ class NetworkFaultHandler:
         try:
             operations, evidence = self._prepare(episode)
             info["evidence"] = evidence
+            if any(operation["kind"] == "frr" for operation in operations):
+                from netopsbench.platform.scenario.baseline import normalized_frr
+
+                evidence["original_frr_digest"] = normalized_frr(
+                    self._run(info["device"], "frr", ["show running-config"])
+                )
+            if episode.fault_type.startswith("acl_"):
+                evidence["original_iptables"] = self._run(info["device"], "docker", ["iptables", "-S"])
+                for key in (f"ACL_TABLE|{evidence['acl_name']}", f"ACL_RULE|{evidence['acl_name']}|RULE1"):
+                    if self._run(info["device"], "docker", ["sonic-db-cli", "CONFIG_DB", "exists", key]).strip() != "0":
+                        raise RuntimeError("Cannot own an existing ACL object")
             for operation in operations:
                 info["journal"].append(operation)
                 self._run(info["device"], operation["kind"], operation["apply"])
@@ -466,6 +477,47 @@ class NetworkFaultHandler:
                 info["error"] += "; compensation: " + str(recovery["error"])
                 self.tracker.track_residual(info, info["error"])
         return info
+
+    def _verify_restored(self, fault):
+        """Read actual owned resources after undo; never infer success from exit code."""
+        from netopsbench.platform.scenario.baseline import normalized_frr
+
+        device, evidence = fault["device"], fault.get("evidence", {})
+        if evidence.get("original_frr_digest"):
+            if normalized_frr(self._run(device, "frr", ["show running-config"])) != evidence["original_frr_digest"]:
+                raise RuntimeError("FRR configuration was not restored")
+            return True
+        if "original_bgp_config" in evidence:
+            if "RUNNING" not in self._run(device, "docker", ["supervisorctl", "status", "bgpd"]):
+                raise RuntimeError("bgpd is not running")
+            current = self._run(device, "docker", ["vtysh", "-d", "bgpd", "-c", "show running-config"])
+            if normalized_frr(current) != normalized_frr(evidence["original_bgp_config"]):
+                raise RuntimeError("bgpd configuration was not restored")
+            return True
+        if "original_address" in evidence:
+            interface = self.iface.resolve_sonic(fault["interface"])
+            rows = self._json(device, ["ip", "-j", "-4", "addr", "show", "dev", interface])
+            actual = {
+                f"{a['local']}/{a['prefixlen']}"
+                for row in rows
+                for a in row.get("addr_info", [])
+                if a.get("scope") == "global"
+            }
+            if actual != {evidence["original_address"]}:
+                raise RuntimeError("Interface addresses were not restored")
+            for address, wanted in [(evidence["original_address"], "1"), (evidence["fault_address"], "0")]:
+                key = f"INTERFACE|{interface}|{address}"
+                if self._run(device, "docker", ["sonic-db-cli", "CONFIG_DB", "exists", key]).strip() != wanted:
+                    raise RuntimeError("Interface CONFIG_DB was not restored")
+            return True
+        if "original_iptables" in evidence:
+            if self._run(device, "docker", ["iptables", "-S"]) != evidence["original_iptables"]:
+                raise RuntimeError("Actual ACL rules were not restored")
+            for key in (f"ACL_TABLE|{evidence['acl_name']}", f"ACL_RULE|{evidence['acl_name']}|RULE1"):
+                if self._run(device, "docker", ["sonic-db-cli", "CONFIG_DB", "exists", key]).strip() != "0":
+                    raise RuntimeError("Owned ACL configuration remains")
+            return True
+        return False  # Historical/custom records have no independently captured readback evidence.
 
     def recover(self, fault):
         errors = []
@@ -522,6 +574,12 @@ class NetworkFaultHandler:
                 self._run(fault["device"], operation["kind"], commands)
             except Exception as exc:
                 errors.append(str(exc))
+        verified = False
+        if not errors and fault.get("journal"):
+            try:
+                verified = self._verify_restored(fault)
+            except Exception as exc:
+                errors.append(str(exc))
         if not errors:
             owner = fault.get("fault_id")
             if owner:
@@ -530,5 +588,6 @@ class NetworkFaultHandler:
             "type": fault["type"],
             "device": fault["device"],
             "recovered": not errors,
+            "readback_verified": verified and not errors,
             "error": "; ".join(errors) if errors else None,
         }

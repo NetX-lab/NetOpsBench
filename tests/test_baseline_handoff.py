@@ -406,3 +406,55 @@ def test_cleanup_exception_before_result_retains_original_failure(runner, monkey
     assert backend.cleanup_result["errors"] == ["restore failed"]
     assert runner._recovering is False
     backend.finish()  # idempotent; original failed outcome is retained
+
+
+def test_state_checked_cases_reuse_five_times_then_calibrate(runner, monkeypatch):
+    from netopsbench.models.recovery import RecoveryPolicy
+    from netopsbench.platform.observability import routes
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    scope = RuntimeScope({"traffic_generation": "one"}, {}, {})
+    monkeypatch.setattr(runner, "_baseline_scope", lambda _: scope)
+    monkeypatch.setattr(routes, "collect_routes", lambda *a, **k: {"nodes": {}})
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_after_scenario",
+        lambda *a, **k: {"success": True, "validation_level": "state_checked", "status": "clean"},
+    )
+    cases = []
+    for i in range(6):
+        case = scenario(str(i))
+        case.metadata["recovery_policy"] = RecoveryPolicy().model_dump()
+        cases.append(case)
+        result = runner.run_scenario(case, diagnosis_callback=lambda *a, **k: {"verdict": "network_healthy"})
+        assert result["success"], result
+        assert result["baseline_preparation"]["uses"] == (i % 5) + 1
+        assert result["cleanup"]["validation_level"] == "state_checked"
+    assert runner.calls.count("reference") == 2
+    assert runner.final_calibration(cases[-1])["success"]
+    assert runner.calls.count("reference") == 3
+    assert runner.final_calibration(cases[-1])["reused"]
+    assert runner.calls.count("reference") == 3
+    assert runner.timings.phases["calibration"]["reason"] == "case_limit"
+    assert runner.timings.phases["calibration_2"]["reason"] == "run_end"
+    assert all(runner.timings.phases[name]["status"] == "completed" for name in ("calibration", "calibration_2"))
+
+
+def test_failed_state_recovery_cannot_reuse_previous_baseline(runner, monkeypatch):
+    from netopsbench.models.recovery import RecoveryPolicy
+    from netopsbench.platform.observability import routes
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    monkeypatch.setattr(runner, "_baseline_scope", lambda _: RuntimeScope({}, {}, {}))
+    monkeypatch.setattr(routes, "collect_routes", lambda *a, **k: {"nodes": {}})
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_after_scenario",
+        lambda *a, **k: {"success": False, "validation_level": "state_checked", "errors": ["residual ACL"]},
+    )
+    case = scenario()
+    case.metadata["recovery_policy"] = RecoveryPolicy().model_dump()
+    result = runner.run_scenario(case, diagnosis_callback=lambda *a, **k: {"verdict": "network_healthy"})
+    assert result["cleanup_failed"] and result["cleanup"]["success"] is False
+    assert runner._baseline_handoff.window is None
+    assert not runner._baseline_handoff.ready

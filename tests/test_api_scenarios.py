@@ -12,6 +12,30 @@ from netopsbench.sdk.exceptions import ScenarioValidationError
 from netopsbench.sdk.scenarios import ScenarioManager
 
 
+def test_recovery_policy_authoring_and_legacy_roundtrip(tmp_path):
+    from netopsbench.sdk import RecoveryPolicy
+
+    manager = ScenarioManager(workspace=tmp_path)
+    kwargs = dict(
+        id="healthy",
+        name="healthy",
+        episode={"episode_id": "diagnosis", "fault_type": "none"},
+        metadata={"negative_sample": True},
+    )
+    new = manager.create(**kwargs)
+    assert RecoveryPolicy.from_metadata(new.metadata).mode == "state_checked"
+    legacy_mode = manager.create(**kwargs, recovery_policy=RecoveryPolicy(mode="full_window"))
+    assert RecoveryPolicy.from_metadata(legacy_mode.metadata).mode == "full_window"
+    old = new.model_copy(deep=True)
+    old.metadata.pop("recovery_policy")
+    digest = old.digest
+    loaded = manager.load(manager.save(old, tmp_path / "legacy.yaml"))
+    assert loaded.digest == digest and "recovery_policy" not in loaded.metadata
+    assert RecoveryPolicy.from_metadata(loaded.metadata).mode == "full_window"
+    with pytest.raises(ScenarioValidationError, match="only once"):
+        manager.create(**{**kwargs, "metadata": {"recovery_policy": {}}}, recovery_policy={})
+
+
 def test_scenario_manager_can_create_and_roundtrip_yaml(tmp_path):
     manager = ScenarioManager(workspace=tmp_path)
     scenario = manager.create(

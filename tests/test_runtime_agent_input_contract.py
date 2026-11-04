@@ -213,9 +213,11 @@ def test_incident_keeps_route_validation_private_and_supports_explicit_route_que
             return ToolResult(True, current["nodes"][device]["fib"])
 
     monkeypatch.setattr(incident_backend, "AgentToolkit", Toolkit)
+    from netopsbench.models.recovery import RecoveryPolicy
     from netopsbench.platform.scenario.baseline import BaselineHandoff
 
     executor = SimpleNamespace(
+        recovery_policy=RecoveryPolicy(mode="full_window"),
         topology_dir="unused",
         _traffic_config=None,
         _cancel_event=None,

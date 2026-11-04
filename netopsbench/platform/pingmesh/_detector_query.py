@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 
 from netopsbench.platform.observability.influxdb import iter_annotated_csv_rows, query_flux
@@ -133,7 +134,8 @@ class DetectorQueryMixin:
         else:
             workers = min(_SNAPSHOT_QUERY_WORKERS, len(shards))
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                results = list(executor.map(query, shards))
+                futures = [executor.submit(copy_context().run, query, shard) for shard in shards]
+                results = [future.result() for future in futures]
 
         request_count = sum(result.request_count for result in results)
         failures = [(index, result) for index, result in enumerate(results, start=1) if result.status != "ok"]

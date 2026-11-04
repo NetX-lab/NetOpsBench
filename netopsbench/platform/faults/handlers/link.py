@@ -343,6 +343,7 @@ class LinkHandler:
             "device": device,
             "interface": sonic_if,
             "recovered": result["success"],
+            "readback_verified": result["success"],
             "error": result["error"],
         }
 
@@ -462,5 +463,6 @@ class LinkHandler:
             "device": device,
             "interface": target[2],
             "recovered": recovered,
+            "readback_verified": recovered,
             "error": error,
         }

@@ -301,6 +301,9 @@ def generate(
     defaults = spec.get("defaults", {})
     if "fault_duration_seconds" in defaults:
         raise ValueError("Configure experiment.observation_seconds in scale profiles and regenerate scenarios")
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    recovery_policy = RecoveryPolicy.model_validate(spec.get("recovery_policy", {}))
     policy = (scale_registry or default_scale_registry()).get(topo.scale).experiment
     duration = policy.window_seconds(topo.manifest.require_pingmesh_plan().settings.complete_window_seconds)
     if defaults.get("traffic_profile", "standard") != "standard":
@@ -360,6 +363,7 @@ def generate(
                 "coverage_unit": unit.id,
                 "purpose": "validation" if validation else "benchmark",
                 "experiment": policy.model_dump(mode="json"),
+                "recovery_policy": recovery_policy.model_dump(mode="json"),
                 "generator": {"seed": seed, "version": 3},
             },
             "episode": episode,
@@ -398,6 +402,7 @@ def generate(
                 "fault_catalog_version": FAULT_CATALOG_VERSION,
                 "purpose": "validation" if validation else "benchmark",
                 "experiment": policy.model_dump(mode="json"),
+                "recovery_policy": recovery_policy.model_dump(mode="json"),
             },
             "episode": {
                 "episode_id": "diagnosis",

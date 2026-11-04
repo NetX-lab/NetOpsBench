@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from netopsbench.models.scenario import ScenarioSpec
@@ -54,22 +55,32 @@ class ExecutorIncidentBackend:
 
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
         self.scenario = scenario
+        from netopsbench.models.recovery import RecoveryPolicy
+
+        policy = RecoveryPolicy.from_metadata(scenario.metadata)
+        handoff = self.executor._baseline_handoff
+        if self.executor.recovery_policy != policy:
+            handoff.clear("recovery_policy_changed")
+        self.executor.recovery_policy = policy
+        handoff.reusable = policy.mode == "state_checked"
+        handoff.max_cases = policy.baseline_max_cases
+        handoff.max_age_seconds = policy.baseline_max_age_seconds if handoff.reusable else 120
         if self.executor.injector.active_faults:
             raise RuntimeError("Runtime contains unresolved faults; recovery is required before preparation")
         if scenario.metadata.get("experiment") is not None:
-            policy = self.executor.experiment
-            window = policy.window_seconds(
+            experiment_policy = self.executor.experiment
+            window = experiment_policy.window_seconds(
                 self.executor.current_manifest().require_pingmesh_plan().settings.complete_window_seconds
             )
             if (
-                scenario.metadata["experiment"] != policy.model_dump(mode="json")
+                scenario.metadata["experiment"] != experiment_policy.model_dump(mode="json")
                 or scenario.episode.duration_seconds != window
                 or scenario.episode.stabilization_time
             ):
                 raise ValueError("Campaign experiment configuration changed; regenerate scenarios in a new campaign")
             if scenario.episode.fault_type in {"link_flapping", "route_flapping"} and (
-                scenario.episode.parameters.get("down_time") != policy.flapping_down_seconds
-                or scenario.episode.parameters.get("up_time") != policy.flapping_up_seconds
+                scenario.episode.parameters.get("down_time") != experiment_policy.flapping_down_seconds
+                or scenario.episode.parameters.get("up_time") != experiment_policy.flapping_up_seconds
             ):
                 raise ValueError("Per-case periodic timing override is not allowed in a frozen campaign")
         with self.executor.timings.measure("traffic_readiness"):
@@ -98,6 +109,14 @@ class ExecutorIncidentBackend:
                 "source_scenario_id": handoff.source if self.baseline_window else None,
                 "scope_changes": handoff.last_changes,
             }
+        if self.baseline_window is None and handoff.reusable:
+            self.executor.calibrate(scenario, self.baseline_preparation.get("reason", "initial"))
+            self._scope = self.executor._baseline_scope(scenario)
+            self.baseline_window, reason = handoff.take(
+                self._scope, baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds)
+            )
+            if self.baseline_window is None:
+                raise RuntimeError("Calibrated baseline unavailable: " + reason)
         if self.baseline_window is None:
             if self.executor.runtime_worker is not None:
                 from .observation import observation_detector
@@ -135,6 +154,15 @@ class ExecutorIncidentBackend:
         if self.baseline_window is None:
             raise RuntimeError("Incident preparation requires an explicit Pingmesh baseline window")
         self.executor._case_initial_scope = self._scope
+        if handoff.reusable:
+            self.baseline_preparation.update(
+                uses=handoff.uses,
+                recovery_policy=policy.model_dump(mode="json"),
+                window=dict(self.baseline_window),
+                age_seconds=(
+                    datetime.now(UTC) - datetime.fromisoformat(self.baseline_window["end_time"].replace("Z", "+00:00"))
+                ).total_seconds(),
+            )
         catalog_v2 = scenario.metadata.get("fault_catalog_version") == 2
         self.executor._case_affected_pairs = []
         self.executor._case_probe_pairs = []
@@ -170,7 +198,7 @@ class ExecutorIncidentBackend:
             self.executor._case_probe_pairs = self.executor._case_affected_pairs + episode.parameters.get(
                 "control_candidates", []
             )
-        if catalog_v2:
+        if catalog_v2 or handoff.reusable:
             from netopsbench.platform.observability.routes import collect_routes
 
             with self.executor.timings.measure(
@@ -187,6 +215,7 @@ class ExecutorIncidentBackend:
                 for row in self.executor._case_routes["nodes"].values()
             ):
                 raise RuntimeError("Healthy route snapshot is unavailable")
+        self.executor._calibration_current = False
         self.episode_result = {}
         self.episode_result = observe_episode(
             self.executor,
@@ -309,6 +338,22 @@ class ExecutorIncidentBackend:
         handoff = self.executor._baseline_handoff
         if self.cleanup_result is None or self.scenario is None:
             raise RuntimeError("Cannot publish a baseline before cleanup")
+        if handoff.reusable and self.cleanup_result.get("validation_level") == "state_checked":
+            scope = self.executor._baseline_scope(self.scenario)
+            restored = self.cleanup_result.pop("restored_scope", self._scope)
+            success = bool(self.cleanup_result.get("success")) and scope is not None and scope == restored
+            if success:
+                handoff.scope = scope
+                handoff.ready = True
+                handoff.last_reason = "state_verified_baseline_retained"
+            else:
+                handoff.clear("recovery_identity_changed")
+                self.cleanup_result["success"] = False
+            self.cleanup_result.update(
+                baseline_handoff=success, baseline_handoff_reason=handoff.last_reason, baseline_uses=handoff.uses
+            )
+            return
+        self.cleanup_result.pop("restored_scope", None)
         recovered = self.cleanup_result.get("validated_baseline")
         candidate = recovered
         if candidate is None and self.scenario.episode.is_healthy and not broken:
