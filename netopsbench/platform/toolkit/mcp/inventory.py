@@ -7,11 +7,9 @@ def get_topology():
     return as_payload(get_toolkit().get_topology())
 
 
-def get_device_interfaces(device: str, format: str = "summary", interface: str | None = None, include_tc: bool = False):
+def get_device_interfaces(device: str, format: str = "summary", interface: str | None = None):
     """Get interface state and counters for a device."""
-    return as_payload(
-        get_toolkit().get_device_interfaces(device=device, format=format, interface=interface, include_tc=include_tc)
-    )
+    return as_payload(get_toolkit().get_device_interfaces(device=device, format=format, interface=interface))
 
 
 def get_bgp_neighbors(device: str, format: str = "structured"):

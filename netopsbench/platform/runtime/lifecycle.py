@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -27,6 +28,7 @@ from netopsbench.platform.runtime.deployment import (
 )
 from netopsbench.platform.runtime.health import check_worker_health
 from netopsbench.platform.utils.control import OperationControl
+from netopsbench.platform.utils.measurements import measurement_scope
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +117,7 @@ def deploy_workers(
 
     failures: list[tuple[RuntimeIdentity, Exception]] = []
     with ThreadPoolExecutor(max_workers=job_count) as executor:
-        future_map = {executor.submit(deploy, worker): worker for worker in workers}
+        future_map = {executor.submit(copy_context().run, deploy, worker): worker for worker in workers}
         for future in as_completed(future_map):
             try:
                 future.result()
@@ -233,10 +235,13 @@ class RuntimeLifecycle:
 
         started_at = datetime.now(UTC)
         started_tick = monotonic()
+        counts: dict[str, int] = {}
         try:
             if self.control is not None:
                 self.control.remaining()
-            details = operation(runtime) or {}
+            with measurement_scope(counts):
+                details = operation(runtime) or {}
+            details["operations"] = counts
         except Exception as exc:
             ended_at = datetime.now(UTC)
             result = LifecycleStageResult(
@@ -246,6 +251,7 @@ class RuntimeLifecycle:
                 ended_at=ended_at,
                 duration_seconds=monotonic() - started_tick,
                 error=f"{type(exc).__name__}: {exc}",
+                details={"operations": counts},
             )
             raise RuntimeLifecycleError(result) from exc
 

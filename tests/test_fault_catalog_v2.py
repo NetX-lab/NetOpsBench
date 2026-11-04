@@ -10,9 +10,7 @@ from netopsbench.platform.faults.catalog import FAULT_MECHANISMS
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.services.periodic import PeriodicController
 from netopsbench.platform.faults.specs import create_fault_registry
-from netopsbench.platform.incident.context import build_public_symptoms
 from netopsbench.platform.observability.bgp_collector import BgpTransitionTracker
-from netopsbench.platform.observability.routes import route_facts
 from netopsbench.platform.scenario.effects import scoped_integrity_errors
 from netopsbench.platform.topology.clos_builder import build_clos_plan
 from netopsbench.platform.topology.config import config_for_scale
@@ -399,54 +397,6 @@ def test_prefix_event_does_not_interpret_collection_failure_as_zero():
     changed = tracker.process("leaf1", [dict(row, prefixes_received=6)], 3, "lab", collection_ok=True)
     assert any("prefixes_before=8i,prefixes_after=6i" in line for line in changed)
     assert not any("bgp_session_events" in line for line in changed)
-
-
-def test_public_route_summary_uses_actual_fib_without_an_injection_target(injector):
-    before = {
-        "nodes": {"leaf1": {"fib": [{"dst": "192.168.2.0/30", "nexthops": [{"gateway": "a"}, {"gateway": "b"}]}]}}
-    }
-    after = {"collected_at": "now", "nodes": {"leaf1": {"fib": [{"dst": "192.168.2.0/30", "gateway": "a"}]}}}
-    facts = route_facts(before, after, injector._ctx.manifest)
-    assert facts["changes"][0]["event"] == "next_hops_reduced"
-    assert facts["changes"][0]["next_hops_after"] == 1
-    payload = build_public_symptoms(
-        episode_result={
-            "episode": {"mechanism": "secret", "target_device": "answer"},
-            "observations": {"route_observations": facts, "_private_effect": {"root": "answer"}},
-        },
-        pingmesh_query_window={},
-    )
-    assert "answer" not in json.dumps(payload)
-    assert "secret" not in json.dumps(payload)
-
-
-@pytest.mark.parametrize("route_type", ["unicast", "blackhole"])
-def test_uniform_route_summary_reports_host_overrides_of_a_still_present_healthy_prefix(injector, route_type):
-    healthy = {"dst": "192.168.2.0/30", "nexthops": [{"gateway": "10.1.1.1"}, {"gateway": "10.2.1.1"}]}
-    override = {"dst": "192.168.2.2/32", "type": route_type}
-    if route_type == "unicast":
-        override["gateway"] = "192.168.1.6"
-    before = {"nodes": {"leaf1": {"fib": [healthy]}}}
-    after = {"collected_at": "now", "nodes": {"leaf1": {"fib": [healthy, override]}}}
-    facts = route_facts(before, after, injector._ctx.manifest)
-    assert facts["changes"] == [
-        {
-            "device": "leaf1",
-            "prefix": "192.168.2.0/30",
-            "event": "more_specific_route_changed",
-            "matched_prefix": "192.168.2.2/32",
-            "route_type": route_type,
-            "next_hops_before": 2,
-            "next_hops_after": 1 if route_type == "unicast" else 0,
-        }
-    ]
-    assert route_facts(after, after, injector._ctx.manifest)["changes"] == []
-
-
-def test_uniform_route_summary_ignores_host_routes_outside_client_data_addresses(injector):
-    before = {"nodes": {"leaf1": {"fib": []}}}
-    after = {"collected_at": "now", "nodes": {"leaf1": {"fib": [{"dst": "10.0.0.1/32", "dev": "lo"}]}}}
-    assert route_facts(before, after, injector._ctx.manifest)["changes"] == []
 
 
 def test_scoped_outage_requires_complete_remaining_tasks():
@@ -906,20 +856,6 @@ def test_loop_evidence_does_not_bind_native_pingmesh_udp_sockets(injector, monke
     assert result["valid"]
     assert "-I" in commands[0]
     assert not any(arg.startswith("--sport") for arg in commands[0])
-
-
-def test_failed_bgp_snapshot_reports_a_gap_without_inventing_zero_prefixes(injector):
-    old = {
-        "nodes": {
-            "leaf1": {"fib": [], "bgp_collection_ok": True, "bgp": [{"neighbor": "10.1.1.1", "prefixes_received": 4}]}
-        }
-    }
-    current = {"collected_at": "now", "nodes": {"leaf1": {"fib": [], "bgp": [], "bgp_collection_ok": False}}}
-    facts = route_facts(old, current, injector._ctx.manifest)
-    assert facts["changes"] == []
-    assert facts["collection_errors"] == [
-        {"device": "leaf1", "source": "bgp", "phase": "current", "error": "BGP table collection failed"}
-    ]
 
 
 @pytest.mark.parametrize("output", ["", "% BGP instance not found\n", "Neighbor V AS State/PfxRcd\n"])

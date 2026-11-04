@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .control import OperationControl, current_operation_control
+from .measurements import count_operation
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,9 @@ def safe_run(
             non-zero.
     """
     cmd_list = list(cmd)
+    count_operation("subprocess_calls")
+    if any(Path(str(part)).name == "docker" for part in cmd_list[:3]):
+        count_operation("docker_commands")
     # When explicit stdout/stderr file handles are provided, capture_output
     # must not be set (they are mutually exclusive in subprocess.run).
     if stdout is not None or stderr is not None:

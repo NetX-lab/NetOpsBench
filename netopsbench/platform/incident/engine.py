@@ -191,6 +191,8 @@ class PreparedIncident:
             raise ValueError(f"Invalid tool action: {action.name}")
         self._refresh_lease()
         with self._tool_lock:
+            if self.state is not IncidentState.ACTIVE:
+                raise RuntimeError(f"Incident is not active: {self.state}")
             result = self.backend.call_tool(action)
         self._refresh_lease()
         return result
@@ -254,7 +256,8 @@ class PreparedIncident:
             broken = self.state is IncidentState.BROKEN
             if not broken:
                 self.state = IncidentState.CLOSING
-            self._finish_backend(broken=broken)
+            with self._tool_lock:
+                self._finish_backend(broken=broken)
             return self.cleanup_status
 
     def _finish_backend(self, *, broken: bool) -> None:
@@ -333,14 +336,16 @@ class DiagnosticSession:
             failure = ExecutionFailure(
                 domain=FailureDomain.TOOL_EXECUTION,
                 phase="tool_execution",
-                message=str(exc),
+                message="Diagnostic query failed",
                 error_type=type(exc).__name__,
             )
             return SessionTransition(
                 state=self.state,
-                observation=self._bounded_tool_observation({"tool": action.name, "success": False, "error": str(exc)}),
+                observation=self._bounded_tool_observation(
+                    {"tool": action.name, "success": False, "error": "Diagnostic query failed"}
+                ),
                 failure=failure,
-                error=str(exc),
+                error="Diagnostic query failed",
                 metrics=self._metrics(elapsed),
             )
         return SessionTransition(

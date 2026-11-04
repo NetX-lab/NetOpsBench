@@ -34,6 +34,7 @@ class SnapshotQueryResult:
     status: str
     rows: list[dict]
     error: str | None = None
+    request_count: int = 0
 
 
 class DetectorQueryMixin:
@@ -106,8 +107,8 @@ class DetectorQueryMixin:
             **({"deadline": deadline} if deadline is not None else {}),
         )
         if result.status != "ok":
-            return SnapshotQueryResult(status="error", rows=[], error=result.error)
-        return SnapshotQueryResult(status="ok", rows=self._parse_snapshot_csv(result.text))
+            return SnapshotQueryResult(status="error", rows=[], error=result.error, request_count=1)
+        return SnapshotQueryResult(status="ok", rows=self._parse_snapshot_csv(result.text), request_count=1)
 
     def _query_snapshot(
         self, start_time: str, end_time: str, *, deadline: float | None = None, fields: tuple[str, ...] | None = None
@@ -134,13 +135,14 @@ class DetectorQueryMixin:
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 results = list(executor.map(query, shards))
 
+        request_count = sum(result.request_count for result in results)
         failures = [(index, result) for index, result in enumerate(results, start=1) if result.status != "ok"]
         if failures:
             errors = [
                 f"snapshot shard {index}/{len(shards)} failed: {result.error or 'query_failed'}"
                 for index, result in failures
             ]
-            return SnapshotQueryResult(status="error", rows=[], error="; ".join(errors))
+            return SnapshotQueryResult(status="error", rows=[], error="; ".join(errors), request_count=request_count)
 
         rows = [row for result in results for row in result.rows]
         rows.sort(
@@ -152,7 +154,7 @@ class DetectorQueryMixin:
                 str(row.get("dst_ip") or ""),
             )
         )
-        return SnapshotQueryResult(status="ok", rows=rows)
+        return SnapshotQueryResult(status="ok", rows=rows, request_count=request_count)
 
     def _topology_filter(self) -> str:
         filters = {"topology_id": self.topology_id, "plan_id": self.plan_id}
@@ -161,12 +163,3 @@ class DetectorQueryMixin:
             for tag, value in filters.items()
             if value
         )
-
-    def _load_topology_metadata(self, metadata: dict) -> None:
-        devices = metadata.get("devices", {}) if isinstance(metadata, dict) else {}
-        clients = devices.get("clients", []) if isinstance(devices, dict) else []
-        for client in clients:
-            name = client.get("name")
-            leaf = client.get("attached_switch")
-            if isinstance(name, str) and isinstance(leaf, str) and name and leaf:
-                self.client_to_leaf[name] = leaf

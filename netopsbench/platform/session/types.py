@@ -14,11 +14,5 @@ class WorkerExecutionContext:
     topology_id: str
     influxdb_bucket: str
 
-    def as_env(self) -> dict[str, str]:
-        return {
-            "NETOPSBENCH_TOPOLOGY_DIR": str(self.topology_dir),
-            "NETOPSBENCH_INFLUXDB_BUCKET": self.influxdb_bucket,
-        }
-
 
 __all__ = ["WorkerExecutionContext"]

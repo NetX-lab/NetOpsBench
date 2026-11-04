@@ -128,10 +128,58 @@ def create_run_report(
     for scenario in scenario_summaries:
         for phase, measurement in scenario.get("phase_timings", {}).items():
             writer.writerow(
-                {"scenario_id": scenario["scenario_id"], "scale": scenario.get("scale"), "phase": phase, **measurement}
+                {
+                    "scenario_id": scenario["scenario_id"],
+                    "scale": scenario.get("scale"),
+                    "phase": phase,
+                    **{key: value for key, value in measurement.items() if key in writer.fieldnames},
+                }
             )
     atomic_write_text(timing_path, timing_csv.getvalue())
     artifact_paths["phase_timings"] = str(timing_path)
+
+    # Keep child measurements out of the existing phase CSV, so consumers do
+    # not add them to their parent and double-count recovery wall time.
+    step_csv = StringIO()
+    step_writer = csv.DictWriter(
+        step_csv,
+        fieldnames=[
+            "scenario_id",
+            "scale",
+            "step",
+            "status",
+            "actual_seconds",
+            "calls",
+            "failed_calls",
+            "baseline_query_requests",
+            "current_query_requests",
+        ],
+    )
+    step_writer.writeheader()
+    has_steps = False
+    for scenario in scenario_summaries:
+        steps = scenario.get("phase_timings", {}).get("recovery", {}).get("steps", {})
+        for name, measurement in steps.items():
+            has_steps = True
+            ingestion = measurement.get("ingestion", {})
+            step_writer.writerow(
+                {
+                    "scenario_id": scenario["scenario_id"],
+                    "scale": scenario.get("scale"),
+                    "step": name,
+                    **{
+                        key: measurement[key]
+                        for key in ("status", "actual_seconds", "calls", "failed_calls")
+                        if key in measurement
+                    },
+                    "baseline_query_requests": ingestion.get("baseline", {}).get("query_requests"),
+                    "current_query_requests": ingestion.get("current", {}).get("query_requests"),
+                }
+            )
+    if has_steps:
+        step_path = artifact_dir / "recovery-steps.csv"
+        atomic_write_text(step_path, step_csv.getvalue())
+        artifact_paths["recovery_steps"] = str(step_path)
 
     from netopsbench.platform.faults.catalog import FAULT_CATALOG_VERSION
 

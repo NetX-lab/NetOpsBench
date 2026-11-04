@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,7 +83,8 @@ def get_recent_influx_interface_identities(
 ) -> list[dict[str, str | None]]:
     safe_device = toolkit._validate_device_name(device)
     safe_minutes = max(1, min(int(time_range_minutes), 24 * 60))
-    query = f"""\nfrom(bucket: "{toolkit.influxdb_bucket}")\n  |> range(start: -{safe_minutes}m)\n  |> filter(fn: (r) => r._measurement == "interfaces")\n  |> filter(fn: (r) => r.source == "{safe_device}")\n  |> keep(columns: ["_time", "name", "path", "source"])\n  |> limit(n: 2000)\n"""
+    scope = toolkit._resolve_pingmesh_time_scope(safe_minutes)
+    query = f"""\nfrom(bucket: "{toolkit.influxdb_bucket}")\n{scope["range_clause"]}\n  |> filter(fn: (r) => r._measurement == "interfaces")\n  |> filter(fn: (r) => r.topology_id == {json.dumps(toolkit.topology_id)})\n  |> filter(fn: (r) => r.source == "{safe_device}")\n  |> keep(columns: ["_time", "name", "path", "source"])\n  |> limit(n: 2000)\n"""
     result = query_flux(
         toolkit.influxdb_url,
         toolkit.influxdb_token,

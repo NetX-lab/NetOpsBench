@@ -155,8 +155,13 @@ the measured peak estimate plus 12 GiB of available headroom, disk capacity, and
 representative switch samples are still required.
 
 Agent execution failures are distinct from valid `inconclusive` conclusions.
-The former are retried after the provider is available; the latter retain their
-real score. A valid completed diagnosis whose subsequent recovery failed also
+After verified recovery, acceptance records an agent failure and continues with
+the next case. Finished agent failures are reported separately and skipped on
+resume; successful `inconclusive` conclusions retain their real score. In diagnosis
+mode, a failed effect audit also ends only that case when recovery verifies a
+complete healthy window. It remains invalid and unscored, is skipped on resume,
+and does not interrupt the remaining diagnoses. Effects-only acceptance retains
+its stricter stop-on-invalid policy. A valid completed diagnosis whose subsequent recovery failed also
 keeps its score and trace. Continuing requires the quarantined lab to be
 explicitly rebuilt and checked healthy; the completed diagnosis is skipped.
 
@@ -192,4 +197,4 @@ The run provisions an XS topology, starts observability, injects one generated f
 - Run larger evaluations with [Running Benchmarks](/docs/run-benchmarks/run-scenario-vs-suite).
 - Use [Operations](/docs/debug-operate/observability) only when a runtime, Grafana dashboard, or cleanup path needs inspection.
 
-Acceptance resume requires the same selected scenario IDs and contents, profile, Pingmesh plan, client image and agent configuration. Valid zero-score diagnoses are completed cases; failed executions can be retried. Quarantined owned labs require `--rebuild-runtime`; external labs are never rebuilt or released by acceptance. SIGINT/SIGTERM request cancellation, recovery and an atomic checkpoint. Memory monitoring starts before deployment and protects the existing 12 GiB available-memory floor. Health checks share one elapsed-time deadline across all probes and retries.
+Acceptance resume requires the same selected scenario IDs and contents, profile, Pingmesh plan, client image and agent configuration. Valid zero-score diagnoses and verified recovered case failures are finished cases; interrupted attempts remain eligible for resume. A campaign that finishes with agent failures records `completed_with_agent_failures`; one with invalid effects records `completed_with_case_failures`. Both release their owned lab after final health validation. Setup, incomplete recovery validation, and effects-only invalid cases still stop acceptance. Quarantined owned labs require `--rebuild-runtime`; external labs are never rebuilt or released by acceptance. SIGINT/SIGTERM request cancellation, recovery and an atomic checkpoint. Memory monitoring starts before deployment and protects the existing 12 GiB available-memory floor. Health checks share one elapsed-time deadline across all probes and retries.

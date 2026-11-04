@@ -20,7 +20,7 @@ from netopsbench.platform.utils.control import finish_cleanup
 from netopsbench.sdk.agents import DiagnosisResult
 
 from .proxy import openai_proxy
-from .runtime import CLI_VERSION, DEFAULT_IMAGE, DiagnosticContainer, credentials, ensure_image
+from .runtime import CLI_VERSION, DEFAULT_IMAGE, DiagnosticContainer, credentials, ensure_image, image_content_identity
 
 
 def strict_output_schema():
@@ -119,6 +119,7 @@ class CodexAgent:
         artifacts_dir=None,
     ):
         self.name, self.model, self.reasoning_effort = name, model, reasoning_effort
+        self.service_tier = "default"
         self.cli_version, self.image = cli_version, image
         self.timeout_seconds = (
             default_experiment_profile().diagnosis_timeout_seconds if timeout_seconds is None else timeout_seconds
@@ -129,15 +130,19 @@ class CodexAgent:
         self.artifacts_dir = Path(artifacts_dir or ".netopsbench/codex-traces").resolve()
         self._containers = set()
         self._image_id = None
+        self._image_content_sha256 = None
 
     def preflight(self):
         credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
         self._image_id = ensure_image(image=self.image, version=self.cli_version)
+        self._image_content_sha256 = image_content_identity(self._image_id)
         return {
             "cli_version": self.cli_version,
             "image_id": self._image_id,
+            "image_content_sha256": self._image_content_sha256,
             "model": self.model,
             "reasoning_effort": self.reasoning_effort,
+            "service_tier": self.service_tier,
             "timeout_seconds": self.timeout_seconds,
             "max_mcp_calls": self.max_tool_calls,
         }
@@ -164,6 +169,7 @@ class CodexAgent:
         ]
         config = {
             "model_reasoning_effort": self.reasoning_effort,
+            "service_tier": self.service_tier,
             "web_search": "disabled",
             "developer_instructions": SYSTEM_GUIDANCE,
             "mcp_servers.netopsbench.url": endpoint["url"],
@@ -172,6 +178,8 @@ class CodexAgent:
             "mcp_servers.netopsbench.enabled_tools": [tool["name"] for tool in tool_schemas()],
         }
         for feature in (
+            "fast_mode",
+            "ultrafast_mode",
             "apps",
             "plugins",
             "remote_plugin",
@@ -248,6 +256,7 @@ class CodexAgent:
             "model": self.model,
             "cli_version": self.cli_version,
             "reasoning_effort": self.reasoning_effort,
+            "service_tier": self.service_tier,
             "max_mcp_calls": self.max_tool_calls,
             "timeout_seconds": self.timeout_seconds,
         }
@@ -267,6 +276,7 @@ class CodexAgent:
             if self._image_id is None:
                 await asyncio.to_thread(self.preflight)
             metadata["image_id"] = self._image_id
+            metadata["image_content_sha256"] = self._image_content_sha256
             container.image = self._image_id
             secrets = credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
             auth_temporary = tempfile.TemporaryDirectory(prefix="netopsbench-codex-auth-")

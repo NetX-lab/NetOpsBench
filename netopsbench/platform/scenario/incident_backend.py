@@ -20,7 +20,9 @@ from netopsbench.platform.scenario.observation import (
     baseline_window_seconds,
     observation_integrity_errors,
 )
+from netopsbench.platform.toolkit.public import public_tool_result
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
+from netopsbench.platform.utils.control import current_operation_control
 
 
 class ExecutorIncidentBackend:
@@ -30,14 +32,11 @@ class ExecutorIncidentBackend:
         self,
         executor: Any,
         *,
-        setup_traffic: bool = True,
-        baseline_window: dict[str, Any] | None = None,
         influxdb_bucket: str | None = None,
         topology_id: str | None = None,
     ):
         self.executor = executor
-        self.setup_traffic = setup_traffic
-        self.baseline_window = baseline_window
+        self.baseline_window: dict[str, Any] | None = None
         self.influxdb_bucket = influxdb_bucket
         self.topology_id = topology_id
         self.topology_dir = str(executor.topology_dir)
@@ -55,6 +54,8 @@ class ExecutorIncidentBackend:
 
     def prepare(self, scenario: ScenarioSpec) -> dict[str, Any]:
         self.scenario = scenario
+        if self.executor.injector.active_faults:
+            raise RuntimeError("Runtime contains unresolved faults; recovery is required before preparation")
         if scenario.metadata.get("experiment") is not None:
             policy = self.executor.experiment
             window = policy.window_seconds(
@@ -71,68 +72,66 @@ class ExecutorIncidentBackend:
                 or scenario.episode.parameters.get("up_time") != policy.flapping_up_seconds
             ):
                 raise ValueError("Per-case periodic timing override is not allowed in a frozen campaign")
-        if self.setup_traffic:
-            with self.executor.timings.measure("traffic_readiness"):
-                controller = self.executor.traffic_controller
-                traffic_ready = (
-                    controller is not None and bool(controller.active_flows) and controller.verify_active_flows()
+        with self.executor.timings.measure("traffic_readiness"):
+            controller = self.executor.traffic_controller
+            traffic_ready = (
+                controller is not None and bool(controller.active_flows) and controller.verify_active_flows()
+            )
+            if not traffic_ready:
+                if controller is not None:
+                    self.executor._stop_traffic()
+                self.traffic_config = self.executor._setup_traffic(
+                    scenario.scale,
+                    scenario.traffic_profile,
                 )
-                if not traffic_ready:
-                    if controller is not None:
-                        self.executor._stop_traffic()
-                    self.traffic_config = self.executor._setup_traffic(
-                        scenario.scale,
-                        scenario.traffic_profile,
-                    )
-                if traffic_ready:
-                    self.traffic_config = getattr(self.executor, "_traffic_config", None)
-            handoff = getattr(self.executor, "_baseline_handoff", None)
-            if handoff is not None and self.baseline_window is None:
-                self._scope = self.executor._baseline_scope(scenario)
-                self.baseline_window, reason = handoff.take(
-                    self._scope, baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds)
-                )
-                self.baseline_preparation = {
-                    "mode": "reused" if self.baseline_window else "fresh",
-                    "reason": reason,
-                    "source_scenario_id": handoff.source if self.baseline_window else None,
-                    "scope_changes": handoff.last_changes,
-                }
-            if self.baseline_window is None:
-                if self.executor.runtime_worker is not None:
-                    from .observation import observation_detector
+            if traffic_ready:
+                self.traffic_config = self.executor._traffic_config
+        handoff = self.executor._baseline_handoff
+        if self.baseline_window is None:
+            self._scope = self.executor._baseline_scope(scenario)
+            self.baseline_window, reason = handoff.take(
+                self._scope, baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds)
+            )
+            self.baseline_preparation = {
+                "mode": "reused" if self.baseline_window else "fresh",
+                "reason": reason,
+                "source_scenario_id": handoff.source if self.baseline_window else None,
+                "scope_changes": handoff.last_changes,
+            }
+        if self.baseline_window is None:
+            if self.executor.runtime_worker is not None:
+                from .observation import observation_detector
 
-                    with self.executor.timings.measure(
-                        "baseline_readiness", timeout_seconds=self.executor.observation_timeout_seconds
-                    ):
-                        observation_detector(self.executor).wait_for_history(
-                            deadline=time.monotonic() + self.executor.observation_timeout_seconds
-                        )
                 with self.executor.timings.measure(
-                    "baseline",
-                    planned_seconds=baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds),
+                    "baseline_readiness", timeout_seconds=self.executor.observation_timeout_seconds
                 ):
-                    reference = self.executor._capture_baseline_window()
-                with self.executor.timings.measure(
-                    "baseline_query", timeout_seconds=self.executor.observation_timeout_seconds
-                ):
-                    validation = self.executor._merge_observation_windows(
-                        [reference], int(reference["duration_seconds"]), baseline_window=reference
+                    observation_detector(self.executor).wait_for_history(
+                        deadline=time.monotonic() + self.executor.observation_timeout_seconds
                     )
-                gate_errors = baseline_gate_errors(validation)
-                if gate_errors:
-                    self.baseline_preparation["failed_validation"] = validation
-                    raise RuntimeError("Healthy baseline is unavailable: " + "; ".join(gate_errors))
-                self.baseline_window = {
-                    "name": "baseline",
-                    "start_time": validation["start_time"],
-                    "end_time": validation["end_time"],
-                    "duration_seconds": validation["duration_seconds"],
-                }
-                if handoff is not None:
-                    handoff.fresh_epoch()
-            else:
-                self.executor.timings.skip("baseline", "verified healthy window handoff")
+            with self.executor.timings.measure(
+                "baseline",
+                planned_seconds=baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds),
+            ):
+                reference = self.executor._capture_baseline_window()
+            with self.executor.timings.measure(
+                "baseline_query", timeout_seconds=self.executor.observation_timeout_seconds
+            ):
+                validation = self.executor._merge_observation_windows(
+                    [reference], int(reference["duration_seconds"]), baseline_window=reference
+                )
+            gate_errors = baseline_gate_errors(validation)
+            if gate_errors:
+                self.baseline_preparation["failed_validation"] = validation
+                raise RuntimeError("Healthy baseline is unavailable: " + "; ".join(gate_errors))
+            self.baseline_window = {
+                "name": "baseline",
+                "start_time": validation["start_time"],
+                "end_time": validation["end_time"],
+                "duration_seconds": validation["duration_seconds"],
+            }
+            handoff.fresh_epoch(self.baseline_window)
+        else:
+            self.executor.timings.skip("baseline", "verified healthy window handoff")
         if self.baseline_window is None:
             raise RuntimeError("Incident preparation requires an explicit Pingmesh baseline window")
         self.executor._case_initial_scope = self._scope
@@ -147,7 +146,7 @@ class ExecutorIncidentBackend:
             episode = scenario.episode
             manifest = self.executor.current_manifest()
             scope = (id(manifest), manifest.topology_id, manifest.require_pingmesh_plan().settings.plan_id)
-            if getattr(self.executor, "_candidate_scope", None) != scope:
+            if self.executor._candidate_scope != scope:
                 self.executor._candidate_paths = CandidatePaths(manifest)
                 self.executor._candidate_scope = scope
             candidates = self.executor._candidate_paths
@@ -180,7 +179,7 @@ class ExecutorIncidentBackend:
             ):
                 self.executor._case_routes = collect_routes(
                     self.executor.current_manifest(),
-                    cancel_event=getattr(self.executor, "_cancel_event", None),
+                    cancel_event=self.executor._cancel_event,
                     deadline=time.monotonic() + self.executor.scale_registry.get(scenario.scale).health_timeout_seconds,
                 )
             if any(
@@ -196,7 +195,7 @@ class ExecutorIncidentBackend:
             result=self.episode_result,
         )
         if catalog_v2:
-            from netopsbench.platform.observability.routes import collect_routes, route_facts
+            from netopsbench.platform.observability.routes import collect_routes
 
             from .effects import scoped_integrity_errors, validate_effect
 
@@ -206,13 +205,10 @@ class ExecutorIncidentBackend:
             ):
                 current = collect_routes(
                     self.executor.current_manifest(),
-                    cancel_event=getattr(self.executor, "_cancel_event", None),
+                    cancel_event=self.executor._cancel_event,
                     deadline=time.monotonic() + self.executor.scale_registry.get(scenario.scale).health_timeout_seconds,
                 )
                 self.episode_result["route_evidence"] = {"baseline": self.executor._case_routes, "fault": current}
-                self.episode_result["observations"]["route_observations"] = route_facts(
-                    self.executor._case_routes, current, self.executor.current_manifest()
-                )
                 effect = validate_effect(
                     self.executor, scenario.episode, self.episode_result, self.executor._case_routes, current
                 )
@@ -258,8 +254,11 @@ class ExecutorIncidentBackend:
         method = getattr(self.toolkit, action.name, None)
         if not callable(method):
             raise ValueError(f"Toolkit action is not implemented: {action.name}")
-        result = method(**action.arguments)
-        return result.to_dict() if hasattr(result, "to_dict") else {"success": True, "data": result}
+        with self.executor.timings.measure_step("tool_queries", action.name) as timing:
+            result = method(**action.arguments)
+            if not result.success:
+                timing["failed_calls"] += 1
+        return public_tool_result(result)
 
     def refresh(self, *, min_seconds: float = 0.0) -> None:
         del min_seconds
@@ -268,57 +267,85 @@ class ExecutorIncidentBackend:
         if self._finished:
             return
         self._finished = True
-        if self.scenario is not None:
-            self.executor._recovering = True
-            try:
-                with self.executor.timings.measure(
-                    "recovery", timeout_seconds=self.executor.experiment.recovery_timeout_seconds
-                ):
-                    self.cleanup_result = self.executor._cleanup_after_scenario(
-                        self.scenario,
-                        self.episode_result,
-                        baseline_window=self.baseline_window,
-                    )
-                    if not self.cleanup_result.get("success"):
-                        self.executor.timings.phases["recovery"]["status"] = "failed"
-            finally:
-                self.executor._recovering = False
-            if self.episode_result is not None and "recovery" in self.cleanup_result:
-                self.episode_result["recovery"] = self.cleanup_result["recovery"]
-            if "validated_baseline" in self.cleanup_result:
-                self.baseline_window = dict(self.cleanup_result["validated_baseline"])
-            handoff = getattr(self.executor, "_baseline_handoff", None)
-            if handoff is not None and self.setup_traffic:
-                candidate = self.cleanup_result.get("validated_baseline")
-                if candidate is None and self.scenario.episode.is_healthy:
-                    candidate = self.executor._healthy_baseline_candidate
-                scope = self.executor._baseline_scope(self.scenario)
-                if (
-                    not broken
-                    and self.cleanup_result.get("success")
-                    and candidate is not None
-                    and self._scope is not None
-                    and scope == self.cleanup_result.get("validated_baseline_scope", self._scope)
-                ):
-                    self.cleanup_result["baseline_handoff"] = handoff.publish(
-                        candidate,
-                        scope,
-                        self.scenario.id,
-                        baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds),
-                    )
-                else:
-                    handoff.clear()
-                    self.cleanup_result["baseline_handoff"] = False
-                from .baseline import scope_changes
+        if self.scenario is None:
+            return
+        self.executor._recovering = True
+        try:
+            with self.executor.timings.measure(
+                "recovery", timeout_seconds=self.executor.experiment.recovery_timeout_seconds
+            ):
+                self.cleanup_result = self.executor._cleanup_after_scenario(
+                    self.scenario,
+                    self.episode_result,
+                    baseline_window=self.baseline_window,
+                )
+                if self.episode_result is not None and "recovery" in self.cleanup_result:
+                    self.episode_result["recovery"] = self.cleanup_result["recovery"]
+                if "validated_baseline" in self.cleanup_result:
+                    self.baseline_window = dict(self.cleanup_result["validated_baseline"])
+                with self.executor.timings.measure_step("recovery", "handoff"):
+                    self._publish_baseline(broken=broken)
+                current_operation_control().remaining()
+                if not self.cleanup_result.get("success", False):
+                    raise RuntimeError(f"Scenario cleanup failed: {self.cleanup_result}")
+        except BaseException as exc:
+            if self.cleanup_result is None:
+                self.cleanup_result = {"success": False, "status": "recovery_failed", "errors": [str(exc)]}
+            handoff = self.executor._baseline_handoff
+            handoff.clear("recovery_failed")
+            if self.cleanup_result.get("success", True):
+                self.cleanup_result.update(
+                    success=False,
+                    status="recovery_timeout" if isinstance(exc, TimeoutError) else "recovery_failed",
+                )
+            self.cleanup_result.update(baseline_handoff=False, baseline_handoff_reason="recovery_failed")
+            raise
+        finally:
+            self.executor._recovering = False
 
-                self.cleanup_result["baseline_scope_changes"] = scope_changes(self._scope, scope)
-                from .baseline import RuntimeScope
+    def _publish_baseline(self, *, broken: bool) -> None:
+        from .baseline import RuntimeScope, scope_changes
 
-                bound = self.cleanup_result.get("validated_baseline_scope")
-                if isinstance(bound, RuntimeScope):
-                    self.cleanup_result["validated_baseline_scope"] = {"digest": bound.digest}
-            if not self.cleanup_result.get("success", False):
-                raise RuntimeError(f"Scenario cleanup failed: {self.cleanup_result}")
+        handoff = self.executor._baseline_handoff
+        if self.cleanup_result is None or self.scenario is None:
+            raise RuntimeError("Cannot publish a baseline before cleanup")
+        recovered = self.cleanup_result.get("validated_baseline")
+        candidate = recovered
+        if candidate is None and self.scenario.episode.is_healthy and not broken:
+            candidate = self.executor._healthy_baseline_candidate
+        scope = self.executor._baseline_scope(self.scenario)
+        bound = self.cleanup_result.get("validated_baseline_scope", self._scope)
+        if not self.cleanup_result.get("success"):
+            reason = "recovery_failed"
+        elif candidate is None:
+            reason = "no_verified_healthy_window"
+        elif self._scope is None or scope is None:
+            reason = "scope_unavailable"
+        elif scope != bound:
+            reason = "scope_changed"
+        else:
+            reason = None
+        if reason:
+            handoff.clear(reason)
+            published = False
+        else:
+            # A failed incident may still have an independently verified recovery
+            # window. Publishing it never changes the preceding case's result.
+            published = handoff.publish(
+                candidate,
+                scope,
+                self.scenario.id,
+                baseline_window_seconds(self.executor, self.executor.minimum_baseline_seconds),
+                verified=True,
+            )
+        self.cleanup_result.update(
+            baseline_handoff=published,
+            baseline_handoff_reason=handoff.last_reason,
+            baseline_scope_changes=scope_changes(self._scope, scope),
+        )
+        verified_scope = self.cleanup_result.get("validated_baseline_scope")
+        if isinstance(verified_scope, RuntimeScope):
+            self.cleanup_result["validated_baseline_scope"] = {"digest": verified_scope.digest}
 
 
 __all__ = ["ExecutorIncidentBackend"]

@@ -1090,3 +1090,62 @@ def test_upstream_teardown_retries_namespace_cleanup_after_forced_container_remo
     first, second = [i for i, c in enumerate(calls) if c[0] == "official"]
     removal = calls.index(["docker", "rm", "-f", "clab-managed-xs-client1"])
     assert first < removal < second
+
+
+def test_provision_interrupt_compensates_and_preserves_original(tmp_path, monkeypatch):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+
+    calls = []
+    _record_lifecycle_operations(monkeypatch, calls)
+    original = KeyboardInterrupt("cancel after deploy")
+
+    def interrupt(runtime):
+        raise original
+
+    monkeypatch.setattr(runtimes_mod.RuntimePool, "ensure_observability", interrupt)
+    monkeypatch.setattr(runtimes_mod, "teardown_workers", lambda workers, registry: calls.append("compensated"))
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        manager.provision(scale="xs", name="cancelled")
+    assert caught.value is original
+    assert "compensated" in calls
+    assert not (manager.runtime_root_dir / "cancelled").exists()
+
+
+@pytest.mark.parametrize("metadata_failure", [False, True])
+def test_provision_interrupt_retains_ownership_on_cleanup_failure(tmp_path, monkeypatch, metadata_failure):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+
+    calls = []
+    _record_lifecycle_operations(monkeypatch, calls)
+    original = KeyboardInterrupt("cancel after deploy")
+    cleanup = RuntimeError("cannot destroy owned resources")
+
+    def interrupt(runtime):
+        raise original
+
+    def fail_cleanup(*args):
+        if metadata_failure:
+            def fail_write(runtime):
+                raise OSError("metadata disk failure")
+            monkeypatch.setattr(runtimes_mod.RuntimePool, "_write_metadata", fail_write)
+        raise cleanup
+
+    monkeypatch.setattr(runtimes_mod.RuntimePool, "ensure_observability", interrupt)
+    monkeypatch.setattr(runtimes_mod, "teardown_workers", fail_cleanup)
+    manager = runtimes_mod.RuntimeManager(workspace=tmp_path)
+    with pytest.raises(runtimes_mod.RuntimeProvisionError) as caught:
+        manager.provision(scale="xs", name="cancelled")
+    error = caught.value
+    assert error.provision_error is original
+    assert error.cleanup_error is cleanup
+    assert error.__cause__ is cleanup
+    assert error.runtime.state == "cleanup_failed"
+    assert error.runtime.metadata["quarantined"] is True
+    assert error.runtime.root_dir.exists()
+    assert "KeyboardInterrupt" in error.runtime.metadata["provision_error"]
+    if metadata_failure:
+        assert "metadata disk failure" in error.runtime.metadata["quarantine_persistence_error"]
+    else:
+        payload = json.loads((error.runtime.root_dir / "runtime.json").read_text())
+        assert payload["state"] == "cleanup_failed"

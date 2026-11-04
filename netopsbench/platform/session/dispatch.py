@@ -41,6 +41,22 @@ class ExecutionControl:
     effects_only: bool = False
 
 
+def is_recovered_case_failure(summary: dict[str, Any]) -> bool:
+    """Finished diagnosis or effect failures can advance after verified recovery."""
+    return summary.get("cleanup_failed") is False and (
+        (
+            summary.get("status") == "failed"
+            and summary.get("failure_stage") == "agent"
+            and summary.get("case_valid") is True
+        )
+        or (
+            summary.get("status") == "invalid"
+            and summary.get("failure_stage") == "effect_validation"
+            and summary.get("case_valid") is False
+        )
+    )
+
+
 @dataclass(frozen=True)
 class PoolDispatchResult:
     evaluations: list[Any]
@@ -217,16 +233,41 @@ def _run_worker(
                         logger.debug("failed to persist trace evaluation results", exc_info=True)
             evaluations.extend(scored)
             cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
+            episode_result = scenario_result.get("episode") or {}
+            execution_failure = (episode_result.get("execution") or {}).get("failure") or {}
+            diagnosis_metadata = (episode_result.get("diagnosis") or {}).get("metadata") or {}
+            recovered = (scenario_result.get("cleanup") or {}).get("success") is True and not (
+                control and control.cancel_event and control.cancel_event.is_set()
+            )
+            recovered_agent_failure = (
+                case_valid
+                and not scenario_result.get("error")
+                and execution_failure.get("domain") in {"agent", "protocol"}
+                and execution_failure.get("phase") in {"diagnosis", "limits"}
+                and not diagnosis_metadata.get("cleanup_errors")
+                and recovered
+            )
+            recovered_effect_failure = (
+                not case_valid
+                and not (control and control.effects_only)
+                and (episode_result.get("effect_audit") or {}).get("valid") is False
+                and not episode_result.get("diagnosis")
+                and bool((scenario_result.get("cleanup") or {}).get("validated_baseline"))
+                and recovered
+            )
             success = case_valid and bool(scenario_result.get("success")) and cleanup_success
             if not case_valid:
                 status = "invalid"
-                failure_stage = "infrastructure"
+                failure_stage = "effect_validation" if recovered_effect_failure else "infrastructure"
             elif success:
                 status = "completed"
                 failure_stage = None
             else:
                 status = "failed"
-                failure_stage = "cleanup" if not cleanup_success else "execution"
+                if not cleanup_success:
+                    failure_stage = "cleanup"
+                else:
+                    failure_stage = "agent" if recovered_agent_failure else "execution"
             scenario_summaries.append(
                 {
                     "scenario_id": scenario.id,
@@ -245,7 +286,12 @@ def _run_worker(
                 runtime.mark_quarantined("scenario_cleanup_failure", [worker.worker_id])
             if control and control.on_case:
                 control.on_case(scenario_summaries[-1], scenario_result, scored)
-            if not cleanup_success or (control and control.stop_on_failure and not success):
+            if not cleanup_success or (
+                control
+                and control.stop_on_failure
+                and not success
+                and not is_recovered_case_failure(scenario_summaries[-1])
+            ):
                 for skipped in scenarios[scenario_index + 1 :]:
                     scenario_summaries.append(
                         {

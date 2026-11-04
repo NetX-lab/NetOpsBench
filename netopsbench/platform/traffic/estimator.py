@@ -8,8 +8,6 @@ MIN_TCP_PAYLOAD_BYTES = 536
 
 
 def bandwidth_to_bps(bandwidth: str) -> float:
-    if not bandwidth:
-        return 0.0
     value = bandwidth.strip().upper()
     if value.endswith("K"):
         return float(value[:-1]) * 1_000
@@ -18,23 +16,6 @@ def bandwidth_to_bps(bandwidth: str) -> float:
     if value.endswith("G"):
         return float(value[:-1]) * 1_000_000_000
     return float(value)
-
-
-def infer_topology_link_mtu(topology: dict, default_link_mtu_bytes: int) -> int:
-    candidates = [
-        topology.get("defaults", {}).get("link_mtu"),
-        topology.get("fabric", {}).get("link_mtu"),
-        topology.get("routing", {}).get("link_mtu"),
-        topology.get("link_mtu"),
-    ]
-    for candidate in candidates:
-        if isinstance(candidate, int) and candidate > 0:
-            return candidate
-    for client in topology.get("devices", {}).get("clients", []):
-        client_mtu = client.get("mtu")
-        if isinstance(client_mtu, int) and client_mtu > 0:
-            return client_mtu
-    return default_link_mtu_bytes
 
 
 def estimate_packet_size_bytes(
@@ -61,7 +42,7 @@ def estimate_flow_pps(
 ) -> float:
     if flow.get("protocol") not in ["udp", "tcp"]:
         return 0.0
-    bps = bandwidth_to_bps(flow.get("bandwidth", "0"))
+    bps = bandwidth_to_bps(flow.get("bandwidth") or "0")
     if bps <= 0:
         return 0.0
     packet_size_bytes = estimate_packet_size_bytes(

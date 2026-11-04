@@ -23,9 +23,10 @@ from netopsbench.platform.incident.engine import (
     IncidentEngine,
     IncidentState,
     PreparedIncident,
-    SessionState,
+    SessionTransition,
     TerminationReason,
 )
+from netopsbench.platform.toolkit.public import public_failure
 
 
 class ResetResult(BaseModel):
@@ -42,20 +43,10 @@ class ResetResult(BaseModel):
     error: str | None = None
 
 
-class StepResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class StepResult(SessionTransition):
+    # Public construction requires these flags; internal transitions default them.
     valid: bool
     case_valid: bool
-    state: SessionState
-    observation: dict[str, Any] = Field(default_factory=dict)
-    reward: float | None = None
-    reward_components: dict[str, float] = Field(default_factory=dict)
-    metrics: dict[str, Any] = Field(default_factory=dict)
-    termination_reason: TerminationReason | None = None
-    failure: ExecutionFailure | None = None
-    cleanup_failure: ExecutionFailure | None = None
-    cleanup_status: CleanupStatus = CleanupStatus.NOT_STARTED
-    error: str | None = None
 
 
 class DiagnosticEnvironment:
@@ -87,7 +78,7 @@ class DiagnosticEnvironment:
             raise RuntimeError("Diagnostic environments are single-use; create a new environment")
         self.incident = self.engine.prepare(self.scenario)
         if self.incident.state is IncidentState.BROKEN:
-            failure = self.incident.failure
+            failure = public_failure(self.incident.failure)
             self._notify_close()
             return ResetResult(
                 valid=False,
@@ -95,7 +86,7 @@ class DiagnosticEnvironment:
                 state=self.incident.state,
                 case_id=self.incident.case_id,
                 failure=failure,
-                cleanup_failure=self.incident.cleanup_failure,
+                cleanup_failure=public_failure(self.incident.cleanup_failure),
                 cleanup_status=self.incident.cleanup_status,
                 error=failure.message if failure else "incident preparation failed",
             )
@@ -118,7 +109,7 @@ class DiagnosticEnvironment:
         else:
             transition = self.session.submit(action.diagnosis, usage=action.usage)
             cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
-            cleanup_failure = self.incident.cleanup_failure if self.incident is not None else None
+            cleanup_failure = public_failure(self.incident.cleanup_failure) if self.incident is not None else None
             transition = transition.model_copy(
                 update={
                     "cleanup_status": cleanup,
@@ -139,7 +130,7 @@ class DiagnosticEnvironment:
             reason=TerminationReason.PROTOCOL_ERROR,
         )
         cleanup = self.incident.close() if self.incident is not None else CleanupStatus.NOT_STARTED
-        cleanup_failure = self.incident.cleanup_failure if self.incident is not None else None
+        cleanup_failure = public_failure(self.incident.cleanup_failure) if self.incident is not None else None
         if cleanup_failure is not None:
             transition = transition.model_copy(
                 update={

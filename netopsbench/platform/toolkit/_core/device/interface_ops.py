@@ -1,128 +1,104 @@
-"""Interface-oriented device toolkit operations."""
+"""Interface observations without simulator traffic-control state."""
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import UTC, datetime
 
 from netopsbench.platform.topology.topology_utils import is_network_device_name
+from netopsbench.platform.utils.interface_names import are_interfaces_equivalent
 
 from ..common import ToolResult
 from .interface_parsers import merge_interface_tables, parse_ip_link_stats
 from .text_parsers import parse_table
 
 
+def _link_observations(text: str, interface: str | None) -> str:
+    """Select complete ip-link records and omit the qdisc implementation field."""
+    blocks = re.split(r"(?m)(?=^\d+: )", text)
+    selected = []
+    for block in blocks:
+        match = re.match(r"^\d+:\s+([^:@]+)(?:@[^:]+)?:", block)
+        if not match or (interface and not are_interfaces_equivalent(match[1], interface)):
+            continue
+        lines = block.splitlines(keepends=True)
+        lines[0] = re.sub(r"\s+qdisc\s+\S+", "", lines[0])
+        selected.append("".join(lines))
+    return "".join(selected)
+
+
+def _interface_table(text: str, interface: str | None) -> str:
+    if not interface:
+        return text
+    # Keep table headings/separators, selecting rows by their first column.
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.strip()
+        or line.lstrip().startswith(("Interface", "IFACE", "Port", "---"))
+        or are_interfaces_equivalent(line.split()[0], interface)
+    )
+
+
 class InterfaceOpsMixin:
     def get_device_interfaces(
-        self, device: str, format: str = "structured", interface: str | None = None, include_tc: bool = False
+        self, device: str, format: str = "structured", interface: str | None = None
     ) -> ToolResult:
-        if include_tc and not interface:
-            return ToolResult(success=False, data=None, error="include_tc requires interface")
-        result = self._get_device_interfaces(device, format)
-        if not result.success:
-            return result
-        try:
-            container = self._resolve_container(device)
-            addresses = self._docker_exec(container, ["ip", "-j", "-4", "addr", "show"], timeout=30)
-            if addresses.returncode:
-                result.data["address_collection_error"] = addresses.stderr or "Address collection failed"
-            else:
-                rows = json.loads(addresses.stdout)
-                result.data["addresses"] = {
-                    row["ifname"]: [f"{a['local']}/{a['prefixlen']}" for a in row.get("addr_info", [])] for row in rows
-                }
-            if include_tc:
-                safe_interface = self._validate_interface_name(interface)
-                known = {
-                    endpoint.interface
-                    for link in self.manifest.links
-                    for endpoint in link.endpoints
-                    if endpoint.device == device
-                }
-                from netopsbench.platform.utils.interface_names import to_linux_interface, to_sonic_interface
-
-                if safe_interface not in known and safe_interface not in {to_sonic_interface(name) for name in known}:
-                    raise ValueError("Unknown data interface")
-                linux_interface = to_linux_interface(safe_interface)
-                qdisc = self._docker_exec(
-                    container, ["tc", "-s", "-j", "qdisc", "show", "dev", linux_interface], timeout=30
-                )
-                if qdisc.returncode:
-                    raise RuntimeError(qdisc.stderr or "qdisc collection failed")
-                result.data["qdisc"] = {
-                    "interface": safe_interface,
-                    "linux_interface": linux_interface,
-                    "rows": json.loads(qdisc.stdout),
-                }
-            result.data["collected_at"] = datetime.now(UTC).isoformat()
-            return result
-        except Exception as exc:
-            return ToolResult(success=False, data=None, error=str(exc))
-
-    def _get_device_interfaces(self, device: str, format: str = "structured") -> ToolResult:
         try:
             self._validate_device_name(device)
-            safe_format = (format or "raw").lower()
-            if safe_format not in {"raw", "structured", "summary", "both"}:
+            if interface is not None:
+                self._validate_interface_name(interface)
+            view = (format or "raw").lower()
+            if view not in {"raw", "structured", "summary", "both"}:
                 return ToolResult(success=False, data=None, error=f"Invalid format: {format}")
             container = self._resolve_container(device)
+            raw = None
             if is_network_device_name(device):
-                brief_result = self._docker_exec(container, ["bash", "-lc", "show interfaces status"], timeout=30)
-                detail_result = self._docker_exec(container, ["bash", "-lc", "show interfaces counters"], timeout=30)
-                if brief_result.returncode != 0 and detail_result.returncode != 0:
-                    fallback = self._docker_exec(container, ["ip", "-s", "link", "show"], timeout=30)
-                    if fallback.returncode != 0:
-                        return ToolResult(success=False, data=None, error=fallback.stderr)
-                    raw_data = {
-                        "device": device,
-                        "brief": "show interfaces status unavailable; using ip link",
-                        "detail": fallback.stdout,
-                    }
-                    structured = parse_ip_link_stats(fallback.stdout)
-                    if safe_format == "summary":
-                        return ToolResult(success=True, data=self._summarize_interface_data(device, structured))
-                    if safe_format == "structured":
-                        return ToolResult(success=True, data={"device": device, "interfaces": structured})
-                    if safe_format == "both":
-                        return ToolResult(
-                            success=True, data={"device": device, "raw": raw_data, "structured": structured}
-                        )
-                    return ToolResult(success=True, data=raw_data)
-                raw_data = {
-                    "device": device,
-                    "brief": brief_result.stdout if brief_result.returncode == 0 else "Unable to get brief",
-                    "detail": detail_result.stdout if detail_result.returncode == 0 else "Unable to get details",
+                brief = self._docker_exec(container, ["bash", "-lc", "show interfaces status"], timeout=30)
+                detail = self._docker_exec(container, ["bash", "-lc", "show interfaces counters"], timeout=30)
+                if brief.returncode == 0 or detail.returncode == 0:
+                    brief_text = _interface_table(brief.stdout if brief.returncode == 0 else "", interface)
+                    detail_text = _interface_table(detail.stdout if detail.returncode == 0 else "", interface)
+                    raw = {"device": device, "brief": brief_text, "detail": detail_text}
+                    rows = merge_interface_tables(parse_table(brief_text), parse_table(detail_text))
+            # SONiC's port tables omit real non-port interfaces such as lo and
+            # management interfaces. Check Linux before declaring one absent.
+            if raw is None or (interface and not rows):
+                result = self._docker_exec(container, ["ip", "-s", "link", "show"], timeout=30)
+                if result.returncode:
+                    return ToolResult(success=False, data=None, error="Interface state unavailable")
+                text = _link_observations(result.stdout, interface)
+                rows = parse_ip_link_stats(text)
+                raw = {"device": device, "interfaces": text}
+            if interface and not rows:
+                return ToolResult(success=False, data=None, error="Interface not found in collected device state")
+            structured = {"device": device, "interfaces": rows}
+            if not rows:
+                structured["warning"] = "Unable to parse interface tables; check raw output."
+            data = raw if view == "raw" else structured
+            if view == "summary":
+                data = self._summarize_interface_data(device, rows)
+            elif view == "both":
+                data = {"device": device, "raw": raw, "structured": structured}
+            addresses = self._docker_exec(container, ["ip", "-j", "-4", "addr", "show"], timeout=30)
+            if addresses.returncode:
+                data["address_collection_error"] = "Address collection failed"
+            else:
+                data["addresses"] = {
+                    row["ifname"]: [f"{a['local']}/{a['prefixlen']}" for a in row.get("addr_info", [])]
+                    for row in json.loads(addresses.stdout)
+                    if not interface or are_interfaces_equivalent(row["ifname"], interface)
                 }
-                if safe_format in {"structured", "summary", "both"}:
-                    status_rows = parse_table(brief_result.stdout if brief_result.returncode == 0 else "")
-                    counter_rows = parse_table(detail_result.stdout if detail_result.returncode == 0 else "")
-                    merged = merge_interface_tables(status_rows, counter_rows)
-                    structured = {"device": device, "interfaces": merged}
-                    if not merged:
-                        structured["warning"] = "Unable to parse interface tables; check raw output."
-                    if safe_format == "summary":
-                        return ToolResult(success=True, data=self._summarize_interface_data(device, merged))
-                    if safe_format == "structured":
-                        return ToolResult(success=True, data=structured)
-                    return ToolResult(success=True, data={"device": device, "raw": raw_data, "structured": structured})
-                return ToolResult(success=True, data=raw_data)
-            result = self._docker_exec(container, ["ip", "-s", "link", "show"], timeout=30)
-            if result.returncode != 0:
-                return ToolResult(success=False, data=None, error=result.stderr)
-            raw_data = {"device": device, "interfaces": result.stdout}
-            if safe_format in {"structured", "summary", "both"}:
-                structured = parse_ip_link_stats(result.stdout)
-                if safe_format == "summary":
-                    return ToolResult(success=True, data=self._summarize_interface_data(device, structured))
-                if safe_format == "structured":
-                    return ToolResult(success=True, data={"device": device, "interfaces": structured})
-                return ToolResult(success=True, data={"device": device, "raw": raw_data, "structured": structured})
-            return ToolResult(success=True, data=raw_data)
+            data["collected_at"] = datetime.now(UTC).isoformat()
+            return ToolResult(success=True, data=data)
         except subprocess.TimeoutExpired:
             return ToolResult(success=False, data=None, error="Command timed out")
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
+        except ValueError:
+            return ToolResult(success=False, data=None, error="Invalid interface request or device response")
+        except Exception:
+            return ToolResult(success=False, data=None, error="Interface collection failed")
 
     @staticmethod
     def _summarize_interface_data(device: str, interfaces: list[dict]) -> dict:

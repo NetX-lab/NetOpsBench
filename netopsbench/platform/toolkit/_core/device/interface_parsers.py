@@ -43,11 +43,17 @@ def parse_ip_link_stats(text: str) -> list[dict[str, Any]]:
         if not match:
             i += 1
             continue
-        name = match.group(1)
+        name = match.group(1).split("@", 1)[0]
         entry: dict[str, Any] = {"name": name}
         mtu_match = re.search(r"\bmtu\s+(\d+)", line)
         if mtu_match:
             entry["mtu"] = int(mtu_match.group(1))
+        state = re.search(r"\bstate\s+(\S+)", line)
+        if state:
+            entry["state"] = state[1]
+        flags = re.search(r"<([^>]*)>", line)
+        if flags:
+            entry["admin"] = "up" if "UP" in flags[1].split(",") else "down"
         i += 1
         while i < len(lines) and lines[i].startswith(" "):
             sub = lines[i].strip()
@@ -72,14 +78,7 @@ def parse_ip_link_stats(text: str) -> list[dict[str, Any]]:
     return results
 
 
-def get_live_interface_snapshot(toolkit, device: str, interface: str) -> dict[str, Any] | None:
-    result = toolkit.get_device_interfaces(device, format="structured")
-    if not result.success:
-        return None
-    data = result.data or {}
-    interfaces = data.get("interfaces", [])
-    if not isinstance(interfaces, list):
-        return None
+def select_live_interface(interfaces: list[dict], interface: str) -> dict[str, Any] | None:
     candidate_names = set(resolve_interface_metric_identities(interface)["names"])
     for entry in interfaces:
         if not isinstance(entry, dict):
@@ -90,14 +89,7 @@ def get_live_interface_snapshot(toolkit, device: str, interface: str) -> dict[st
     return None
 
 
-def get_active_interface_names(toolkit, device: str) -> list[str]:
-    result = toolkit.get_device_interfaces(device, format="structured")
-    if not result.success:
-        return []
-    data = result.data or {}
-    interfaces = data.get("interfaces", [])
-    if not isinstance(interfaces, list):
-        return []
+def active_interface_names(interfaces: list[dict]) -> list[str]:
     active: list[str] = []
     for entry in interfaces:
         if not isinstance(entry, dict):

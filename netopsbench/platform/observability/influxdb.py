@@ -16,6 +16,7 @@ from typing import Literal
 import requests
 
 from netopsbench.logging_utils import get_logger
+from netopsbench.platform.utils.measurements import count_operation
 
 logger = get_logger(__name__)
 
@@ -56,6 +57,7 @@ def query_flux(
     deadline: float | None = None,
 ) -> FluxQueryResult:
     """Execute one Flux query without interpreting its domain-specific CSV."""
+    count_operation("influx_queries")
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/vnd.flux",

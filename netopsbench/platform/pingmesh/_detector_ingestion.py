@@ -14,6 +14,7 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
 from netopsbench.platform.utils.control import OperationControl, current_operation_control
+from netopsbench.platform.utils.measurements import count_operation
 
 from ._detector_query import _SNAPSHOT_FIELDS, SnapshotQueryResult
 
@@ -182,6 +183,7 @@ class DetectorIngestionMixin:
         ingestion = {"status": "pending"}
         query_seconds = 0.0
         wait_seconds = 0.0
+        request_count = 0
         try:
             while True:
                 control.remaining()
@@ -189,21 +191,27 @@ class DetectorIngestionMixin:
                 context_end = min(datetime.now(UTC), end + timedelta(seconds=padding))
                 tick = time.monotonic()
                 try:
-                    progress = self._query_snapshot(
-                        _iso(context_start), _iso(context_end), deadline=control.deadline, fields=_PROGRESS_FIELDS
-                    )
-                    if progress.status != "ok":
-                        raise RuntimeError(progress.error or "boundary query failed")
-                    snapshot = self._query_snapshot(start_time, end_time, deadline=control.deadline)
+                    context = self._query_snapshot(_iso(context_start), _iso(context_end), deadline=control.deadline)
+                    request_count += context.request_count
                 finally:
                     query_seconds += time.monotonic() - tick
-                if snapshot.status != "ok":
-                    raise RuntimeError(snapshot.error or "snapshot query failed")
+                control.remaining()
+                if context.status != "ok":
+                    raise RuntimeError(context.error or "snapshot query failed")
+                # One fresh read supplies both frame boundaries and metrics.
+                # Context outside [start, end) is never used in anomaly statistics.
+                snapshot = SnapshotQueryResult(
+                    status="ok",
+                    rows=self._slice_rows(context.rows, start_time, end_time),
+                    request_count=context.request_count,
+                )
                 coverage = self.summarize_coverage(snapshot.rows)
-                ingestion = self.audit_ingestion(progress.rows, snapshot.rows, start_time, end_time)
+                ingestion = self.audit_ingestion(context.rows, snapshot.rows, start_time, end_time)
+                control.remaining()
                 ingestion["elapsed_seconds"] = time.monotonic() - started
                 ingestion["query_seconds"] = query_seconds
                 ingestion["wait_seconds"] = wait_seconds
+                ingestion["query_requests"] = request_count
                 ingestion["verification_seconds"] = max(
                     0.0, ingestion["elapsed_seconds"] - query_seconds - wait_seconds
                 )
@@ -220,6 +228,7 @@ class DetectorIngestionMixin:
                 finally:
                     wait_seconds += time.monotonic() - tick
                 retries += 1
+                count_operation("ingestion_retries")
         except (TimeoutError, RuntimeError) as exc:
             ingestion = {
                 **ingestion,
@@ -228,6 +237,7 @@ class DetectorIngestionMixin:
                 "elapsed_seconds": time.monotonic() - started,
                 "query_seconds": query_seconds,
                 "wait_seconds": wait_seconds,
+                "query_requests": request_count,
             }
             coverage.update(ingestion=ingestion, query_retries=retries)
             return SnapshotQueryResult(status="error", rows=[], error=f"Window ingestion: {exc}"), coverage

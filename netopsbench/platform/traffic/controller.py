@@ -16,6 +16,8 @@ from netopsbench.platform.client_agent.contract import HEARTBEAT_MAX_AGE_SECONDS
 from netopsbench.platform.client_agent.control import request_agent
 from netopsbench.platform.utils.control import OperationControl, current_operation_control, operation_scope
 
+from .estimator import bandwidth_to_bps
+
 logger = get_logger(__name__)
 
 CONTROL_TIMEOUT_SECONDS = 3.0
@@ -271,7 +273,7 @@ def _client_plans(clients: dict[str, str], flows: list[TrafficFlow]) -> dict[str
                 "protocol": protocol,
                 "dst_ip": flow.dst_ip,
                 "dst_port": int(flow.dst_port),
-                "bandwidth_bps": _parse_bandwidth_bps(flow.bandwidth),
+                "bandwidth_bps": int(bandwidth_to_bps(str(flow.bandwidth))),
                 "payload_bytes": max(1, int(payload_bytes)),
                 "tcp_mss": max(0, int(flow.tcp_mss if protocol == "tcp" else 0)),
             }
@@ -298,14 +300,6 @@ def _client_plans(clients: dict[str, str], flows: list[TrafficFlow]) -> dict[str
 def _plan_digest(plan: dict) -> str:
     encoded = json.dumps(plan, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _parse_bandwidth_bps(value: str) -> int:
-    text = str(value).strip().upper()
-    factors = {"K": 1_000, "M": 1_000_000, "G": 1_000_000_000}
-    if text and text[-1:] in factors:
-        return int(float(text[:-1]) * factors[text[-1]])
-    return int(float(text))
 
 
 __all__ = [

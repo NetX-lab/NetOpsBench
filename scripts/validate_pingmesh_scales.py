@@ -64,15 +64,19 @@ def preflight_agents(backends, vendor, output, *, expected=None):
                 "request_timeout_seconds": agent.timeout_seconds,
             }
         else:
+            from examples.agents.codex_agent.runtime import image_content_identity
+
             agent = agent_class(backend)(artifacts_dir=output / "codex-preflight")
             if backend in expected:
                 current = {
-                    key: getattr(agent, key) for key in ("cli_version", "model", "reasoning_effort", "timeout_seconds")
+                    key: getattr(agent, key)
+                    for key in ("cli_version", "model", "reasoning_effort", "service_tier", "timeout_seconds")
                 }
                 current["max_mcp_calls"] = agent.max_tool_calls
                 current["image_id"] = subprocess.check_output(
                     ["docker", "image", "inspect", agent.image, "--format", "{{.Id}}"], text=True
                 ).strip()
+                current["image_content_sha256"] = image_content_identity(agent.image)
                 if current != expected[backend]:
                     raise ValueError(f"Cannot change {backend} configuration when resuming acceptance")
                 identities[backend] = current

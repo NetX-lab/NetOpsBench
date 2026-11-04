@@ -9,6 +9,7 @@ from typing import Any
 
 from netopsbench.models.profiles import ExperimentProfile, default_experiment_profile
 from netopsbench.platform.faults.context import FaultRuntimeContext
+from netopsbench.platform.faults.defaults import LATENCY_MS, MTU, PACKET_CORRUPTION_PCT, PACKET_LOSS_PCT
 from netopsbench.platform.faults.handlers.impairment import ImpairmentHandler
 from netopsbench.platform.faults.handlers.link import LinkHandler
 from netopsbench.platform.faults.handlers.network import NetworkFaultHandler
@@ -110,18 +111,20 @@ class FaultInjector:
     # ------------------------------------------------------------------
 
     def inject_mtu_mismatch(self, device: str, interface: str, mtu: int | None = None) -> dict[str, Any]:
-        return self._impairment.inject_mtu_mismatch(device, interface, mtu=1400 if mtu is None else mtu)
+        return self._impairment.inject_mtu_mismatch(device, interface, mtu=MTU if mtu is None else mtu)
 
     def recover_mtu_mismatch(self, device: str, interface: str, original_mtu: int | None = None) -> dict[str, Any]:
         return self._impairment.recover_mtu_mismatch(device, interface, original_mtu=original_mtu)
 
-    def inject_packet_corruption(self, device: str, interface: str, corruption_pct: float = 5.0) -> dict[str, Any]:
+    def inject_packet_corruption(
+        self, device: str, interface: str, corruption_pct: float = PACKET_CORRUPTION_PCT
+    ) -> dict[str, Any]:
         return self._impairment.inject_packet_corruption(device, interface, corruption_pct=corruption_pct)
 
-    def inject_packet_loss(self, device: str, interface: str, loss_pct: float = 30.0) -> dict[str, Any]:
+    def inject_packet_loss(self, device: str, interface: str, loss_pct: float = PACKET_LOSS_PCT) -> dict[str, Any]:
         return self._impairment.inject_packet_loss(device, interface, loss_pct=loss_pct)
 
-    def inject_high_latency(self, device: str, interface: str, latency_ms: float = 100.0) -> dict[str, Any]:
+    def inject_high_latency(self, device: str, interface: str, latency_ms: float = LATENCY_MS) -> dict[str, Any]:
         return self._impairment.inject_high_latency(device, interface, latency_ms=latency_ms)
 
     def recover_tc_rules(self, device: str, interface: str) -> dict[str, Any]:

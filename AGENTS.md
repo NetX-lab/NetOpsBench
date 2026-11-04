@@ -104,10 +104,10 @@ metadata:
   negative_sample: true
 ```
 
-For negative samples, the scenario runner should diagnose a representative
-middle `fault_type: none` episode instead of skipping it. That episode waits,
-collects healthy observations, and calls the agent. Ordinary `fault_type: none`
-episodes that are not selected for diagnosis may still be skipped quickly.
+Each scenario has one canonical `episode`. A negative sample uses
+`fault_type: none`: it collects a complete healthy observation window and
+calls the agent. Do not skip healthy scenarios or restore legacy multi-episode
+selection logic.
 
 Scoring intent:
 

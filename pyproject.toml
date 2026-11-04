@@ -36,7 +36,6 @@ netopsbench = "netopsbench.cli.main:main"
 netopsbench-bgp-collector = "netopsbench.platform.observability.bgp_collector:main"
 netopsbench-mcp-server = "netopsbench.platform.toolkit.fastmcp_server:main"
 netopsbench-runtime = "netopsbench.platform.runtime.cli:main"
-netopsbench-simulator = "netopsbench.sdk.simulator_service:main"
 
 [project.optional-dependencies]
 codex = [
@@ -56,10 +55,6 @@ agent = [
 ]
 plots = [
     "matplotlib>=3.8.0",
-]
-simulator = [
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
 ]
 dev = [
     "pytest>=6.0.0",

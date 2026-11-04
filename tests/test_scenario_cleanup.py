@@ -31,6 +31,12 @@ def _scenario() -> ScenarioSpec:
 
 def _runner(*, active_faults, timeout_seconds=10):
     runner = object.__new__(ScenarioExecutor)
+    runner.begin_case()
+    runner.traffic_controller = None
+    runner.runtime_worker = None
+    runner.post_recovery_wait_seconds = 0
+    runner._baseline_handoff = executor_module.BaselineHandoff()
+    runner._recovering = True
     runner.injector = SimpleNamespace(active_faults=list(active_faults))
     runner.scale_registry = SimpleNamespace(
         get=lambda _scale: SimpleNamespace(

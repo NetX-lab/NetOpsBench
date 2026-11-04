@@ -1028,15 +1028,21 @@ def test_fastmcp_pingmesh_tools_pass_absolute_window(monkeypatch):
 
     monkeypatch.setattr(mcp_context, "_toolkit", FakeToolkit())
 
-    assert fastmcp_server.get_pingmesh_summary(
-        start_time="2026-01-01T00:00:00Z",
-        end_time="2026-01-01T00:01:00Z",
-    ) == {"ok": "summary"}
-    assert fastmcp_server.get_pingmesh_hotspots(
-        limit=3,
-        start_time="2026-01-01T00:00:00Z",
-        end_time="2026-01-01T00:01:00Z",
-    ) == {"ok": "hotspots"}
+    assert (
+        fastmcp_server.get_pingmesh_summary(
+            start_time="2026-01-01T00:00:00Z",
+            end_time="2026-01-01T00:01:00Z",
+        )["ok"]
+        == "summary"
+    )
+    assert (
+        fastmcp_server.get_pingmesh_hotspots(
+            limit=3,
+            start_time="2026-01-01T00:00:00Z",
+            end_time="2026-01-01T00:01:00Z",
+        )["ok"]
+        == "hotspots"
+    )
     assert calls["summary"]["start_time"] == "2026-01-01T00:00:00Z"
     assert calls["summary"]["end_time"] == "2026-01-01T00:01:00Z"
     assert calls["hotspots"]["limit"] == 3

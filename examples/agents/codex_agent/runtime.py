@@ -1,5 +1,6 @@
 """Pinned diagnostic image and per-case, namespace-isolated container."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -52,6 +53,17 @@ def ensure_image(*, image=DEFAULT_IMAGE, binary=None, version=CLI_VERSION):
     if actual != f"codex-cli {version}":
         raise ValueError(f"Diagnostic image CLI mismatch: {actual}")
     return image_id
+
+
+def image_content_identity(image):
+    """Compare executable content across Docker image-store implementations."""
+    inspected = json.loads(docker("image", "inspect", image))[0]
+    config = inspected.get("Config") or {}
+    execution = {key: config.get(key) for key in ("Env", "Entrypoint", "Cmd", "Volumes", "Healthcheck")}
+    execution.update({key: config.get(key) or "" for key in ("User", "WorkingDir", "StopSignal")})
+    content = {key: inspected[key] for key in ("Architecture", "Os", "RootFS")}
+    content["Config"] = execution
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
 def credentials(store: Path, *, refresh_from_host: bool = False) -> list[str]:

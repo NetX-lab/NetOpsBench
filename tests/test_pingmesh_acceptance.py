@@ -1,5 +1,6 @@
 """Acceptance selection and capacity checks must fail before costly deployments."""
 
+import hashlib
 import json
 import sys
 from contextlib import nullcontext
@@ -16,6 +17,53 @@ from netopsbench.platform.topology.config import config_for_scale
 from scripts import validate_pingmesh_scales as cli
 
 BACKEND = {"provider": "upstream", "containerlab_version": "test"}
+
+
+@pytest.mark.parametrize("change", [None, "imported_image", "content", "source", "agent", "backend", "health", "case", "fingerprint"])
+def test_codex_qualification_requires_matching_frozen_evidence(tmp_path, change):
+    identity = {"model": "gpt-6.1-sol", "service_tier": "default", "image_id": "sha256:test", "image_content_sha256": "same-content"}
+    receipt = {
+        "schema_version": 1,
+        "status": "passed",
+        "runtime_disposition": "torn_down",
+        "final_health": {"status": "passed"},
+        "runtime_backend": BACKEND,
+        "agent_identity": identity,
+        "source_tree_sha256": "frozen-source",
+        "cases": [
+            {"id": f"xs-{fault}", "fault_type": fault, "status": "completed", "valid": True,
+             "diagnosis_complete": True, "cleanup_failed": False, "score": 0}
+            for fault in ("none", "link_down", "device_down", "bgp_auth_mismatch")
+        ],
+    }
+    if change == "source":
+        receipt["source_tree_sha256"] = "other-source"
+    elif change == "agent":
+        receipt["agent_identity"] = {**identity, "service_tier": "fast"}
+    elif change == "content":
+        receipt["agent_identity"] = {**identity, "image_content_sha256": "other-content"}
+    elif change == "backend":
+        receipt["runtime_backend"] = {"provider": "other"}
+    elif change == "health":
+        receipt["final_health"] = {"status": "failed"}
+    elif change == "case":
+        receipt["cases"][0]["diagnosis_complete"] = False
+    path = tmp_path / "qualification.json"
+    path.write_text(json.dumps(receipt))
+    args = SimpleNamespace(
+        codex_smoke_receipt=path,
+        codex_smoke_receipt_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        source_tree_sha256="frozen-source",
+    )
+    if change == "fingerprint":
+        args.codex_smoke_receipt_sha256 = "changed"
+    current_identity = {**identity, "image_id": "imported-id"} if change == "imported_image" else identity
+    if change not in {None, "imported_image"}:
+        with pytest.raises(ValueError, match="Codex qualification"):
+            acceptance.qualified_codex_smoke(args, {"codex": current_identity}, BACKEND)
+    else:
+        # Qualification checks execution and health, never model accuracy.
+        assert acceptance.qualified_codex_smoke(args, {"codex": current_identity}, BACKEND)["status"] == "passed"
 
 
 @pytest.fixture(autouse=True)
@@ -186,7 +234,7 @@ def test_resume_retains_valid_low_scores_and_retries_incomplete_cases():
             report("recovery-failed", True, True),
         ]
     }
-    assert acceptance.completed_case_ids(entry) == {"low-score", "healthy"}
+    assert acceptance.finished_case_ids(entry) == {"low-score", "healthy"}
 
 
 def test_completed_campaign_returns_without_constructing_agent_or_executor(tmp_path):
@@ -238,7 +286,114 @@ def test_failed_execution_is_not_completed_model_acceptance():
             {"scenario_id": "failed", "case_valid": True, "status": "failed", "cleanup_failed": False}
         ]
     }
-    assert acceptance.completed_case_ids({"cases": [failed]}) == set()
+    assert acceptance.finished_case_ids({"cases": [failed]}) == set()
+
+
+def test_recovered_agent_failure_is_finished_but_not_a_completed_diagnosis():
+    summary = {
+        "scenario_id": "budget-exhausted",
+        "case_valid": True,
+        "status": "failed",
+        "failure_stage": "agent",
+        "cleanup_failed": False,
+    }
+    report = {"diagnosis_complete": False, "scenario_summaries": [summary]}
+    assert acceptance.finished_case_ids({"cases": [report]}) == {"budget-exhausted"}
+    assert report["diagnosis_complete"] is False
+    summary["cleanup_failed"] = True
+    assert acceptance.finished_case_ids({"cases": [report]}) == set()
+    summary.update(cleanup_failed=False, failure_stage="execution")
+    assert acceptance.finished_case_ids({"cases": [report]}) == set()
+
+
+@pytest.mark.parametrize("failure_stage", ["agent", "effect_validation"])
+def test_run_cases_records_case_failure_and_continues_without_retry(monkeypatch, tmp_path, failure_stage):
+    import threading
+
+    paths = []
+    for name in ["agent-failed", "valid-zero"]:
+        path = tmp_path / f"{name}.yaml"
+        save_scenario_file(
+            ScenarioSpec(
+                scenario_id=name,
+                name=name,
+                topology_scale="xs",
+                episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
+            ),
+            path,
+        )
+        paths.append(path)
+    selected = []
+
+    def execute(**kwargs):
+        selected.extend(case.id for case in kwargs["scenarios"])
+        assert kwargs["control"].stop_on_failure is True
+        summaries = []
+        for case in kwargs["scenarios"]:
+            failed = case.id == "agent-failed"
+            summary = {
+                "scenario_id": case.id,
+                "case_valid": not (failed and failure_stage == "effect_validation"),
+                "status": ("invalid" if failure_stage == "effect_validation" else "failed") if failed else "completed",
+                "cleanup_failed": False,
+                **({"failure_stage": failure_stage} if failed else {}),
+            }
+            raw = {
+                "episode": {
+                    "diagnosis": {"success": not failed},
+                    "execution": {"case_valid": True, "termination_reason": "agent_error" if failed else "submitted"},
+                },
+                "cleanup": {"success": True},
+            }
+            kwargs["control"].on_case(summary, raw, [])
+            summaries.append(summary)
+        return SimpleNamespace(
+            wait=lambda: SimpleNamespace(artifact_paths={"report": "report.json"}, scenario_summaries=summaries)
+        )
+
+    monkeypatch.setattr(acceptance.Evaluator, "generate_report", lambda *a, **kw: {"summary": {"average_score": 0}})
+    bench = SimpleNamespace(
+        agents=SimpleNamespace(wrap=lambda raw: SimpleNamespace(name="agent")),
+        sessions=SimpleNamespace(_executor=SimpleNamespace(_run_with_existing_runtime=execute)),
+    )
+    entry, result = {}, {}
+    kwargs = dict(
+        backend="deepagent",
+        vendor="deepseek",
+        entry=entry,
+        identity={},
+        output=tmp_path,
+        result=result,
+        cancel=threading.Event(),
+        agent_factory=lambda backend: lambda **kw: object(),
+    )
+    runtime = SimpleNamespace(scale="xs")
+    assert acceptance.run_cases(bench, runtime, paths, **kwargs) is True
+    records = entry["agents"]["deepagent"]
+    assert [r["diagnosis_complete"] for r in records["cases"]] == [False, True]
+    assert records["cases"][0]["scenario_summaries"][0]["status"] == (
+        "invalid" if failure_stage == "effect_validation" else "failed"
+    )
+    assert acceptance.finished_case_ids(records) == {"agent-failed", "valid-zero"}
+    assert acceptance.run_cases(bench, runtime, paths, **kwargs) is False
+    assert selected == ["agent-failed", "valid-zero"]
+
+
+def test_resume_skips_verified_invalid_effect_without_scoring_it():
+    summary = {
+        "scenario_id": "acl-no-hit",
+        "status": "invalid",
+        "case_valid": False,
+        "failure_stage": "effect_validation",
+        "cleanup_failed": False,
+    }
+    record = {"diagnosis_complete": False, "scenario_summaries": [summary]}
+    assert acceptance.finished_case_ids({"cases": [record]}) == {"acl-no-hit"}
+    record["mode"] = "effects"
+    assert acceptance.finished_case_ids({"cases": [record]}) == set()
+    record.pop("mode")
+    summary["cleanup_failed"] = True
+    assert acceptance.finished_case_ids({"cases": [record]}) == set()
 
 
 def test_model_inconclusive_without_execution_error_remains_valid():
@@ -248,7 +403,7 @@ def test_model_inconclusive_without_execution_error_remains_valid():
         "diagnosis_complete": True,
         "detailed_results": [{"details": {"agent_output": diagnosis}}],
     }
-    assert acceptance.completed_case_ids({"cases": [report]}) == {"low-score"}
+    assert acceptance.finished_case_ids({"cases": [report]}) == {"low-score"}
 
 
 @pytest.mark.parametrize("mismatch", ["scale", "plan"])
@@ -676,12 +831,13 @@ def test_checkpoint_remains_parseable_during_resource_sampling(tmp_path):
     assert not cancel.is_set()
 
 
-@pytest.mark.parametrize("mismatch", ["model", "image_id"])
+@pytest.mark.parametrize("mismatch", ["model", "image_id", "service_tier"])
 def test_codex_resume_identity_checked_before_credentials_or_container_preflight(monkeypatch, tmp_path, mismatch):
     agent = SimpleNamespace(
         cli_version="0.159.2",
         model="gpt-6.1-sol",
         reasoning_effort="xhigh",
+        service_tier="default",
         timeout_seconds=600,
         max_tool_calls=40,
         image="codex-image",
@@ -691,14 +847,17 @@ def test_codex_resume_identity_checked_before_credentials_or_container_preflight
         "cli_version": agent.cli_version,
         "model": agent.model,
         "reasoning_effort": agent.reasoning_effort,
+        "service_tier": agent.service_tier,
         "timeout_seconds": agent.timeout_seconds,
         "max_mcp_calls": agent.max_tool_calls,
         "image_id": "image-digest",
+        "image_content_sha256": "image-content",
     }
     expected[mismatch] = "changed"
     monkeypatch.setattr(cli, "runtime_tools", lambda: tmp_path)
     monkeypatch.setattr(cli, "agent_class", lambda backend: lambda **kwargs: agent)
     monkeypatch.setattr(cli.subprocess, "check_output", lambda *args, **kwargs: "image-digest\n")
+    monkeypatch.setattr("examples.agents.codex_agent.runtime.image_content_identity", lambda image: "image-content")
     with pytest.raises(ValueError, match="configuration"):
         cli.preflight_agents(["codex"], "deepseek", tmp_path, expected={"codex": expected})
 
@@ -711,12 +870,12 @@ def test_resume_keeps_completed_zero_score_diagnosis_when_recovery_requires_rebu
             {"scenario_id": "valid-zero", "case_valid": True, "status": "failed", "cleanup_failed": True}
         ],
     }
-    assert acceptance.completed_case_ids({"cases": [report]}) == {"valid-zero"}
+    assert acceptance.finished_case_ids({"cases": [report]}) == {"valid-zero"}
     report["diagnosis_complete"] = False
-    assert acceptance.completed_case_ids({"cases": [report]}) == set()
+    assert acceptance.finished_case_ids({"cases": [report]}) == set()
     report["mode"] = "effects"
     report["diagnosis_complete"] = True
-    assert acceptance.completed_case_ids({"cases": [report]}) == set()
+    assert acceptance.finished_case_ids({"cases": [report]}) == set()
 
 
 def test_resume_does_not_infer_missing_diagnosis_state_from_archived_raw_results(tmp_path):
@@ -728,7 +887,7 @@ def test_resume_does_not_infer_missing_diagnosis_state_from_archived_raw_results
         ],
     }
     original = raw.read_bytes()
-    assert acceptance.completed_case_ids({"cases": [report]}) == set()
+    assert acceptance.finished_case_ids({"cases": [report]}) == set()
     assert raw.read_bytes() == original
 
 
@@ -742,7 +901,7 @@ def test_effects_resume_requires_valid_completed_and_recovered_case():
             ("unrecovered", {"case_valid": True, "status": "completed", "cleanup_failed": True}),
         )
     ]
-    assert acceptance.completed_case_ids({"cases": reports}) == {"completed"}
+    assert acceptance.finished_case_ids({"cases": reports}) == {"completed"}
 
 
 def test_legacy_campaign_rejected_before_provider_or_docker(monkeypatch, tmp_path):

@@ -142,7 +142,7 @@ class NetworkFaultHandler:
             keyword, value = {
                 "bgp_as_mismatch": ("remote-as", str(int(neighbor["remote_as"]) + 1000)),
                 "bgp_auth_mismatch": ("password", uuid.uuid4().hex),
-                "bgp_update_source_mismatch": ("update-source", "Loopback999"),
+                "bgp_update_source_mismatch": ("update-source", p.get("fault_update_source", "Loopback999")),
                 "bgp_neighbor_shutdown": ("shutdown", ""),
                 "bgp_max_prefix_misconfig": ("maximum-prefix", ""),
             }[fault]
@@ -151,6 +151,8 @@ class NetworkFaultHandler:
                 # FRR permits a passive connection despite an incorrect source
                 # IP. An absent source interface also makes incoming next-hop
                 # validation fail, while changing only this neighbor's option.
+                if not isinstance(value, str) or not re.fullmatch(r"Loopback[0-9]{1,4}", value):
+                    raise ValueError("Invalid update-source interface")
                 links = self._json(device, ["ip", "-j", "link", "show"])
                 if any(link["ifname"] == value for link in links):
                     raise RuntimeError("Reserved wrong update-source interface already exists")

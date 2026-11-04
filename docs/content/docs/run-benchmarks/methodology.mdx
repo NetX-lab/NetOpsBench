@@ -174,6 +174,10 @@ empty rounds. Boundary rounds are checked in full, while only records inside
 the left-closed, right-open interval enter anomaly statistics. Late repeated
 tasks and missing fields cannot pass merely because plan coverage is complete.
 Queries and waits share the processing deadline without extending the window.
+Each read includes the boundary context and all required metric fields. The
+same returned rows prove ingestion readiness and supply the strictly sliced
+statistical window, avoiding a separate progress query. Source shards remain
+limited to 16 clients, with at most four concurrent HTTP requests per process.
 Observation waiting uses a monotonic deadline; UTC query bounds retain their
 fractional precision and fixed configured duration.
 
@@ -183,6 +187,11 @@ commands retain their order and nesting. The verified recovery window is bound
 to its stable recovered identity, including any verified device restart. The
 next case still checks identity, freshness and recalibration, then reads the
 window again rather than using cached telemetry.
+The 600-second recalibration period starts at the latest independently verified
+new healthy window; republishing an older window cannot renew it. The window
+must still be no more than 120 seconds old. A failed diagnosis or invalid fault
+effect does not invalidate a separately verified recovery window. Publication
+and rejection reasons are recorded without changing the preceding case result.
 
 Both bundled agents have a configured total diagnosis budget of 600 seconds,
 including setup, reasoning and tools. DeepSeek requests retain their individual
@@ -190,6 +199,12 @@ including setup, reasoning and tools. DeepSeek requests retain their individual
 by separately measured resource cleanup and fault recovery. Effects mode skips
 model diagnosis. Reports include per-case phase measurements and a
 `phase-timings.csv` artifact; changed experiment settings require a new campaign.
+The existing `recovery` phase also contains `steps` for fault restoration,
+convergence, window waiting, query/ingestion, identity checks and handoff. Query
+steps retain baseline/current ingestion timings and request-attempt counts
+separately: concurrent read durations must not be summed as wall time. These
+child measurements are also exported to `recovery-steps.csv`, leaving the
+existing `phase-timings.csv` columns and parent-phase totals unchanged.
 
 ACL validity requires rule hits and increased ordinary or DF probe loss. DF loss
 cannot establish ACL impact when local send errors or confirmed MTU drops explain

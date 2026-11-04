@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from netopsbench.platform.observability.influxdb import query_flux
 
 from ..common import ToolResult
@@ -22,34 +24,13 @@ class LogOpsMixin:
         try:
             safe_device = self._validate_device_name(device)
             safe_minutes = max(1, min(int(time_range_minutes), 24 * 60))
-            explicit_start = str(start_time or "").strip()
-            explicit_end = str(end_time or "").strip()
-            if bool(explicit_start) != bool(explicit_end):
-                raise ValueError("start_time and end_time must be provided together")
-            start_dt = end_dt = None
-            if explicit_start:
-                start_dt = parse_iso8601_timestamp(explicit_start, "start_time")
-                end_dt = parse_iso8601_timestamp(explicit_end, "end_time")
-                if start_dt >= end_dt:
-                    raise ValueError("start_time must be earlier than end_time")
-                normalized_start = start_dt.isoformat().replace("+00:00", "Z")
-                normalized_end = end_dt.isoformat().replace("+00:00", "Z")
-                range_clause = (
-                    f'  |> range(start: time(v: "{normalized_start}"), ' f'stop: time(v: "{normalized_end}"))'
-                )
-                time_scope = {
-                    "mode": "absolute",
-                    "source": "explicit",
-                    "start_time": normalized_start,
-                    "end_time": normalized_end,
-                }
-            else:
-                range_clause = f"  |> range(start: -{safe_minutes}m)"
-                time_scope = {
-                    "mode": "rolling",
-                    "source": "time_range_minutes",
-                    "time_range_minutes": safe_minutes,
-                }
+            scope = self._resolve_pingmesh_time_scope(safe_minutes, start_time, end_time)
+            range_clause = scope["range_clause"]
+            time_scope = {key: value for key, value in scope.items() if key != "range_clause"}
+            start_dt = (
+                parse_iso8601_timestamp(scope["start_time"], "start_time") if scope["mode"] == "absolute" else None
+            )
+            end_dt = parse_iso8601_timestamp(scope["end_time"], "end_time") if scope["mode"] == "absolute" else None
             severity_filter = ""
             if severity:
                 safe_severity = severity.lower()
@@ -61,6 +42,7 @@ class LogOpsMixin:
             query = f"""\nfrom(bucket: "{self.influxdb_bucket}")
 {range_clause}
   |> filter(fn: (r) => r._measurement == "syslog")
+  |> filter(fn: (r) => r.topology_id == {json.dumps(self.topology_id)})
   |> filter(fn: (r) => r.source == "{safe_device}")
   |> filter(fn: (r) => r._field == "message")
   {severity_filter}

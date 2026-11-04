@@ -17,6 +17,7 @@ import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from math import ceil
 from pathlib import Path
 
@@ -241,7 +242,7 @@ def _parallel_check(function, items, workers, control):
     try:
         for item in items:
             control.remaining()
-            futures.append(executor.submit(probe, item))
+            futures.append(executor.submit(copy_context().run, probe, item))
         return [future.result(timeout=control.remaining()) for future in futures]
     finally:
         executor.shutdown(wait=True, cancel_futures=True)

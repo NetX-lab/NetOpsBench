@@ -1,3 +1,5 @@
+import pytest
+
 from netopsbench.platform.incident.context import (
     build_canonical_observation,
     build_public_case_id,
@@ -115,12 +117,141 @@ def test_build_public_symptoms_strips_fault_injection_labels():
     )
 
     episode = payload["episode"]
-    assert episode["episode_id"] == "ep002_fault"
+    assert "episode_id" not in episode
     assert episode["duration_seconds"] == 30
     assert episode["stabilization_time"] == 5
     assert "fault_type" not in episode
     assert "target_device" not in episode
     assert "target_interface" not in episode
+
+
+@pytest.mark.parametrize("total_anomalies", [0, 3])
+def test_initial_context_only_exposes_pingmesh_and_window_metadata(total_anomalies):
+    from copy import deepcopy
+
+    public = {
+        "start_time": "2026-01-01T00:00:00Z",
+        "end_time": "2026-01-01T00:00:30Z",
+        "duration_seconds": 30,
+        "pingmesh_metrics": {"summary": {"total_anomalies": total_anomalies}},
+        "anomalies_detected": bool(total_anomalies),
+        "coverage_status": "complete",
+        "data_source_status": "ok",
+        "observation_windows": [{"name": "steady", "duration_seconds": 20}],
+    }
+    observations = {
+        **public,
+        "route_observations": {"changes": [{"device": "core4", "route_type": "blackhole"}]},
+        "bgp_observations": {"device": "agg16", "state": "Idle"},
+        "device_status": {"spine4": {"running": False}},
+        "interface_observations": {"leaf2": {"Ethernet0": "down"}},
+        "acl_observations": {"device": "edge1", "hits": 10},
+        "future_device_summary": {"root": "answer"},
+        "_probe_evidence": [{"root": "answer"}],
+    }
+    original = deepcopy(observations)
+    window = {"start_time": public["start_time"], "end_time": public["end_time"]}
+    symptoms = build_public_symptoms(episode_result={"observations": observations}, pingmesh_query_window=window)
+    assert symptoms["observations"] == public
+    assert symptoms["pingmesh_query_window"] == window
+
+    # The canonical helper is also public: callers can bypass build_public_symptoms.
+    canonical = build_canonical_observation(
+        case_id="case-anonymous",
+        topology={},
+        symptoms={"observations": observations, "pingmesh_query_window": window},
+    )
+    assert canonical["symptoms"]["observations"] == public
+    assert observations == original
+    symptoms["observations"]["pingmesh_metrics"]["summary"]["total_anomalies"] = 99
+    assert observations == original
+
+
+@pytest.mark.parametrize("fault_type", ["none", "blackhole_route", "ecmp_misconfig"])
+def test_incident_keeps_route_validation_private_and_supports_explicit_route_queries(monkeypatch, fault_type):
+    from types import SimpleNamespace
+
+    from netopsbench.models.scenario import EpisodeSpec
+    from netopsbench.platform.incident.contracts import ToolAction
+    from netopsbench.platform.scenario import effects, incident_backend
+    from netopsbench.platform.scenario.timing import PhaseTimings
+    from netopsbench.platform.toolkit._core.common import ToolResult
+
+    baseline = {"nodes": {"core4": {"fib": [{"dst": "192.168.49.0/30", "gateway": "10.0.0.1"}]}}}
+    current = {"nodes": {"core4": {"fib": [{"dst": "192.168.49.2/32", "type": "blackhole"}]}}}
+    snapshots = iter([baseline, current])
+    monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **kw: next(snapshots))
+    manifest = SimpleNamespace(
+        require_pingmesh_plan=lambda: SimpleNamespace(settings=SimpleNamespace(complete_window_seconds=30))
+    )
+    episode = EpisodeSpec(episode_id="diagnosis", fault_type=fault_type, target_device="core4")
+    observations = {"pingmesh_metrics": {"summary": {"total_anomalies": 0}}}
+    result = {"episode": episode.model_dump(), "observations": observations}
+    monkeypatch.setattr(incident_backend, "observe_episode", lambda *a, **kw: result)
+    audit = {"valid": True, "errors": []}
+
+    def validate(executor, ep, episode_result, before, after):
+        assert before is baseline and after is current
+        assert episode_result["route_evidence"] == {"baseline": baseline, "fault": current}
+        return audit
+
+    monkeypatch.setattr(effects, "validate_effect", validate)
+    monkeypatch.setattr(effects, "scoped_integrity_errors", lambda *a: [])
+
+    class Toolkit:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_topology(self):
+            return ToolResult(True, {"devices": {"cores": [{"name": "core4"}]}})
+
+        def set_pingmesh_time_window(self, start, end):
+            pass
+
+        def get_route_table(self, device, *, view):
+            assert view == "kernel"
+            return ToolResult(True, current["nodes"][device]["fib"])
+
+    monkeypatch.setattr(incident_backend, "AgentToolkit", Toolkit)
+    from netopsbench.platform.scenario.baseline import BaselineHandoff
+
+    executor = SimpleNamespace(
+        topology_dir="unused",
+        _traffic_config=None,
+        _cancel_event=None,
+        _baseline_handoff=BaselineHandoff(),
+        _baseline_scope=lambda scenario: None,
+        topology_metadata={},
+        injector=SimpleNamespace(active_faults=[]),
+        traffic_controller=SimpleNamespace(active_flows={"flow": 1}, verify_active_flows=lambda: True),
+        runtime_worker=None,
+        minimum_baseline_seconds=30,
+        observation_timeout_seconds=60,
+        _capture_baseline_window=lambda: {"duration_seconds": 30},
+        _merge_observation_windows=lambda *a, **kw: {
+            "start_time": "2026-07-11T00:00:00Z",
+            "end_time": "2026-07-11T00:00:30Z",
+            "duration_seconds": 30,
+        },
+        current_manifest=lambda: manifest,
+        timings=PhaseTimings(),
+        scale_registry=SimpleNamespace(get=lambda scale: SimpleNamespace(health_timeout_seconds=60)),
+        influxdb_bucket="bucket",
+        topology_id="topology",
+    )
+    monkeypatch.setattr(incident_backend, "baseline_gate_errors", lambda value: [])
+    backend = incident_backend.ExecutorIncidentBackend(executor)
+    canonical = backend.prepare(
+        SimpleNamespace(id="private-case", scale="medium", episode=episode, metadata={"fault_catalog_version": 2})
+    )
+    assert backend.symptoms["observations"] == observations
+    assert canonical["symptoms"]["observations"] == observations
+    assert result["route_evidence"] == {"baseline": baseline, "fault": current}
+    assert result["effect_audit"] is audit
+    assert "route_observations" not in result["observations"]
+    queried = backend.call_tool(ToolAction(name="get_route_table", arguments={"device": "core4", "view": "kernel"}))
+    assert queried["success"]
+    assert queried["data"] == current["nodes"]["core4"]["fib"]
 
 
 def test_build_public_case_id_is_non_semantic_and_stable():

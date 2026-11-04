@@ -12,6 +12,7 @@ from typing import Any
 from netopsbench.agents.base import DiagnosticContext
 from netopsbench.agents.handle import AgentHandle
 from netopsbench.agents.tracing import AgentTraceRecorder
+from netopsbench.evaluator.scorer import AgentOutput
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.incident.context import (
     extract_episode_pingmesh_query_window,
@@ -85,8 +86,6 @@ def build_runtime_diagnosis_callback(
     handle = agent if isinstance(agent, AgentHandle) else AgentHandle(agent)
     context_dir = Path(topology_dir) / ".netopsbench"
     context_file = context_dir / "pingmesh_context.json"
-    worker_env = worker_context.as_env() if worker_context is not None else {}
-    worker_env["NETOPSBENCH_PINGMESH_CONTEXT_FILE"] = str(context_file)
 
     def callback(
         episode_result: dict,
@@ -107,8 +106,6 @@ def build_runtime_diagnosis_callback(
         symptoms = diagnostic_payload["symptoms"]
         canonical_observation = diagnostic_payload["canonical_observation"]
         metadata: dict[str, Any] = {"canonical_observation": canonical_observation}
-        if worker_env:
-            metadata["worker_env"] = worker_env
         context = DiagnosticContext(
             scenario_id=case_id,
             topology=topology,
@@ -140,74 +137,29 @@ def build_runtime_diagnosis_callback(
                 "time_taken_seconds": max(0.0, (ended_at - start_time).total_seconds()),
                 "metadata": {**failure_metadata, "agent_failure_stage": "diagnose", "error_type": type(exc).__name__},
             }
-            if trace_writer is not None:
-                try:
-                    trace_result = trace_writer.write_case_trace(
-                        case_id=context.scenario_id,
-                        scenario_id=scenario_id,
-                        episode_result=episode_result,
-                        worker=worker_name or "worker",
-                        topology_id=(worker_context.topology_id if worker_context is not None else None),
-                        topology_scale=scenario_scale,
-                        runtime_id=runtime_id or "",
-                        agent=agent,
-                        diagnostic_context=context,
-                        diagnosis=SimpleNamespace(
-                            agent_name=getattr(handle, "name", "agent"),
-                            success=False,
-                            findings={"error": str(exc)},
-                            metadata=diagnosis_payload["metadata"],
-                        ),
-                        diagnosis_payload=diagnosis_payload,
-                        started_at=start_time,
-                        ended_at=ended_at,
-                        pingmesh_window=pingmesh_query_window,
-                        error=str(exc),
-                        trace_recorder=trace_recorder,
-                    )
-                    diagnosis_payload["trace"] = {
-                        "trace_id": trace_result.trace_id,
-                        "case_id": trace_result.case_id,
-                        "worker": trace_result.worker,
-                        "atif_path": trace_result.atif_path,
-                    }
-                except Exception:
-                    logger.debug("failed to persist failed agent runtime trace", exc_info=True)
-            diagnosis_payload["metadata"] = _strip_runtime_trace_metadata(diagnosis_payload["metadata"])
-            return diagnosis_payload
-
-        findings = dict(diagnosis.findings or {})
-        location = findings.get("location") or {}
-        if not isinstance(location, dict):
-            location = {}
-        ended_at = datetime.now(UTC)
-        metadata = dict(diagnosis.metadata or {})
-        recorder_metrics = trace_recorder.metrics()
-        for key in ("input_tokens", "output_tokens", "total_tokens", "llm_call_count"):
-            if recorder_metrics.get(key):
-                metadata[key] = recorder_metrics[key]
-        recorded_tool_calls = trace_recorder.tool_calls()
-        diagnosis_payload = {
-            "success": diagnosis.success,
-            "verdict": diagnosis.verdict,
-            "fault_type": findings.get("fault_type") or metadata.get("fault_type"),
-            "location": {
-                key: value
-                for key, value in {
-                    "device": location.get("device") or findings.get("device"),
-                    "interface": location.get("interface") or findings.get("interface"),
-                }.items()
-                if value is not None
-            },
-            "evidence": list(findings.get("evidence") or []),
-            "confidence": float(diagnosis.confidence or 0.0),
-            "reasoning": diagnosis.reasoning,
-            "tool_calls": recorded_tool_calls or list(metadata.get("tool_calls") or []),
-            "time_taken_seconds": max(0.0, (ended_at - start_time).total_seconds()),
-            "metadata": metadata,
-        }
-        if not diagnosis.success:
-            diagnosis_payload["error"] = diagnosis.reasoning or "agent diagnosis failed"
+            diagnosis = SimpleNamespace(
+                agent_name=getattr(handle, "name", "agent"),
+                success=False,
+                findings={"error": str(exc)},
+                metadata=diagnosis_payload["metadata"],
+            )
+        else:
+            ended_at = datetime.now(UTC)
+            output = AgentOutput.from_diagnosis(
+                diagnosis,
+                merge_location_fields=True,
+                metadata_evidence=False,
+                findings_tool_calls=False,
+                time_taken_seconds=max(0.0, (ended_at - start_time).total_seconds()),
+            )
+            recorder_metrics = trace_recorder.metrics()
+            for key in ("input_tokens", "output_tokens", "total_tokens", "llm_call_count"):
+                if recorder_metrics.get(key):
+                    output.metadata[key] = recorder_metrics[key]
+            output.tool_calls = trace_recorder.tool_calls() or output.tool_calls
+            diagnosis_payload = {"success": diagnosis.success, **vars(output)}
+            if not diagnosis.success:
+                diagnosis_payload["error"] = diagnosis.reasoning or "agent diagnosis failed"
         if trace_writer is not None:
             try:
                 trace_result = trace_writer.write_case_trace(
@@ -226,6 +178,7 @@ def build_runtime_diagnosis_callback(
                     ended_at=ended_at,
                     pingmesh_window=pingmesh_query_window,
                     trace_recorder=trace_recorder,
+                    error=diagnosis_payload.get("error"),
                 )
                 diagnosis_payload["trace"] = {
                     "trace_id": trace_result.trace_id,

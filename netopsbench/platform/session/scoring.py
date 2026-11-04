@@ -21,7 +21,7 @@ def diagnosis_to_agent_output(diagnosis: dict[str, Any] | None) -> AgentOutput:
             metadata={"final_status": "diagnosis_unavailable", "error": error},
         )
     return AgentOutput(
-        verdict=diagnosis.get("verdict", "network_healthy"),
+        verdict=diagnosis.get("verdict") or "inconclusive",
         fault_type=diagnosis.get("fault_type"),
         location=diagnosis.get("location") or {},
         evidence=diagnosis.get("evidence") or [],
@@ -48,13 +48,13 @@ def score_scenario_episode(
     if not episode_info:
         return scored_results
     testcase_id = f"{scenario.scenario_id}:{episode_info.get('episode_id', 'unknown')}"
-    ground_truth = (
-        {} if episode_info.get("fault_type") == "none" else build_episode_ground_truth(episode_info, topology_dir)
-    )
     persisted_evaluation = episode_result.get("evaluation_result")
     if isinstance(persisted_evaluation, dict):
         eval_result = EvaluationResult(**persisted_evaluation)
     else:
+        ground_truth = (
+            {} if episode_info.get("fault_type") == "none" else build_episode_ground_truth(episode_info, topology_dir)
+        )
         agent_output = diagnosis_to_agent_output(episode_result.get("diagnosis"))
         eval_result = evaluator.evaluate(agent_output, ground_truth, testcase_id)
     eval_result.details["difficulty"] = scenario_difficulty

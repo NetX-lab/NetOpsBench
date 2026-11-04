@@ -58,7 +58,6 @@ class AnomalyDetector(DetectorIngestionMixin, DetectorQueryMixin, DetectorCovera
         self.token = token
         self.org = org
         self.bucket = bucket
-        self.client_to_leaf: dict[str, str] = {}
         self.loss_pct_threshold = float(loss_pct_threshold)
         self.loss_pct_delta = float(loss_pct_delta)
         self._pingmesh_clients: list[str] = []
@@ -66,13 +65,14 @@ class AnomalyDetector(DetectorIngestionMixin, DetectorQueryMixin, DetectorCovera
             raise ValueError("Canonical topology_metadata is required for Pingmesh anomaly detection")
         manifest = coerce_topology_manifest(topology_metadata)
         self.topology_id = topology_id or manifest.topology_id
-        projected_topology = manifest.to_agent_topology()
+        self.client_to_leaf = {
+            client.name: client.attached_switch for client in manifest.clients() if client.attached_switch
+        }
         self._pingmesh_clients = [device.name for device in manifest.clients()]
         self._client_addresses = {device.name: device.data_ip for device in manifest.clients()}
         self._pingmesh_plan = manifest.require_pingmesh_plan()
         self._compile_coverage_expectations()
         self.plan_id = self._pingmesh_plan.settings.plan_id
-        self._load_topology_metadata(projected_topology)
 
     def _anomaly_to_dict(self, anomaly: Anomaly) -> dict:
         return asdict(anomaly)

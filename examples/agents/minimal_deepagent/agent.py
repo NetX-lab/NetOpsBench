@@ -30,7 +30,6 @@ Dependencies (install with ``pip install deepagents langchain-openai langchain-m
 
 from __future__ import annotations
 
-import asyncio
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -44,7 +43,6 @@ from netopsbench.models.profiles import default_experiment_profile
 from netopsbench.platform.scenario.timing import agent_cleanup_timing
 from netopsbench.platform.toolkit._core.control import diagnosis_budget_scope
 from netopsbench.platform.toolkit.mcp.session_server import session_mcp
-from netopsbench.platform.utils.control import finish_cleanup
 from netopsbench.sdk.agents import DiagnosisResult
 from netopsbench.sdk.mcp import builtin_mcp_server_config
 
@@ -140,8 +138,7 @@ class MinimalDeepAgent:
             )
 
         repo_root = Path(__file__).resolve().parents[3]
-        worker_env = context.metadata.get("worker_env") if context.metadata else None
-        server_config = self.mcp_server_config or builtin_mcp_server_config(workspace=repo_root, env=worker_env)
+        server_config = self.mcp_server_config
         exit_stack = AsyncExitStack()
         trace_callback = _langchain_trace_callback(context)
         tool_calls: list[dict[str, Any]] = []
@@ -158,6 +155,8 @@ class MinimalDeepAgent:
                         "headers": {"Authorization": f"Bearer {endpoint['token']}"},
                     }
                 }
+            if server_config is None:
+                server_config = builtin_mcp_server_config(workspace=repo_root)
             mcp_tools = await _connect_mcp_tools(exit_stack, server_config)
 
             llm = self._provider.build_llm(
@@ -209,9 +208,8 @@ class MinimalDeepAgent:
             )
         finally:
             with agent_cleanup_timing():
-                _, cancelled = await finish_cleanup(exit_stack.aclose())
-                if cancelled:
-                    raise asyncio.CancelledError
+                # MCP's AnyIO scopes must exit on the task that entered them.
+                await exit_stack.aclose()
 
     async def aclose(self) -> None:
         return None

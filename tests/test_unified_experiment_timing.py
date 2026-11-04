@@ -38,7 +38,10 @@ def test_observation_is_one_capture_with_analysis_slices():
     captures = []
     analyzed = []
     runner = SimpleNamespace(
-        timings=PhaseTimings(), observation_timeout_seconds=60, _inject_fault=lambda _: {"success": True}
+        timings=PhaseTimings(),
+        observation_timeout_seconds=60,
+        _inject_fault=lambda _: {"success": True},
+        _offer_healthy_window=lambda observation: None,
     )
     runner._capture_observation_window = lambda duration, name: (
         captures.append((duration, name))
@@ -122,6 +125,10 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
 
     clock = [0.0]
     runner = object.__new__(ScenarioExecutor)
+    runner.begin_case()
+    runner.post_recovery_wait_seconds = 0
+    runner.traffic_controller = None
+    runner.runtime_worker = None
     runner.injector = SimpleNamespace(active_faults=[{"type": "link_down"}])
     runner.scale_registry = SimpleNamespace(
         get=lambda _: SimpleNamespace(experiment=SimpleNamespace(recovery_timeout_seconds=1))
@@ -141,6 +148,70 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
     )
     assert result["success"] is False
     assert result["status"] == "recovery_timeout"
+
+
+def test_recovery_steps_accumulate_retries_without_resetting_budget(monkeypatch):
+    import netopsbench.platform.scenario.timing as module
+    from netopsbench.platform.utils import control
+    from netopsbench.platform.utils.control import current_operation_control
+
+    clock = [0.0]
+    monkeypatch.setattr(module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
+    timings = PhaseTimings()
+    with timings.measure("recovery", timeout_seconds=120):
+        deadline = current_operation_control().deadline
+        with pytest.raises(RuntimeError), timings.measure_step("recovery", "health_check"):
+            clock[0] += 3
+            raise RuntimeError("not yet healthy")
+        with timings.measure_step("recovery", "health_check"):
+            assert current_operation_control().deadline == deadline
+            clock[0] += 5
+        with timings.measure_step("recovery", "window_wait"):
+            clock[0] += 42
+        with timings.measure_step("recovery", "window_query") as query:
+            query["ingestion"] = {"baseline": {"query_seconds": 9}, "current": {"query_seconds": 8}}
+            clock[0] += 10
+    recovery = timings.phases["recovery"]
+    assert recovery["actual_seconds"] == 60
+    assert recovery["steps"]["health_check"] == {
+        "status": "completed",
+        "actual_seconds": 8,
+        "calls": 2,
+        "failed_calls": 1,
+        "operations": {},
+    }
+    assert recovery["steps"]["window_query"]["actual_seconds"] == 10
+    assert sum(step["actual_seconds"] for step in recovery["steps"].values()) == recovery["actual_seconds"]
+
+
+def test_recovery_window_and_ingestion_timings_are_separate(monkeypatch):
+    from netopsbench.platform.scenario import observation, timing
+
+    clock = [0.0]
+    monkeypatch.setattr(timing, "monotonic", lambda: clock[0])
+    timings = PhaseTimings()
+    reference = {"start_time": "2026-01-01T00:00:00Z", "end_time": "2026-01-01T00:00:42Z"}
+
+    def capture(*args, **kwargs):
+        clock[0] += 42
+        return reference
+
+    def analyze(*args, **kwargs):
+        clock[0] += 10
+        return {
+            "_baseline_coverage": {"ingestion": {"query_requests": 21}},
+            "_coverage_audit": {"ingestion": {"query_requests": 21}},
+        }
+
+    monkeypatch.setattr(observation, "capture_observation_window", capture)
+    monkeypatch.setattr(observation, "analyze_observation_windows", analyze)
+    with timings.measure("recovery"):
+        observation.wait_and_observe(SimpleNamespace(), 42, baseline_window=reference, timings=timings)
+    steps = timings.phases["recovery"]["steps"]
+    assert steps["window_wait"]["actual_seconds"] == 42
+    assert steps["window_query"]["actual_seconds"] == 10
+    assert steps["window_query"]["ingestion"] == {"baseline": {"query_requests": 21}, "current": {"query_requests": 21}}
 
 
 def test_total_diagnosis_timeout_cancels_and_measures_cleanup():
@@ -367,7 +438,10 @@ def test_healthy_and_fault_cases_share_the_same_public_window_shape():
     shapes = []
     for fault in ("none", "link_down"):
         runner = SimpleNamespace(
-            timings=PhaseTimings(), observation_timeout_seconds=60, _inject_fault=lambda _: {"success": True}
+            timings=PhaseTimings(),
+            observation_timeout_seconds=60,
+            _inject_fault=lambda _: {"success": True},
+            _offer_healthy_window=lambda observation: None,
         )
         runner._capture_observation_window = lambda duration, name: {
             "start_time": "2026-10-24T00:00:00Z",

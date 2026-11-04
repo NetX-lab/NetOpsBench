@@ -37,6 +37,41 @@ class AgentOutput:
     #   metadata["input_tokens"]  -> int: prompt tokens consumed by the LLM
     #   metadata["output_tokens"] -> int: completion tokens produced by the LLM
 
+    @classmethod
+    def from_diagnosis(
+        cls,
+        diagnosis,
+        *,
+        merge_location_fields=False,
+        metadata_evidence=True,
+        findings_tool_calls=True,
+        time_taken_seconds=None,
+    ) -> AgentOutput:
+        """Normalize shared fields while preserving each entrypoint's precedence."""
+        findings, metadata = dict(diagnosis.findings or {}), dict(diagnosis.metadata or {})
+        raw_location = findings.get("location")
+        location = raw_location if isinstance(raw_location, dict) else {}
+        if merge_location_fields:
+            location = {key: location.get(key) or findings.get(key) for key in ("device", "interface")}
+            location = {key: value for key, value in location.items() if value is not None}
+        elif not location:
+            location = {key: findings[key] for key in ("device", "interface") if findings.get(key) is not None}
+        return cls(
+            verdict=diagnosis.verdict,
+            fault_type=findings.get("fault_type") or metadata.get("fault_type"),
+            location=location,
+            evidence=list(findings.get("evidence") or (metadata.get("evidence") if metadata_evidence else None) or []),
+            confidence=float(diagnosis.confidence or 0.0),
+            reasoning=diagnosis.reasoning,
+            tool_calls=list(
+                metadata.get("tool_calls") or (findings.get("tool_calls") if findings_tool_calls else None) or []
+            ),
+            time_taken_seconds=float(
+                (metadata.get("time_taken_seconds", 0.0) if time_taken_seconds is None else time_taken_seconds) or 0.0
+            ),
+            metadata=metadata,
+        )
+
     def to_dict(self) -> dict:
         return asdict(self)
 

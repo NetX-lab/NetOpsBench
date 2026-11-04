@@ -28,6 +28,9 @@ class StubExecutor:
         self.calls: list[str] = []
         self.baseline_windows: list[dict[str, Any] | None] = []
 
+    def _offer_healthy_window(self, observation):
+        self.healthy_candidate = observation
+
     def _inject_fault(self, episode):
         self.calls.append("inject")
         return {"success": self._injection_success, "fault_type": episode.fault_type}
@@ -82,6 +85,7 @@ def test_healthy_episode_is_observed_without_fault_actions():
     )
 
     assert result["state"] == "active"
+    assert executor.healthy_candidate is result["observations"]
     assert executor.calls == ["capture:full:2", "merge"]
 
 

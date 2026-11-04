@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from netopsbench.models.profiles import get_scale_profile
+from netopsbench.platform.faults.defaults import LATENCY_MS
 from netopsbench.platform.incident.context import extract_episode_pingmesh_query_window
 from netopsbench.platform.observability.routes import next_hops
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
@@ -284,12 +285,24 @@ def validate_effect(executor, episode, episode_result, baseline, current):
         "mtu_mismatch",
     }:
         interface = executor.injector._iface.resolve_sonic(episode.target_interface)
-        details = toolkit.get_device_interfaces(
-            root, interface=interface, include_tc=fault in {"packet_loss", "packet_corruption", "high_latency"}
-        )
+        details = toolkit.get_device_interfaces(root, interface=interface)
         evidence["interface"] = details.to_dict()
         if not details.success:
             errors.append("Actual interface configuration unavailable")
+        if fault in {"packet_loss", "packet_corruption", "high_latency"}:
+            # Injection state belongs to the private effect audit, never to
+            # AgentToolkit or the model-facing diagnostic registry.
+            linux_interface = executor.injector._iface.resolve_linux(interface)
+            try:
+                qdisc = executor.injector._cmd.docker_exec(
+                    executor.injector.container_names[root],
+                    ["tc", "-s", "-j", "qdisc", "show", "dev", linux_interface],
+                )
+                if qdisc.returncode:
+                    raise RuntimeError(qdisc.stderr or "qdisc collection failed")
+                evidence["qdisc"] = {"linux_interface": linux_interface, "rows": json.loads(qdisc.stdout)}
+            except Exception as exc:
+                errors.append(f"Private qdisc collection failed: {exc}")
         if fault == "interface_ip_misconfig" and details.success:
             addresses = details.data.get("addresses", {}).get(interface, [])
             if injection.get("evidence", {}).get("fault_address") not in addresses:
@@ -316,7 +329,7 @@ def validate_effect(executor, episode, episode_result, baseline, current):
             if fault == "high_latency":
                 observed = any(
                     (row.get("fault", {}).get("rtt_max_ms") or 0) - (row.get("baseline", {}).get("rtt_max_ms") or 0)
-                    >= float(p.get("latency_ms", 120)) / 2
+                    >= float(p.get("latency_ms", LATENCY_MS)) / 2
                     for row in affected_rows
                 )
             else:

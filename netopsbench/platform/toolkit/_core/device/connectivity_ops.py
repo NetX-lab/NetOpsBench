@@ -65,6 +65,16 @@ class ConnectivityOpsMixin:
                 cmd.extend(["-M", "do"])
             cmd.append(safe_dst_ip)
             result = self._docker_exec(container, cmd, timeout=30)
+            # Docker/OCI execution failures are not ping observations. iputils
+            # itself uses 1 for unanswered probes and 2 for local errors (e.g.
+            # "message too long, mtu=..."); retain those diagnostic messages.
+            if result.returncode not in {0, 1, 2} or (
+                result.returncode
+                and not result.stdout
+                and result.stderr
+                and not result.stderr.lstrip().startswith("ping:")
+            ):
+                return ToolResult(success=False, data=None, error="Probe execution unavailable")
             return ToolResult(
                 success=True,
                 data={

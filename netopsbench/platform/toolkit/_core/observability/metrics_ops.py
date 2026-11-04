@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from netopsbench.platform.observability.influxdb import query_flux
 from netopsbench.platform.utils.interface_names import resolve_interface_metric_identities
 
 from ..common import ToolResult
-from ..device.interface_parsers import get_active_interface_names, get_live_interface_snapshot
+from ..device.interface_parsers import active_interface_names, select_live_interface
 from ..device.telemetry_parsers import (
     get_recent_influx_interface_identities,
     parse_influx_metric_rows,
@@ -31,6 +32,8 @@ class MetricsOpsMixin:
             safe_device = self._validate_device_name(device)
             safe_interface = self._validate_interface_name(interface)
             safe_minutes = max(1, min(int(time_range_minutes), 24 * 60))
+            scope = self._resolve_pingmesh_time_scope(safe_minutes)
+            time_scope = {key: value for key, value in scope.items() if key != "range_clause"}
             safe_metric_type = (metric_type or "all").lower()
             safe_view = (view or "summary").lower()
             safe_max_points = max(1, min(int(max_points), 2000))
@@ -62,8 +65,9 @@ class MetricsOpsMixin:
             name_filter = " or ".join(identity_clauses)
             query = f"""
 from(bucket: "{self.influxdb_bucket}")
-  |> range(start: -{safe_minutes}m)
+{scope["range_clause"]}
   |> filter(fn: (r) => r._measurement == "interfaces")
+  |> filter(fn: (r) => r.topology_id == {json.dumps(self.topology_id)})
   |> filter(fn: (r) => r.source == "{safe_device}")
   |> filter(fn: (r) => {name_filter})
   |> filter(fn: (r) => {field_filter})
@@ -82,6 +86,7 @@ from(bucket: "{self.influxdb_bucket}")
                         "device": safe_device,
                         "interface": safe_interface,
                         "time_range_minutes": safe_minutes,
+                        "time_scope": time_scope,
                         "metric_type": safe_metric_type,
                         "view": safe_view,
                         "metrics": result.text,
@@ -94,9 +99,11 @@ from(bucket: "{self.influxdb_bucket}")
                 observed_interfaces = sorted(
                     {str(item.get("name")).strip() for item in observed_identities if item.get("name")}
                 )
-                active_interfaces = get_active_interface_names(self, safe_device)
+                live = self.get_device_interfaces(safe_device, format="structured")
+                interfaces = live.data.get("interfaces", []) if live.success else []
+                active_interfaces = active_interface_names(interfaces)
                 missing_active_interfaces = [name for name in active_interfaces if name not in observed_interfaces]
-                live_snapshot = get_live_interface_snapshot(self, safe_device, safe_interface)
+                live_snapshot = select_live_interface(interfaces, safe_interface)
                 warning_parts: list[str] = []
                 if observed_interfaces:
                     warning_parts.append(
@@ -122,12 +129,14 @@ from(bucket: "{self.influxdb_bucket}")
                         "device": safe_device,
                         "interface": safe_interface,
                         "time_range_minutes": safe_minutes,
+                        "time_scope": time_scope,
                         "metric_type": safe_metric_type,
                         "view": safe_view,
                         "summary": {},
                         "series": {},
                         "warning": warning,
                         "current_snapshot": live_snapshot,
+                        "snapshot_collected_at": live.data.get("collected_at") if live.success else None,
                         "fallback_source": "live_cli_snapshot" if live_snapshot else None,
                         "observed_interfaces": observed_interfaces,
                         "active_interfaces": active_interfaces,
@@ -157,6 +166,7 @@ from(bucket: "{self.influxdb_bucket}")
                         "device": safe_device,
                         "interface": safe_interface,
                         "time_range_minutes": safe_minutes,
+                        "time_scope": time_scope,
                         "metric_type": safe_metric_type,
                         "view": safe_view,
                         "summary": summary,
@@ -173,6 +183,7 @@ from(bucket: "{self.influxdb_bucket}")
                     "device": safe_device,
                     "interface": safe_interface,
                     "time_range_minutes": safe_minutes,
+                    "time_scope": time_scope,
                     "metric_type": safe_metric_type,
                     "view": safe_view,
                     "summary": summary,

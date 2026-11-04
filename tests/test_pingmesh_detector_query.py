@@ -24,24 +24,25 @@ class _Detector(DetectorQueryMixin):
         self.client_to_leaf: dict[str, str] = {}
 
 
-def test_topology_mapping_uses_canonical_attached_switch_for_fat_tree():
-    detector = _Detector(["client1"])
+@pytest.mark.parametrize("scale", ["xs", "fat-tree-k8"])
+def test_topology_mapping_uses_canonical_attached_switch(tmp_path, scale):
+    from netopsbench.platform.pingmesh.detector import AnomalyDetector
+    from netopsbench.platform.topology.generator import generate_topology
 
-    detector._load_topology_metadata(
-        {
-            "devices": {
-                "clients": [
-                    {
-                        "name": "client1",
-                        "attached_switch": "edge1",
-                        "edge": "edge1",
-                    }
-                ]
-            }
-        }
-    )
+    metadata = generate_topology(scale, str(tmp_path))["metadata"]
+    detector = AnomalyDetector("http://influxdb", "token", "org", "bucket", topology_metadata=metadata)
+    clients = [device for device in metadata["devices"] if device["role"] == "client"]
+    assert detector.client_to_leaf == {client["name"]: client["attached_switch"] for client in clients}
+    assert detector.client_to_leaf
+    if scale == "fat-tree-k8":
+        roles = {device["name"]: device["role"] for device in metadata["devices"]}
+        assert {roles[switch] for switch in detector.client_to_leaf.values()} == {"edge"}
+    from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
-    assert detector.client_to_leaf == {"client1": "edge1"}
+    toolkit = AgentToolkit(topology_metadata=metadata)
+    assert toolkit._bgp_device_roles() == {
+        device["name"]: device["role"] for device in metadata["devices"] if device["role"] != "client"
+    }
 
 
 def test_snapshot_query_uses_bounded_pushdown_source_shards(monkeypatch):
@@ -72,6 +73,43 @@ def test_snapshot_query_uses_bounded_pushdown_source_shards(monkeypatch):
     assert all("contains(" not in query for query in queries)
     assert all('r.topology_id == "runtime-topology"' in query for query in queries)
     assert sorted(len(re.findall(r'r\.src_name == "client\d+"', query)) for query in queries) == [1, 16, 16, 16, 16]
+    assert result.request_count == 5
+
+
+def test_k18_two_closed_windows_require_42_first_pass_requests(monkeypatch):
+    from netopsbench.platform.pingmesh._detector_ingestion import DetectorIngestionMixin
+
+    class ClosedDetector(DetectorIngestionMixin, _Detector):
+        _pingmesh_plan = SimpleNamespace(settings=SimpleNamespace(coverage_epoch_seconds=36))
+
+        def _boundary_padding_seconds(self):
+            return 6
+
+        def _slice_rows(self, rows, start, end):
+            return rows
+
+        def summarize_coverage(self, rows):
+            return {"coverage_status": "complete"}
+
+        def audit_ingestion(self, *args):
+            return {"status": "ready"}
+
+    requests = []
+
+    def query(*args, **kwargs):
+        requests.append(args[3])
+        return SimpleNamespace(status="ok", text="", error=None)
+
+    monkeypatch.setattr(_detector_query, "query_flux", query)
+    detector = ClosedDetector([f"client{i}" for i in range(1, 325)])
+    for start, end in [
+        ("2026-01-01T00:00:00Z", "2026-01-01T00:00:42Z"),
+        ("2026-01-01T00:01:00Z", "2026-01-01T00:01:42Z"),
+    ]:
+        snapshot, coverage = detector._query_covered_snapshot(start, end)
+        assert snapshot.status == "ok"
+        assert coverage["ingestion"]["query_requests"] == 21
+    assert len(requests) == 42
 
 
 def test_snapshot_query_merges_every_shard_in_stable_order(monkeypatch):

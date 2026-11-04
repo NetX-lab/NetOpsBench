@@ -1,11 +1,11 @@
-"""Bounded, phase-scoped route snapshots and uniformly derived public facts."""
+"""Private, phase-scoped route snapshots for effect and recovery validation."""
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -119,99 +119,10 @@ def collect_routes(manifest, *, cancel_event=None, deadline=None):
     try:
         for device in manifest.switches():
             control.remaining()
-            futures.append(pool.submit(probe, device))
+            futures.append(pool.submit(copy_context().run, probe, device))
         for future in futures:
             name, row = future.result(timeout=control.remaining())
             nodes[name] = row
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     return {"nodes": nodes, "collected_at": datetime.now(UTC).isoformat()}
-
-
-def route_facts(baseline, current, manifest):
-    """No episode, injection receipt or answer participates in public discovery."""
-    networks = {str(ipaddress.ip_network(f"{client.data_ip}/30", strict=False)) for client in manifest.clients()}
-    client_addresses = {
-        int(ipaddress.ip_address(client.data_ip)): str(ipaddress.ip_network(f"{client.data_ip}/30", strict=False))
-        for client in manifest.clients()
-    }
-    changes, collection_errors = [], []
-    for name in sorted(set(baseline["nodes"]) | set(current["nodes"])):
-        before, after = baseline["nodes"].get(name, {}), current["nodes"].get(name, {})
-        if before.get("error") or after.get("error"):
-            collection_errors.append({"device": name, "error": after.get("error") or before.get("error")})
-            continue
-
-        def routes(row):
-            return {r.get("dst"): r for r in row.get("fib", []) if r.get("dst") in networks}
-
-        old, new = routes(before), routes(after)
-        for prefix in sorted(set(old) | set(new)):
-            old_count, new_count = (
-                len(next_hops(old[prefix])) if prefix in old else 0,
-                len(next_hops(new[prefix])) if prefix in new else 0,
-            )
-            if old_count and new_count < old_count:
-                changes.append(
-                    {
-                        "device": name,
-                        "prefix": prefix,
-                        "event": "prefix_missing" if not new_count else "next_hops_reduced",
-                        "next_hops_before": old_count,
-                        "next_hops_after": new_count,
-                    }
-                )
-        # Host routes can override a still-present healthy /30. Report these
-        # actual FIB changes uniformly, including cases with normal Pingmesh.
-        previous = {r.get("dst"): r for r in before.get("fib", [])}
-        for route in after.get("fib", []):
-            dst = route.get("dst")
-            if dst in {None, "default"}:
-                continue
-            network = ipaddress.ip_network(dst, strict=False)
-            if network.prefixlen <= 30:
-                continue
-            for address in network:
-                prefix = client_addresses.get(int(address))
-                if prefix is None:
-                    continue
-                earlier = previous.get(dst, old.get(prefix, {}))
-                if previous.get(dst) is not None and (
-                    earlier.get("type", "unicast") == route.get("type", "unicast")
-                    and {(h.get("gateway"), h.get("dev")) for h in next_hops(earlier)}
-                    == {(h.get("gateway"), h.get("dev")) for h in next_hops(route)}
-                ):
-                    continue
-                changes.append(
-                    {
-                        "device": name,
-                        "prefix": prefix,
-                        "event": "more_specific_route_changed",
-                        "matched_prefix": dst,
-                        "route_type": route.get("type", "unicast"),
-                        "next_hops_before": len(next_hops(earlier)),
-                        "next_hops_after": len(next_hops(route)),
-                    }
-                )
-        old_peers = {row["neighbor"]: row for row in before.get("bgp", [])}
-        for phase, snapshot in (("baseline", before), ("current", after)):
-            if snapshot.get("bgp_collection_ok") is False:
-                collection_errors.append(
-                    {"device": name, "source": "bgp", "phase": phase, "error": "BGP table collection failed"}
-                )
-        if before.get("bgp_collection_ok") is False or after.get("bgp_collection_ok") is False:
-            continue
-        for row in after.get("bgp", []):
-            old_row = old_peers.get(row["neighbor"], {})
-            old_count, new_count = old_row.get("prefixes_received"), row.get("prefixes_received")
-            if old_count is not None and new_count is not None and old_count != new_count:
-                changes.append(
-                    {
-                        "device": name,
-                        "peer": row["neighbor"],
-                        "event": "prefix_count_changed",
-                        "prefixes_before": old_count,
-                        "prefixes_after": new_count,
-                    }
-                )
-    return {"changes": changes, "collection_errors": collection_errors, "collected_at": current["collected_at"]}

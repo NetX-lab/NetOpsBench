@@ -447,14 +447,14 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
             if is_validation
             else {
                 "name": "baseline",
-                "start_time": "current-start",
-                "end_time": "current-end",
+                "start_time": "2026-01-01T00:00:00Z",
+                "end_time": "2026-01-01T00:00:07Z",
                 "duration_seconds": 7,
             }
         )
         return {
-            "start_time": "current-start",
-            "end_time": "current-end",
+            "start_time": "2026-01-01T00:00:00Z",
+            "end_time": "2026-01-01T00:00:07Z",
             "duration_seconds": total_duration_seconds,
             "pingmesh_metrics": {
                 "summary": {

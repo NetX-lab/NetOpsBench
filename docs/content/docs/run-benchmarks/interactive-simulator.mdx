@@ -49,9 +49,9 @@ with NetOpsBench(workspace=".") as bench:
         incident.close()  # fault recovery occurs once
 ```
 
-The optional localhost HTTP service accepts opaque case IDs and the same typed
-tool and diagnosis actions. Install `netopsbench[simulator]` and run
-`netopsbench-simulator --help` for its scenario-loading options.
+The simulator is a local Python SDK. The standalone simulator HTTP service has
+been removed. Per-case authenticated HTTP MCP for diagnostic agents remains
+available and uses the same tool registry.
 
 `max_agent_seconds` is checked at action boundaries. It prevents a session
 from accepting additional tool or submit actions after its deadline; it does

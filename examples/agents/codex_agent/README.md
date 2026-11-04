@@ -32,7 +32,8 @@ with NetOpsBench(workspace=".") as bench:
     ).wait(raise_on_failure=True)
 ```
 
-Defaults are model `gpt-6.1-sol`, effort `xhigh`, a 600-second diagnosis deadline,
+Defaults are model `gpt-6.1-sol`, effort `xhigh`, explicit Standard service
+(`service_tier="default"`, Fast and Ultrafast disabled), a 600-second diagnosis deadline,
 40 MCP calls, 2 CPU, 2 GiB RAM and 512 MiB scratch space. Model, effort, CLI
 version, image, deadline, MCP budget, auth store and trace directory are explicit
 constructor options. DeepAgent retains its existing provider configuration and

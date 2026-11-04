@@ -8,7 +8,7 @@ import pytest
 
 from netopsbench.platform.toolkit._core.control import tool_deadline_scope
 from netopsbench.platform.toolkit._core.device.validators import docker_exec
-from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, validate_tool_call
+from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_schemas, validate_tool_call
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 from netopsbench.platform.topology.clos_builder import build_clos_plan
 from netopsbench.platform.topology.config import config_for_scale
@@ -42,6 +42,53 @@ def test_acl_collection_failure_is_not_an_empty_healthy_ruleset(toolkit, monkeyp
     assert len(calls) == 3
     assert len(result.data["collection_errors"]) == 3
     assert result.data["collected_at"]
+
+
+def test_interface_schema_does_not_expose_injection_state():
+    schema = next(tool for tool in tool_schemas() if tool["name"] == "get_device_interfaces")
+    assert "include_tc" not in schema["input_schema"]["properties"]
+    assert validate_tool_call("get_device_interfaces", {"device": "leaf1"})
+    assert not validate_tool_call(
+        "get_device_interfaces", {"device": "leaf1", "interface": "Ethernet0", "include_tc": True}
+    )
+
+
+@pytest.mark.parametrize("interface", [None, "Ethernet0"])
+def test_legacy_tc_request_fails_before_device_access(toolkit, monkeypatch, interface):
+    def unexpected(*args, **kwargs):
+        pytest.fail("A rejected injection-state query must not access the device")
+
+    monkeypatch.setattr(toolkit, "_docker_exec", unexpected)
+    with pytest.raises(TypeError, match="include_tc"):
+        toolkit.get_device_interfaces("leaf1", interface=interface, include_tc=True)
+
+
+@pytest.mark.parametrize("format", ["summary", "structured", "raw", "both"])
+def test_interface_views_preserve_observations_without_tc(toolkit, monkeypatch, format):
+    def run(container, args, timeout):
+        if args == ["ip", "-j", "-4", "addr", "show"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=json.dumps([{"ifname": "eth1", "addr_info": [{"local": "192.168.1.2", "prefixlen": 30}]}]),
+            )
+        assert args == ["ip", "-s", "link", "show"]
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="2: eth1: <UP> mtu 1500 qdisc netem state UP\n"
+            "    RX: bytes packets errors dropped\n    1000 10 2 1\n",
+        )
+
+    monkeypatch.setattr(toolkit, "_docker_exec", run)
+    result = toolkit.get_device_interfaces("client1", format=format)
+    assert result.success
+    assert result.data["addresses"] == {"eth1": ["192.168.1.2/30"]}
+    assert "qdisc" not in json.dumps(result.data)
+    assert "netem" not in json.dumps(result.data)
+    assert result.data["collected_at"]
+    if format in {"summary", "structured"}:
+        assert result.data["interfaces"][0]["rx_errors"] == 2
 
 
 def test_kernel_fib_has_actual_multipath_and_prefix_filter(toolkit, monkeypatch):

@@ -29,6 +29,7 @@ from netopsbench.platform.traffic.controller import TrafficController
 from netopsbench.platform.traffic.scenario_execution import setup_traffic as _setup_traffic_impl
 from netopsbench.platform.traffic.scenario_execution import stop_traffic as _stop_traffic_impl
 from netopsbench.platform.utils.control import OperationControl, operation_scope
+from netopsbench.platform.utils.measurements import count_operation
 
 from .baseline import BaselineHandoff, RuntimeScope, frr_snapshot, restored_scope_errors, runtime_scope, scope_changes
 from .incident_backend import ExecutorIncidentBackend
@@ -117,7 +118,6 @@ class ScenarioExecutor:
             if minimum_baseline_seconds is None
             else max(0, int(minimum_baseline_seconds))
         )
-        self.timings = PhaseTimings()
         self.post_recovery_wait_seconds = max(
             0,
             int(post_recovery_wait_seconds),
@@ -129,10 +129,21 @@ class ScenarioExecutor:
         self.evaluator = evaluator or Evaluator()
         self.runtime_worker = runtime_worker
         self._baseline_handoff = BaselineHandoff()
-        self._healthy_baseline_candidate: dict | None = None
         self._candidate_paths = None
         self._candidate_scope = None
+        self._traffic_config = None
+        self._pingmesh_runtime_start = None
+        self.begin_case()
+
+    def begin_case(self) -> None:
+        """Reset per-case state without invalidating runtime traffic or baseline handoff."""
+        self.timings = PhaseTimings()
+        self._healthy_baseline_candidate = None
+        self._case_frr_before = None
+        self._case_initial_scope = None
+        self._case_routes = None
         self._case_affected_pairs = []
+        self._case_probe_pairs = []
 
     def _topology_file_stamp(self):
         path = Path(self.topology_dir) / "topology.json"
@@ -172,8 +183,7 @@ class ScenarioExecutor:
 
     def close(self) -> None:
         """Release runtime-owned traffic after the worker or simulator is done."""
-        if handoff := getattr(self, "_baseline_handoff", None):
-            handoff.clear()
+        self._baseline_handoff.clear()
         self._stop_traffic()
 
     def _baseline_scope(self, scenario: ScenarioSpec) -> RuntimeScope | None:
@@ -212,7 +222,13 @@ class ScenarioExecutor:
         baseline_window: dict,
         deadline: float | None = None,
     ) -> dict:
-        return _wait_and_observe_impl(self, duration, baseline_window=baseline_window, deadline=deadline)
+        return _wait_and_observe_impl(
+            self,
+            duration,
+            baseline_window=baseline_window,
+            deadline=deadline,
+            timings=self.timings if self._recovering else None,
+        )
 
     def _capture_baseline_window(self) -> dict:
         return _capture_baseline_window_impl(self, self.minimum_baseline_seconds)
@@ -259,16 +275,20 @@ class ScenarioExecutor:
 
         while attempts == 0 or monotonic() < deadline:
             attempts += 1
-            active_faults = list(getattr(self.injector, "active_faults", []) or [])
+            count_operation("recovery_attempts")
+            active_faults = list(self.injector.active_faults or [])
             recovery_complete = not active_faults and (
                 recovery_results is None or self._recovery_results_succeeded(recovery_results)
             )
             if not recovery_complete:
                 try:
                     recovery_attempted = True
-                    with operation_scope(OperationControl(deadline=deadline)):
+                    with (
+                        self.timings.measure_step("recovery", "fault_restore"),
+                        operation_scope(OperationControl(deadline=deadline)),
+                    ):
                         recovery_results = self._recover_fault()
-                    active_faults = list(getattr(self.injector, "active_faults", []) or [])
+                    active_faults = list(self.injector.active_faults or [])
                     recovery_complete = self._recovery_results_succeeded(recovery_results) and not active_faults
                     if not recovery_complete:
                         errors.append(
@@ -281,67 +301,72 @@ class ScenarioExecutor:
 
             if recovery_complete:
                 if recovery_attempted and recovery_results and not post_recovery_waited:
-                    post_recovery_wait = getattr(self, "post_recovery_wait_seconds", 0)
+                    post_recovery_wait = self.post_recovery_wait_seconds
                     if post_recovery_wait:
-                        self.sleep(min(post_recovery_wait, max(0, deadline - monotonic())))
+                        with self.timings.measure_step("recovery", "post_restore_wait"):
+                            self.sleep(min(post_recovery_wait, max(0, deadline - monotonic())))
                     post_recovery_waited = True
                 convergence_errors: list[str] = []
-                controller = getattr(self, "traffic_controller", None)
-                if controller is not None and (
-                    not bool(controller.active_flows)
-                    or not controller.verify_active_flows(control=OperationControl(deadline=deadline))
-                ):
-                    convergence_errors.append("background traffic is not fully ready")
-                runtime_worker = getattr(self, "runtime_worker", None)
+                controller = self.traffic_controller
+                if controller is not None:
+                    with self.timings.measure_step("recovery", "traffic_check"):
+                        if not bool(controller.active_flows) or not controller.verify_active_flows(
+                            control=OperationControl(deadline=deadline)
+                        ):
+                            convergence_errors.append("background traffic is not fully ready")
+                runtime_worker = self.runtime_worker
                 if runtime_worker is not None:
                     route_snapshot = {"nodes": {}}
-                    convergence_errors.extend(
-                        check_worker_health(
-                            runtime_worker,
-                            scale_registry=self.scale_registry,
-                            all_routing_devices=True,
-                            deadline=deadline,
-                            route_snapshot=route_snapshot,
-                            expected_routes=getattr(self, "_case_routes", None),
+                    with self.timings.measure_step("recovery", "health_check"):
+                        convergence_errors.extend(
+                            check_worker_health(
+                                runtime_worker,
+                                scale_registry=self.scale_registry,
+                                all_routing_devices=True,
+                                deadline=deadline,
+                                route_snapshot=route_snapshot,
+                                expected_routes=self._case_routes,
+                            )
                         )
-                    )
                 if convergence_errors:
                     convergence_pending = True
                     errors.extend(f"post_recovery: {error}" for error in convergence_errors)
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         break
-                    self.sleep(min(float(HEALTH_POLL_INTERVAL_SECONDS), remaining))
+                    with self.timings.measure_step("recovery", "retry_wait"):
+                        self.sleep(min(float(HEALTH_POLL_INTERVAL_SECONDS), remaining))
                     continue
                 validated_baseline = None
                 verified_scope = None
                 config_proof = None
                 if recovery_attempted and baseline_window is not None:
                     try:
-                        if getattr(self, "_case_frr_before", None) is not None:
-                            before = self._case_frr_before
-                            after = frr_snapshot(self, before["device"])
-                            restored = before["running"] == after["running"] and (
-                                before["saved_bytes"] == after["saved_bytes"] or after["saved"] == after["running"]
-                            )
-                            config_proof = {"before": before, "after": after, "restored": restored}
-                            if not restored:
-                                return {
-                                    "success": False,
-                                    "status": "configuration_recovery_failed",
-                                    "configuration_recovery": config_proof,
-                                }
-                        window_scope = self._baseline_scope(scenario) if runtime_worker is not None else None
-                        if runtime_worker is not None and getattr(self, "_case_initial_scope", None) is not None:
-                            changed = restored_scope_errors(
-                                getattr(self, "_case_initial_scope", None), window_scope, scenario, config_proof
-                            )
-                            if changed:
-                                return {
-                                    "success": False,
-                                    "status": "recovery_identity_changed",
-                                    "scope_changes": changed,
-                                }
+                        with self.timings.measure_step("recovery", "configuration_identity"):
+                            if self._case_frr_before is not None:
+                                before = self._case_frr_before
+                                after = frr_snapshot(self, before["device"])
+                                restored = before["running"] == after["running"] and (
+                                    before["saved_bytes"] == after["saved_bytes"] or after["saved"] == after["running"]
+                                )
+                                config_proof = {"before": before, "after": after, "restored": restored}
+                                if not restored:
+                                    return {
+                                        "success": False,
+                                        "status": "configuration_recovery_failed",
+                                        "configuration_recovery": config_proof,
+                                    }
+                            window_scope = self._baseline_scope(scenario) if runtime_worker is not None else None
+                            if runtime_worker is not None and self._case_initial_scope is not None:
+                                changed = restored_scope_errors(
+                                    self._case_initial_scope, window_scope, scenario, config_proof
+                                )
+                                if changed:
+                                    return {
+                                        "success": False,
+                                        "status": "recovery_identity_changed",
+                                        "scope_changes": changed,
+                                    }
                         validation = self._wait_and_observe(
                             int(baseline_window["duration_seconds"]),
                             baseline_window=baseline_window,
@@ -350,13 +375,14 @@ class ScenarioExecutor:
                         if monotonic() >= deadline:
                             raise TimeoutError("Recovery deadline exceeded during observation validation")
                         if runtime_worker is not None and window_scope is not None:
-                            verified_scope = self._baseline_scope(scenario)
-                            if verified_scope is None or scope_changes(window_scope, verified_scope):
-                                return {
-                                    "success": False,
-                                    "status": "recovery_identity_changed",
-                                    "scope_changes": scope_changes(window_scope, verified_scope),
-                                }
+                            with self.timings.measure_step("recovery", "configuration_identity"):
+                                verified_scope = self._baseline_scope(scenario)
+                                if verified_scope is None or scope_changes(window_scope, verified_scope):
+                                    return {
+                                        "success": False,
+                                        "status": "recovery_identity_changed",
+                                        "scope_changes": scope_changes(window_scope, verified_scope),
+                                    }
                     except TimeoutError as exc:
                         errors.append(f"post_recovery_baseline: {exc}")
                         return {
@@ -397,7 +423,8 @@ class ScenarioExecutor:
                 if runtime_worker is not None:
                     from netopsbench.platform.observability.routes import verify_route_recovery
 
-                    route_errors = verify_route_recovery(getattr(self, "_case_routes", None), route_snapshot)
+                    with self.timings.measure_step("recovery", "route_validation"):
+                        route_errors = verify_route_recovery(self._case_routes, route_snapshot)
                     if route_errors:
                         return {"success": False, "status": "route_recovery_failed", "errors": route_errors}
                     result["route_recovery"] = route_snapshot
@@ -416,7 +443,8 @@ class ScenarioExecutor:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 break
-            self.sleep(min(float(HEALTH_POLL_INTERVAL_SECONDS), remaining))
+            with self.timings.measure_step("recovery", "retry_wait"):
+                self.sleep(min(float(HEALTH_POLL_INTERVAL_SECONDS), remaining))
 
         return {
             "success": False,
@@ -428,7 +456,7 @@ class ScenarioExecutor:
             "attempts": attempts,
             "duration_seconds": max(0.0, monotonic() - started),
             "timeout_seconds": timeout_seconds,
-            "remaining_faults": len(getattr(self.injector, "active_faults", []) or []),
+            "remaining_faults": len(self.injector.active_faults or []),
             "errors": list(dict.fromkeys(errors)),
         }
 
@@ -469,8 +497,7 @@ class ScenarioExecutor:
         logger.info("# Episode: 1")
         logger.info(f"{'#' * 70}")
 
-        self.timings = PhaseTimings()
-        self._case_frr_before = None
+        self.begin_case()
         case_started = monotonic()
         scenario_result: dict[str, Any] = {
             "fault_catalog_version": scenario.metadata.get("fault_catalog_version"),
@@ -486,7 +513,6 @@ class ScenarioExecutor:
         }
 
         incident = None
-        self._healthy_baseline_candidate = None
         backend = ExecutorIncidentBackend(self)
         try:
             from netopsbench.platform.incident.contracts import (

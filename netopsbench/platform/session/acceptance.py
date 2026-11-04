@@ -37,7 +37,7 @@ from netopsbench.platform.runtime.resources import (
 from netopsbench.platform.runtime.toolchain import runtime_backend_identity
 from netopsbench.platform.scenario.generator import generate, load_topology, load_yaml
 from netopsbench.platform.scenario.parser import parse_scenario_file
-from netopsbench.platform.session.dispatch import ExecutionControl
+from netopsbench.platform.session.dispatch import ExecutionControl, is_recovered_case_failure
 from netopsbench.platform.topology.config import config_for_scale
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.platform.topology.topology_utils import load_topology_manifest
@@ -121,21 +121,24 @@ def bgp_observation(worker, manifest, output: Path, *, control: OperationControl
     }
 
 
-def completed_case_ids(entry: dict) -> set[str]:
-    """Keep completed diagnoses, including zero scores and separately failed recovery."""
+def finished_case_ids(entry: dict) -> set[str]:
+    """Skip scored diagnoses and fully recovered case failures already attempted."""
     return {
         summary["scenario_id"]
         for report in entry.get("cases", [])
         if not report.get("acceptance_error")
         for summary in report.get("scenario_summaries", [])
-        if summary.get("case_valid") is True
-        and (
-            (
-                report.get("mode") == "effects"
-                and not summary.get("cleanup_failed")
-                and summary.get("status") == "completed"
+        if (report.get("mode") != "effects" and is_recovered_case_failure(summary))
+        or (
+            summary.get("case_valid") is True
+            and (
+                (
+                    report.get("mode") == "effects"
+                    and not summary.get("cleanup_failed")
+                    and summary.get("status") == "completed"
+                )
+                or (report.get("mode") != "effects" and report.get("diagnosis_complete") is True)
             )
-            or (report.get("mode") != "effects" and report.get("diagnosis_complete") is True)
         )
     }
 
@@ -170,6 +173,52 @@ def expected_identities(result, backends):
                     raise ValueError("Campaign contains inconsistent agent configurations")
                 identities[backend] = record["identity"]
     return identities
+
+
+def qualified_codex_smoke(args, identities, backend_identity):
+    """Reuse only the exact qualification receipt frozen by the campaign driver."""
+    path = getattr(args, "codex_smoke_receipt", None)
+    if path is None:
+        return None
+    payload = Path(path).read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != getattr(args, "codex_smoke_receipt_sha256", None):
+        raise ValueError("Codex qualification receipt fingerprint changed")
+    receipt = json.loads(payload)
+    recorded_agent = receipt.get("agent_identity") or {}
+    actual_agent = identities.get("codex") or {}
+    # Docker's classic and containerd stores can expose different image IDs for
+    # an identical imported image. Keep both actual IDs and compare its content.
+    recorded_config = {key: value for key, value in recorded_agent.items() if key != "image_id"}
+    actual_config = {key: value for key, value in actual_agent.items() if key != "image_id"}
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("status") != "passed"
+        or receipt.get("runtime_disposition") != "torn_down"
+        or receipt.get("final_health", {}).get("status") != "passed"
+        or receipt.get("runtime_backend") != backend_identity
+        or not identities.get("codex")
+        or not recorded_agent.get("image_content_sha256")
+        or recorded_config != actual_config
+        or not receipt.get("source_tree_sha256")
+        or receipt.get("source_tree_sha256") != getattr(args, "source_tree_sha256", None)
+    ):
+        raise ValueError("Codex qualification configuration or final health differs")
+    cases = receipt.get("cases", [])
+    if (
+        len(cases) != 4
+        or len({case.get("id") for case in cases}) != 4
+        or {case.get("fault_type") for case in cases} != {"none", "link_down", "device_down", "bgp_auth_mismatch"}
+        or not all(
+            case.get("valid") is True
+            and case.get("diagnosis_complete") is True
+            and case.get("status") == "completed"
+            and not case.get("cleanup_failed")
+            for case in cases
+        )
+    ):
+        raise ValueError("Codex qualification requires four completed, valid XS cases")
+    return {"sha256": digest, **receipt, "execution_image_id": actual_agent["image_id"]}
 
 
 def validate_campaign_cases(entry, scale, backends, output, runtime, select_cases, smoke_cases):
@@ -270,7 +319,7 @@ def run_cases(bench, runtime, paths, *, backend, vendor, entry, identity, output
     if records["identity"] != identity:
         raise ValueError(f"Cannot change {backend} configuration when resuming acceptance")
     cases = freeze_cases(records, paths)
-    completed = completed_case_ids(records)
+    completed = finished_case_ids(records)
     pending = [case for case in cases if case.id not in completed]
     if not pending:
         return False
@@ -316,7 +365,9 @@ def run_cases(bench, runtime, paths, *, backend, vendor, entry, identity, output
     ).wait()
     records.setdefault("suite_reports", []).append(report.artifact_paths["report"])
     checkpoint(output, result)
-    if cancel.is_set() or any(row.get("status") != "completed" for row in report.scenario_summaries):
+    if cancel.is_set() or any(
+        row.get("status") != "completed" and not is_recovered_case_failure(row) for row in report.scenario_summaries
+    ):
         raise RuntimeError(f"{backend} acceptance interrupted; runtime retained after fault recovery")
     return True
 
@@ -428,7 +479,18 @@ def run_acceptance(args, *, bench_factory, agent_factory, preflight, select_case
             if args.rebuild_runtime and resumed is not None:
                 resumed.teardown()
                 resumed = None
-            needs_smoke = "codex" in backends_requested and "xs" not in scales and not result.get("codex_xs_smoke")
+            qualification = qualified_codex_smoke(args, identities, backend_identity)
+            if qualification is not None:
+                previous_qualification = result.get("codex_qualification")
+                if previous_qualification is not None and previous_qualification["sha256"] != qualification["sha256"]:
+                    raise ValueError("Cannot change Codex qualification when resuming acceptance")
+                result["codex_qualification"] = qualification
+            needs_smoke = (
+                "codex" in backends_requested
+                and "xs" not in scales
+                and not result.get("codex_xs_smoke")
+                and qualification is None
+            )
             phases = (["xs"] if needs_smoke or sample is None or "xs" in scales else []) + [
                 scale for scale in scales if scale != "xs"
             ]
@@ -590,7 +652,30 @@ def run_acceptance(args, *, bench_factory, agent_factory, preflight, select_case
                     if cancel.is_set():
                         raise RuntimeError("Acceptance cancelled")
                     entry["storage_end"] = storage_snapshot()
-                    entry["status"] = "passed"
+                    entry["agent_execution_failures"] = sorted(
+                        {
+                            summary["scenario_id"]
+                            for record in entry["agents"].values()
+                            for case in record["cases"]
+                            for summary in case["scenario_summaries"]
+                            if is_recovered_case_failure(summary) and summary["failure_stage"] == "agent"
+                        }
+                    )
+                    entry["invalid_cases"] = sorted(
+                        {
+                            summary["scenario_id"]
+                            for record in entry["agents"].values()
+                            for case in record["cases"]
+                            for summary in case["scenario_summaries"]
+                            if summary.get("case_valid") is False
+                        }
+                    )
+                    if entry["invalid_cases"]:
+                        entry["status"] = "completed_with_case_failures"
+                    elif entry["agent_execution_failures"]:
+                        entry["status"] = "completed_with_agent_failures"
+                    else:
+                        entry["status"] = "passed"
                     if scale == "xs" and needs_smoke:
                         result["codex_xs_smoke"] = True
                     completed = True
@@ -616,7 +701,12 @@ def run_acceptance(args, *, bench_factory, agent_factory, preflight, select_case
                             emergency=emergency.is_set(),
                         )
                     checkpoint(output, result)
-            result["status"] = "passed"
+            if any(entry.get("invalid_cases") for entry in result["scales"].values()):
+                result["status"] = "completed_with_case_failures"
+            elif any(entry.get("agent_execution_failures") for entry in result["scales"].values()):
+                result["status"] = "completed_with_agent_failures"
+            else:
+                result["status"] = "passed"
         return 0
     except BaseException as exc:
         result["status"] = "failed_retained"

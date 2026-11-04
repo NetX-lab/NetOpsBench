@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -12,11 +13,17 @@ from pathlib import Path
 
 def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
     repo = Path(__file__).resolve().parents[1]
+    source = tmp_path / "source"
+    source.mkdir()
+    shutil.copytree(repo / "netopsbench", source / "netopsbench", ignore=shutil.ignore_patterns("__pycache__", "_bin"))
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        if (repo / name).exists():
+            shutil.copy2(repo / name, source / name)
     wheel_dir = tmp_path / "wheel"
     wheel_dir.mkdir()
     subprocess.run(
         [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheel_dir)],
-        cwd=repo,
+        cwd=source,
         check=True,
         capture_output=True,
         text=True,
@@ -32,6 +39,8 @@ def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
     assert "netopsbench/platform/observability/assets/grafana/provisioning/datasources/default.yaml" in names
     assert "netopsbench/platform/scenario/specs/fault_campaign.yaml" in names
     assert "netopsbench/models/scale_profiles.yaml" in names
+    assert "netopsbench/platform/simulator/service.py" not in names
+    assert "netopsbench/sdk/simulator_service.py" not in names
     assert not any("rl_experiment" in name or "verl" in name for name in names)
     assert not any(name.startswith("netopsbench/resources/") for name in names)
     assert "netopsbench/platform/observability/assets/telegraf.conf" not in names
@@ -46,12 +55,7 @@ def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
         capture_output=True,
         text=True,
     )
-    subprocess.run(
-        [str(venv_dir / "bin" / "netopsbench-simulator"), "--help"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    assert not (venv_dir / "bin" / "netopsbench-simulator").exists()
     assert not (venv_dir / "bin" / "netopsbench-rl").exists()
 
     outside = tmp_path / "outside"
@@ -63,6 +67,7 @@ import netopsbench
 from netopsbench.platform.observability.lifecycle import observability_asset_root
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.models.profiles import default_scale_registry
+from netopsbench.sdk import NetOpsBench, SimulatorConfig
 
 source_root = Path({str(repo)!r}).resolve()
 package_file = Path(netopsbench.__file__).resolve()

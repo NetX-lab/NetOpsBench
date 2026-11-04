@@ -76,6 +76,48 @@ def test_changed_scope_rejects_handoff():
     assert h.take("changed", 60)[0] is None
 
 
+def test_only_a_new_verified_window_refreshes_calibration(monkeypatch):
+    import netopsbench.platform.scenario.baseline as module
+
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    handoff = BaselineHandoff()
+    first = window()
+    handoff.fresh_epoch(first)
+    assert handoff.publish(first, "scope", "first", 60, verified=True)
+    assert handoff.take("scope", 60)[0] == first
+
+    clock[0] = 601
+    newer = window()
+    assert handoff.publish(newer, "scope", "recovered", 60, verified=True)
+    assert handoff.epoch == 601
+    assert handoff.take("scope", 60)[0] == newer
+
+    clock[0] = 1202
+    assert handoff.publish(newer, "scope", "repeated", 60, verified=True)
+    assert handoff.epoch == 601
+    assert handoff.take("scope", 60) == (None, "recalibration_due")
+
+
+@pytest.mark.parametrize(
+    "age,duration,reason", [(121, 66, "expired_window"), (-10, 66, "future_window"), (0, 30, "short_window")]
+)
+def test_rejected_publication_preserves_the_reason(age, duration, reason):
+    handoff = BaselineHandoff()
+    handoff.fresh_epoch()
+    assert not handoff.publish(window(age, duration), "scope", "case", 60, verified=True)
+    assert handoff.last_reason == reason
+    assert handoff.take("scope", 60) == (None, reason)
+
+
+def test_unavailable_and_changed_scopes_have_distinct_reasons():
+    handoff = BaselineHandoff()
+    assert not handoff.publish(window(), None, "case", 60, verified=True)
+    assert handoff.last_reason == "scope_unavailable"
+    handoff.publish(window(), "old", "case", 60, verified=True)
+    assert handoff.take("new", 60) == (None, "scope_changed")
+
+
 def test_scope_differences_identify_the_changed_component():
     from netopsbench.platform.scenario.baseline import RuntimeScope, scope_changes
 
@@ -227,6 +269,45 @@ def test_verified_recovery_window_is_bound_to_its_new_identity(runner, monkeypat
     assert second["baseline_preparation"]["scope_changes"] == []
 
 
+def test_invalid_case_can_publish_an_independently_verified_recovery(runner, monkeypatch):
+    def analyze(windows, *args, **kwargs):
+        if any(w.get("name") != "baseline" for w in windows):
+            raise RuntimeError("Fault observation is invalid")
+        return observation()
+
+    monkeypatch.setattr(runner, "_inject_fault", lambda *a: {"success": True})
+    monkeypatch.setattr(runner, "_merge_observation_windows", analyze)
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_after_scenario",
+        lambda *a, **k: {"success": True, "validated_baseline": window(), "validated_baseline_scope": "scope"},
+    )
+    first = run(runner, "invalid", "link_down")
+    assert first["case_valid"] is False
+    assert first["success"] is False
+    assert first["cleanup"]["baseline_handoff"] is True
+    assert first["cleanup"]["baseline_handoff_reason"] == "verified_window_published"
+    monkeypatch.setattr(runner, "_merge_observation_windows", lambda *a, **k: observation())
+    second = run(runner, "next")
+    assert second["baseline_preparation"]["mode"] == "reused"
+    assert second["baseline_preparation"]["source_scenario_id"] == "invalid"
+
+
+def test_agent_failure_keeps_case_failure_and_verified_recovery_handoff(runner, monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "_cleanup_after_scenario",
+        lambda *a, **k: {"success": True, "validated_baseline": window(), "validated_baseline_scope": "scope"},
+    )
+    first = runner.run_scenario(
+        scenario("failed-agent"), diagnosis_callback=lambda *a, **k: {"success": False, "error": "agent failed"}
+    )
+    assert first["case_valid"] is True
+    assert first["success"] is False
+    assert first["cleanup"]["baseline_handoff"] is True
+    assert run(runner, "next")["baseline_preparation"]["mode"] == "reused"
+
+
 def test_runtime_scope_changes_on_restart_config_policy_and_traffic(tmp_path, monkeypatch):
     from netopsbench.platform.scenario import baseline
 
@@ -287,3 +368,41 @@ def test_observation_reuses_static_detector_and_queries_each_window(tmp_path, mo
     runner.influxdb_bucket = "new-bucket"
     analyze_observation_windows(runner, [window], 60, baseline)
     assert len(instances) == 2 and len(queries) == 3
+
+
+@pytest.mark.parametrize("entry", ["benchmark", "simulator"])
+def test_entrypoints_share_single_capture_and_verified_reuse(runner, monkeypatch, entry):
+    from netopsbench.models.profiles import default_scale_registry
+    from netopsbench.platform.incident.engine import IncidentEngine
+    from netopsbench.platform.simulator.runtime import RuntimeEpisodeBackend, WarmRuntime
+
+    worker = SimpleNamespace(topology_dir=runner.topology_dir, bucket="bucket", topology_id=runner.topology_id)
+    record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
+    leases = SimpleNamespace(acquire=lambda scale: record, release=lambda record: None)
+    monkeypatch.setattr("netopsbench.platform.simulator.runtime.require_scenario_topology", lambda *args: None)
+    for name in ("one", "two"):
+        if entry == "benchmark":
+            assert run(runner, name)["success"]
+        else:
+            backend = RuntimeEpisodeBackend(leases, default_scale_registry())
+            incident = IncidentEngine(lambda backend=backend: backend).prepare(scenario(name))
+            assert incident.state.value == "active", incident.failure
+            incident.close()
+            assert incident.cleanup_status.value == "succeeded", incident.cleanup_failure
+    assert runner.calls == ["traffic", "reference", "observe", "observe", "observe"]
+
+
+def test_cleanup_exception_before_result_retains_original_failure(runner, monkeypatch):
+    from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
+
+    backend = ExecutorIncidentBackend(runner)
+    backend.scenario = scenario()
+    monkeypatch.setattr(
+        runner, "_cleanup_after_scenario", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("restore failed"))
+    )
+    with pytest.raises(RuntimeError, match="restore failed"):
+        backend.finish()
+    assert backend.cleanup_result["success"] is False
+    assert backend.cleanup_result["errors"] == ["restore failed"]
+    assert runner._recovering is False
+    backend.finish()  # idempotent; original failed outcome is retained

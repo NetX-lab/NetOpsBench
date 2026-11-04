@@ -139,7 +139,6 @@ def _sonic_readiness_snapshot(
 
 
 def _wait_for_sonic(
-    device: str,
     container: str,
     max_tries: int | None = None,
     delay: int = 5,
@@ -328,7 +327,6 @@ def _apply_single_device(
 
     readiness_started = time.monotonic()
     if not _wait_for_sonic(
-        device,
         container,
         max_tries=readiness_max_tries,
         expected_port_count=expected_port_count,

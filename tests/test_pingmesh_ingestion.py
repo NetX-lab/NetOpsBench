@@ -136,17 +136,20 @@ def test_query_waits_for_late_tail_and_keeps_query_interval(detector, monkeypatc
 
     def query(start, end, *, deadline, fields=None):
         calls.append((start, end, deadline, fields))
-        rows = progress if fields else current
-        if not fields and clock[0] == 0:
+        rows = progress
+        if clock[0] == 0:
             rows = [r for r in rows if not (r["src_name"] == "client1" and r["probe_cycle"] == 4)]
-        return SnapshotQueryResult(status="ok", rows=rows)
+        return SnapshotQueryResult(status="ok", rows=rows, request_count=1)
 
     monkeypatch.setattr(detector, "_query_snapshot", query)
     result, coverage = detector._query_covered_snapshot(START.isoformat(), END.isoformat(), deadline=5)
     assert result.status == "ok"
     assert coverage["ingestion"]["status"] == "ready"
     assert coverage["query_retries"] == 1
-    assert {(a, b) for a, b, _, fields in calls if not fields} == {(START.isoformat(), END.isoformat())}
+    assert result.rows == current
+    assert all(datetime.fromisoformat(a) < START and datetime.fromisoformat(b) > END for a, b, _, _ in calls)
+    assert all(fields is None for _, _, _, fields in calls)
+    assert len(calls) == coverage["ingestion"]["query_requests"] == 2
     assert {limit for _, _, limit, _ in calls} == {5}
 
 
@@ -163,7 +166,7 @@ def test_missing_rows_exhaust_one_shared_deadline(detector, monkeypatch):
     snapshot, coverage = detector._query_covered_snapshot(START.isoformat(), END.isoformat(), deadline=2)
     assert snapshot.status == "error"
     assert coverage["ingestion"]["status"] == "not_ready"
-    assert len(calls) == 4
+    assert len(calls) == 2
 
 
 def test_failed_query_time_is_still_reported(detector, monkeypatch):
@@ -181,6 +184,49 @@ def test_failed_query_time_is_still_reported(detector, monkeypatch):
     assert snapshot.status == "error"
     assert coverage["ingestion"]["query_seconds"] == 0.25
     assert coverage["ingestion"]["wait_seconds"] == 0
+
+
+def test_combined_read_keeps_boundary_metrics_outside_statistics(detector, monkeypatch):
+    context = rows_for(detector)
+    expected = detector._slice_rows(context, START.isoformat(), END.isoformat())
+    for row in context:
+        if not START <= datetime.fromisoformat(row["_time"]) < END:
+            row.update(packets_lost=4, df_packets_lost=1, rtt_avg=100000)
+    reads = []
+
+    def query(start, end, **kwargs):
+        reads.append((start, end, kwargs))
+        return SnapshotQueryResult("ok", context, request_count=1)
+
+    monkeypatch.setattr(detector, "_query_snapshot", query)
+    result, coverage = detector._query_covered_snapshot(START.isoformat(), END.isoformat())
+    assert result.rows == expected
+    assert coverage["ingestion"]["status"] == "ready"
+    assert detector.analyze_snapshot_rows(result.rows, result.rows).anomalies == []
+    assert len(reads) == coverage["ingestion"]["query_requests"] == 1
+
+
+def test_completed_audit_after_deadline_cannot_return_ready(detector, monkeypatch):
+    from netopsbench.platform.pingmesh import _detector_ingestion as module
+
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        detector, "_query_snapshot", lambda *a, **kw: SnapshotQueryResult("ok", rows_for(detector), request_count=1)
+    )
+    audit = detector.audit_ingestion
+
+    def slow_audit(*args):
+        result = audit(*args)
+        assert result["status"] == "ready"
+        clock[0] = 6
+        return result
+
+    monkeypatch.setattr(detector, "audit_ingestion", slow_audit)
+    result, coverage = detector._query_covered_snapshot(START.isoformat(), END.isoformat(), deadline=5)
+    assert result.status == "error"
+    assert coverage["ingestion"]["status"] == "not_ready"
+    assert coverage["ingestion"]["query_requests"] == 1
 
 
 def test_boundary_round_can_straddle_window(tmp_path):

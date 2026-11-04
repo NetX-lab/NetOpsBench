@@ -15,6 +15,7 @@ import yaml
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
+from netopsbench.platform.faults.defaults import IMPAIRMENT_PARAMETERS
 from netopsbench.platform.topology.configdb_payload import (
     interface_names_from_payload,
     interface_networks_from_payload,
@@ -217,14 +218,7 @@ class _CandidateIndex(CandidatePaths):
                             parameters["source_prefix"] = f"{source.data_ip}/32"
                         if fault == "acl_l4_port_misconfig":
                             parameters["destination_port"] = 33434
-                    parameters.update(
-                        {
-                            "packet_loss": {"loss_pct": 30},
-                            "packet_corruption": {"corruption_pct": 20},
-                            "high_latency": {"latency_ms": 120},
-                            "mtu_mismatch": {"mtu": 1400},
-                        }.get(fault, {})
-                    )
+                    parameters.update(IMPAIRMENT_PARAMETERS.get(fault, {}))
                     found.append({"src": src, "dst": dst})
                     break
                 if not found:
@@ -319,6 +313,11 @@ def generate(
     fault_indices = {}
     for unit in units:
         placement = index.place(unit)
+        rng = random.Random(_stable_template_seed(seed, topo.scale, unit.id))
+        if unit.fault_type == "interface_ip_misconfig":
+            placement.parameters["fault_address"] = f"198.51.100.{rng.randrange(64) * 4 + 1}/30"
+        if unit.fault_type == "bgp_update_source_mismatch":
+            placement.parameters["fault_update_source"] = f"Loopback{rng.randrange(1, 4096)}"
         placement.parameters.update(affected_candidates=placement.witnesses, control_candidates=placement.controls)
         if unit.scope:
             placement.parameters["impact_scope"] = unit.scope
@@ -361,7 +360,7 @@ def generate(
                 "coverage_unit": unit.id,
                 "purpose": "validation" if validation else "benchmark",
                 "experiment": policy.model_dump(mode="json"),
-                "generator": {"seed": seed},
+                "generator": {"seed": seed, "version": 3},
             },
             "episode": episode,
         }
@@ -394,6 +393,7 @@ def generate(
             "topology_scale": topo.scale,
             "metadata": {
                 "negative_sample": True,
+                "generator": {"seed": seed, "version": 3},
                 "difficulty": "medium",
                 "fault_catalog_version": FAULT_CATALOG_VERSION,
                 "purpose": "validation" if validation else "benchmark",

@@ -6,6 +6,8 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
+from netopsbench.platform.faults.defaults import LATENCY_MS, MTU, PACKET_CORRUPTION_PCT, PACKET_LOSS_PCT
+
 if TYPE_CHECKING:
     from ..context import FaultRuntimeContext
     from ..services.command_runner import CommandRunner
@@ -122,7 +124,7 @@ class ImpairmentHandler:
             effective_mtu = self._iface.get_interface_mtu(device, sonic_if)
         return result, effective_mtu
 
-    def inject_mtu_mismatch(self, device: str, interface: str, mtu: int = 1400) -> dict[str, Any]:
+    def inject_mtu_mismatch(self, device: str, interface: str, mtu: int = MTU) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:
             raise ValueError(f"Unknown device: {device}")
@@ -211,7 +213,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        corruption_pct: float = 20,
+        corruption_pct: float = PACKET_CORRUPTION_PCT,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:
@@ -239,7 +241,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        loss_pct: float = 30,
+        loss_pct: float = PACKET_LOSS_PCT,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:
@@ -267,7 +269,7 @@ class ImpairmentHandler:
         self,
         device: str,
         interface: str = "Ethernet0",
-        latency_ms: float = 100,
+        latency_ms: float = LATENCY_MS,
     ) -> dict[str, Any]:
         container = self._ctx.container_names.get(device)
         if not container:

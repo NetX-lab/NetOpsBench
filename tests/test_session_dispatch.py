@@ -87,7 +87,87 @@ def test_worker_context_uses_lab_name_for_observability_topology_id(tmp_path):
     context = build_worker_execution_context(worker, Path(worker.topology_dir))
 
     assert context.topology_id == "lab-1"
-    assert "NETOPSBENCH_TOPOLOGY_ID" not in context.as_env()
+    assert context.topology_dir == worker.topology_dir
+    assert context.influxdb_bucket == worker.bucket
+
+
+@pytest.mark.parametrize(
+    ("domain", "phase", "cleanup", "valid", "cancelled", "cleanup_errors", "continues"),
+    [
+        ("agent", "diagnosis", True, True, False, [], True),
+        ("agent", "limits", True, True, False, [], True),
+        ("protocol", "diagnosis", True, True, False, [], True),
+        ("infrastructure", "observation", True, False, False, [], False),
+        ("agent", "diagnosis", False, True, False, [], False),
+        ("agent", "diagnosis", None, True, False, [], False),
+        ("agent", "diagnosis", True, True, True, [], False),
+        ("agent", "diagnosis", True, True, False, ["container cleanup failed"], False),
+        ("agent", "observation", True, True, False, [], False),
+    ],
+)
+def test_acceptance_continues_only_after_recovered_agent_failure(
+    tmp_path, monkeypatch, domain, phase, cleanup, valid, cancelled, cleanup_errors, continues
+):
+    import threading
+
+    import netopsbench.platform.session.dispatch as dispatch
+
+    cancel = threading.Event()
+    executed, checkpoints, built, closed, quarantined = [], [], [], [], []
+
+    class Runner:
+        evaluator = None
+
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            executed.append(scenario.id)
+            if scenario.id == "first":
+                if cancelled:
+                    cancel.set()
+                return {
+                    "success": False,
+                    "case_valid": valid,
+                    "cleanup": {} if cleanup is None else {"success": cleanup},
+                    "episode": {
+                        "execution": {"failure": {"domain": domain, "phase": phase}},
+                        "diagnosis": {"metadata": {"cleanup_errors": cleanup_errors}},
+                    },
+                }
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+        def close(self):
+            closed.append(True)
+
+    def build(*args, **kwargs):
+        built.append(True)
+        return Runner()
+
+    monkeypatch.setattr(dispatch, "_build_scenario_executor", build)
+    monkeypatch.setattr(dispatch, "build_worker_execution_context", lambda *a: SimpleNamespace(topology_dir=tmp_path))
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **kw: None)
+    runtime = SimpleNamespace(id="runtime", mark_quarantined=lambda *a: quarantined.append(a))
+    result = dispatch._run_worker(
+        runtime=runtime,
+        agent=None,
+        raw_dir=tmp_path,
+        trace_writer=None,
+        fault_registry=None,
+        minimum_baseline_seconds=None,
+        post_recovery_wait_seconds=0,
+        scale_registry=None,
+        worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
+        scenarios=[_scenario("first"), _scenario("second")],
+        control=dispatch.ExecutionControl(
+            on_case=lambda summary, *args: checkpoints.append(summary), stop_on_failure=True, cancel_event=cancel
+        ),
+    )
+    assert executed == (["first", "second"] if continues else ["first"])
+    assert len(built) == len(closed) == 1
+    assert len(checkpoints) == len(executed)
+    assert dispatch.is_recovered_case_failure(checkpoints[0]) is continues
+    assert bool(quarantined) is (cleanup is False)
+    assert result[2]["success"] is False
+    assert result[0] == []  # Failed agent execution must not create a score.
 
 
 def test_worker_context_uses_explicit_identity_topology_id(tmp_path):
@@ -97,6 +177,59 @@ def test_worker_context_uses_explicit_identity_topology_id(tmp_path):
     context = build_worker_execution_context(worker, Path(worker.topology_dir))
 
     assert context.topology_id == "runtime-observability-id"
+
+
+@pytest.mark.parametrize(
+    ("recovery_verified", "effects_only", "continues"),
+    [(True, False, True), (False, False, False), (True, True, False)],
+)
+def test_invalid_effect_continues_only_after_verified_health(
+    tmp_path, monkeypatch, recovery_verified, effects_only, continues
+):
+    import netopsbench.platform.session.dispatch as dispatch
+
+    class Runner(_FakeRunner):
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            if scenario.id == "invalid":
+                return {
+                    "success": False,
+                    "case_valid": False,
+                    "error": "Owned ACL rule has no verified hits",
+                    "episode": {"effect_audit": {"valid": False}},
+                    "cleanup": {
+                        "success": True,
+                        **({"validated_baseline": {"duration_seconds": 42}} if recovery_verified else {}),
+                    },
+                }
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+    runtime = RuntimePool(
+        id="runtime-1",
+        name="runtime-1",
+        scale="xs",
+        root_dir=tmp_path / "runtime",
+        workers=[_worker(tmp_path, 1)],
+        state="warm",
+    )
+    monkeypatch.setattr(dispatch, "ScenarioExecutor", Runner)
+    monkeypatch.setattr(dispatch, "_create_evaluator", _FakeEvaluator)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **kw: None)
+    monkeypatch.setattr(dispatch, "load_topology_metadata", lambda *a: None)
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    result = execute_on_runtime_pool(
+        runtime=runtime,
+        scenarios=[_scenario("invalid"), _scenario("next")],
+        agent=None,
+        raw_dir=tmp_path / "raw",
+        control=dispatch.ExecutionControl(stop_on_failure=True, effects_only=effects_only),
+    )
+    first = result.scenarios[0]
+    assert first["status"] == "invalid" and first["case_valid"] is False
+    assert dispatch.is_recovered_case_failure(first) is continues
+    assert result.workers[0]["executed_count"] == (2 if continues else 1)
+    assert result.scenarios[1]["status"] == ("completed" if continues else "skipped_execution_failure")
+    assert result.evaluations == []
+    assert runtime.state == "warm"
 
 
 def test_worker_context_rejects_topology_directory_mismatch(tmp_path):

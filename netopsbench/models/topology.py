@@ -277,7 +277,14 @@ class TopologyManifest(_PersistedModel):
 
     def _device_to_agent_entry(self, device: Device) -> dict[str, Any]:
         entry = device.model_dump(exclude={"role", "metadata"}, exclude_none=True, mode="json")
-        entry.update({key: value for key, value in device.metadata.items() if key not in Device.model_fields})
+        entry.update(
+            {
+                key: value
+                for key, value in device.metadata.items()
+                if key in {"pod", "rack", "client_subnet", "site", "edge_index", "pod_index"}
+                and isinstance(value, (str, int))
+            }
+        )
         if device.role is DeviceRole.CLIENT and device.attached_switch:
             if self.family == "fat-tree":
                 entry["edge"] = device.attached_switch

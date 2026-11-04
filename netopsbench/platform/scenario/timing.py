@@ -6,6 +6,7 @@ from time import monotonic
 
 from netopsbench.platform.toolkit._core.control import finish_diagnosis_work
 from netopsbench.platform.utils.control import OperationControl, operation_scope
+from netopsbench.platform.utils.measurements import measurement_scope
 
 _current_timings = ContextVar("case_phase_timings", default=None)
 
@@ -45,7 +46,8 @@ class PhaseTimings:
                 if timeout_seconds is not None and name != "diagnosis"
                 else nullcontext()
             ):
-                yield record
+                with measurement_scope(record.setdefault("operations", {})):
+                    yield record
         except BaseException:
             record["status"] = "failed"
             raise
@@ -57,3 +59,23 @@ class PhaseTimings:
 
     def skip(self, name, reason):
         self.phases[name] = {"status": "skipped", "actual_seconds": 0.0, "reason": reason}
+
+    @contextmanager
+    def measure_step(self, parent, name):
+        """Accumulate repeated work inside a phase, without creating a new budget."""
+        steps = self.phases.setdefault(parent, {}).setdefault("steps", {})
+        record = steps.setdefault(name, {"actual_seconds": 0.0, "calls": 0, "failed_calls": 0})
+        started = monotonic()
+        record["calls"] += 1
+        record["status"] = "running"
+        try:
+            with measurement_scope(record.setdefault("operations", {})):
+                yield record
+        except BaseException:
+            record["failed_calls"] += 1
+            record["status"] = "failed"
+            raise
+        else:
+            record["status"] = "completed"
+        finally:
+            record["actual_seconds"] += max(0.0, monotonic() - started)

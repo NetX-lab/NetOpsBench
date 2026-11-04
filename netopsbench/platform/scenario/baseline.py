@@ -104,47 +104,80 @@ class BaselineHandoff:
     source: str | None = None
     epoch: float | None = None
     last_changes: list[str] | None = None
+    last_reason: str = "no_verified_window"
+    last_verified_end: datetime | None = None
 
-    def clear(self) -> None:
+    def clear(self, reason: str = "no_verified_window") -> None:
         self.window = self.scope = self.source = self.epoch = None
+        self.last_reason = reason
 
-    def fresh_epoch(self) -> None:
+    def fresh_epoch(self, window: dict | None = None) -> None:
         self.clear()
         self.epoch = time.monotonic()
+        if window is not None:
+            self.last_verified_end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
 
     def take(self, scope: RuntimeScope | None, minimum_seconds: int) -> tuple[dict | None, str]:
         window, previous_scope = self.window, self.scope
         self.last_changes = scope_changes(previous_scope, scope)
         self.window = None  # A failed or interrupted consumer cannot pass it on.
-        if not scope or scope != previous_scope or window is None:
-            return None, "missing_or_changed_scope"
+        if window is None:
+            return None, self.last_reason
+        self.last_reason = "window_already_consumed"
+        if not scope:
+            return None, "scope_unavailable"
+        if scope != previous_scope:
+            return None, "scope_changed"
         if self.epoch is None or not 0 <= time.monotonic() - self.epoch <= RECALIBRATE_SECONDS:
             return None, "recalibration_due"
-        if not valid_window(window, minimum_seconds):
-            return None, "expired_or_short_window"
+        reason = window_error(window, minimum_seconds)
+        if reason:
+            return None, reason
         return dict(window), "verified_previous_case"
 
-    def publish(self, window: dict, scope: RuntimeScope | None, source: str, minimum_seconds: int) -> bool:
-        if not scope or self.epoch is None or not valid_window(window, minimum_seconds):
+    def publish(
+        self, window: dict, scope: RuntimeScope | None, source: str, minimum_seconds: int, *, verified: bool = False
+    ) -> bool:
+        reason = "scope_unavailable" if not scope else window_error(window, minimum_seconds)
+        if reason:
             self.window = None
+            self.last_reason = reason
+            return False
+        end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
+        if verified and (self.last_verified_end is None or end > self.last_verified_end):
+            # A new, independently verified full window is itself calibration.
+            # Republishing a prior window cannot extend the calibration epoch.
+            self.epoch = time.monotonic()
+            self.last_verified_end = end
+        if self.epoch is None:
+            self.window = None
+            self.last_reason = "calibration_missing"
             return False
         self.window, self.scope, self.source = dict(window), scope, source
+        self.last_reason = "verified_window_published" if verified else "window_published"
         return True
 
 
-def valid_window(window: dict, minimum_seconds: int) -> bool:
+def window_error(window: dict, minimum_seconds: int) -> str | None:
     try:
         start = datetime.fromisoformat(window["start_time"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
-        return (
-            start.tzinfo is not None
-            and end.tzinfo is not None
-            and (end - start).total_seconds() >= minimum_seconds
-            and int(window["duration_seconds"]) >= minimum_seconds
-            and 0 <= (datetime.now(UTC) - end).total_seconds() <= MAX_WINDOW_AGE_SECONDS
-        )
-    except (KeyError, TypeError, ValueError):
-        return False
+        if start.tzinfo is None or end.tzinfo is None:
+            return "invalid_window"
+        if (end - start).total_seconds() < minimum_seconds or int(window["duration_seconds"]) < minimum_seconds:
+            return "short_window"
+        age = (datetime.now(UTC) - end).total_seconds()
+        if age < 0:
+            return "future_window"
+        if age > MAX_WINDOW_AGE_SECONDS:
+            return "expired_window"
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "invalid_window"
+    return None
+
+
+def valid_window(window: dict, minimum_seconds: int) -> bool:
+    return window_error(window, minimum_seconds) is None
 
 
 def runtime_scope(runner, scenario) -> RuntimeScope | None:

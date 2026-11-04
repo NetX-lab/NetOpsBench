@@ -26,6 +26,54 @@ def _bool(value: object) -> bool:
     return value is True or str(value).lower() == "true"
 
 
+def _session_event(fields, states, transition_pairs, state_filter):
+    saw_down = any(value != "ESTABLISHED" for value in states)
+    down = any(before == "ESTABLISHED" and after != "ESTABLISHED" for before, after in transition_pairs)
+    recovered = any(before != "ESTABLISHED" and after == "ESTABLISHED" for before, after in transition_pairs)
+    if down and recovered:
+        event_type = "session_flap"
+    elif down:
+        event_type = "session_down"
+    elif recovered:
+        event_type = "session_recovered"
+    elif saw_down:
+        event_type = "non_established_observed"
+    elif state_filter == "all":
+        event_type = "established_observed"
+    else:
+        return None
+    if state_filter == "non_established" and not saw_down:
+        return None
+    if state_filter == "established" and fields["latest_state"] != "ESTABLISHED":
+        return None
+    return {**fields, "event_type": event_type, "states_observed": list(dict.fromkeys(states))}
+
+
+def _with_collection_gaps(events, collections, roles, device, peer, role):
+    selected = {name for name, kind in roles.items() if (not device or name == device) and (not role or kind == role)}
+    missing = selected - collections.keys() if not peer or device else set()
+    for source in sorted(missing):
+        collections[source] = {"error_type": "no_collection_samples"}
+    for source, collection in collections.items():
+        if not _bool(collection.get("collection_ok")):
+            events.append(
+                {
+                    "device": source,
+                    "role": roles[source],
+                    "peer": None,
+                    "event_type": "collection_gap",
+                    "previous_state": None,
+                    "latest_state": None,
+                    "states_observed": [],
+                    "first_seen": collection.get("first_seen"),
+                    "last_seen": collection.get("last_seen"),
+                    "sample_count": int(collection.get("sample_count") or 0),
+                    "error_type": collection.get("error_type"),
+                }
+            )
+    return sorted(events, key=lambda event: (str(event.get("last_seen") or ""), event["device"]), reverse=True)
+
+
 class BgpOpsMixin:
     def query_bgp_events(
         self,
@@ -118,7 +166,6 @@ from(bucket: "{self.influxdb_bucket}")
                 )
                 events = self._build_bgp_events_fast(
                     rows,
-                    scope,
                     roles,
                     safe_device,
                     safe_peer,
@@ -131,7 +178,7 @@ from(bucket: "{self.influxdb_bucket}")
                     filters + role_filter,
                     device_filter + role_filter,
                 )
-                events = self._build_bgp_events(rows, scope, roles, safe_device, safe_peer, role, state)
+                events = self._build_bgp_events(rows, roles, safe_device, safe_peer, role, state)
             truncated = len(events) > safe_limit
             returned = events[:safe_limit]
             freshness = self._bgp_freshness_seconds(rows + index_rows, scope)
@@ -397,24 +444,11 @@ neighbors
         return f"  |> filter(fn: (r) => {' or '.join(predicates)})\n"
 
     def _bgp_device_roles(self) -> dict[str, str]:
-        devices = self.topology_metadata.get("devices", []) if self.topology_metadata else []
-        if isinstance(devices, dict):
-            return {
-                str(item["name"]): str(role).removesuffix("s")
-                for role, entries in devices.items()
-                for item in entries
-                if role != "clients" and item.get("name")
-            }
-        return {
-            str(item["name"]): str(item.get("role", "unknown"))
-            for item in devices
-            if item.get("name") and item.get("role") != "client"
-        }
+        return {device.name: device.role.value for device in self.manifest.switches()}
 
     def _build_bgp_events_fast(
         self,
         rows: list[dict[str, Any]],
-        scope: dict[str, Any],
         roles: dict[str, str],
         device: str | None,
         peer: str | None,
@@ -508,7 +542,6 @@ neighbors
                 latest,
             ]
             states = list(dict.fromkeys(states))
-            saw_down = any(value != "ESTABLISHED" for value in states)
 
             transition_pairs = [
                 (
@@ -519,29 +552,6 @@ neighbors
             ]
             if previous is not None:
                 transition_pairs.insert(0, (previous, first_state))
-            down_transition = any(
-                before == "ESTABLISHED" and after != "ESTABLISHED" for before, after in transition_pairs
-            )
-            recovery_transition = any(
-                before != "ESTABLISHED" and after == "ESTABLISHED" for before, after in transition_pairs
-            )
-            if down_transition and recovery_transition:
-                event_type = "session_flap"
-            elif down_transition:
-                event_type = "session_down"
-            elif recovery_transition:
-                event_type = "session_recovered"
-            elif saw_down:
-                event_type = "non_established_observed"
-            elif state_filter == "all":
-                event_type = "established_observed"
-            else:
-                continue
-            if state_filter == "non_established" and not saw_down:
-                continue
-            if state_filter == "established" and latest != "ESTABLISHED":
-                continue
-
             prefixes_after = session.get("prefixes_received")
             if _timestamp(session.get("prefixes_received_time")) != _timestamp(last_seen):
                 prefixes_after = None
@@ -550,69 +560,32 @@ neighbors
                 session.get("prior_session_state_time")
             ):
                 prefixes_before = None
-            events.append(
+            event = _session_event(
                 {
                     "device": source,
                     "role": roles[source],
                     "peer": neighbor,
                     "peer_as": session.get("asn"),
-                    "event_type": event_type,
                     "previous_state": previous,
                     "latest_state": latest,
-                    "states_observed": states,
                     "first_seen": session.get("first_seen") or (transitions[0].get("_time") if transitions else None),
                     "last_seen": last_seen,
                     "sample_count": int(session.get("sample_count") or 0),
                     "prefixes_before": prefixes_before,
                     "prefixes_after": prefixes_after,
-                }
+                },
+                states,
+                transition_pairs,
+                state_filter,
             )
+            if event is not None:
+                events.append(event)
 
-        for source, collection in collections.items():
-            if not _bool(collection.get("collection_ok")):
-                events.append(
-                    {
-                        "device": source,
-                        "role": roles[source],
-                        "peer": None,
-                        "event_type": "collection_gap",
-                        "previous_state": None,
-                        "latest_state": None,
-                        "states_observed": [],
-                        "first_seen": collection.get("first_seen"),
-                        "last_seen": collection.get("last_seen"),
-                        "sample_count": int(collection.get("sample_count") or 0),
-                        "error_type": collection.get("error_type"),
-                    }
-                )
-        selected_devices = {
-            name
-            for name, device_role in roles.items()
-            if (not device or name == device) and (not role or device_role == role)
-        }
-        missing_devices = selected_devices - collections.keys() if not peer or device else set()
-        for source in missing_devices:
-            events.append(
-                {
-                    "device": source,
-                    "role": roles[source],
-                    "peer": None,
-                    "event_type": "collection_gap",
-                    "previous_state": None,
-                    "latest_state": None,
-                    "states_observed": [],
-                    "first_seen": None,
-                    "last_seen": None,
-                    "sample_count": 0,
-                    "error_type": "no_collection_samples",
-                }
-            )
-        return sorted(events, key=lambda event: (str(event.get("last_seen") or ""), event["device"]), reverse=True)
+        return _with_collection_gaps(events, collections, roles, device, peer, role)
 
     def _build_bgp_events(
         self,
         rows: list[dict[str, Any]],
-        scope: dict[str, Any],
         roles: dict[str, str],
         device: str | None,
         peer: str | None,
@@ -643,92 +616,39 @@ neighbors
             states = [str(row.get("session_state") or "UNKNOWN").upper() for row in window]
             previous = str(prior[-1].get("session_state") or "UNKNOWN").upper() if prior else None
             latest = states[-1]
-            saw_down = any(value != "ESTABLISHED" for value in states)
             transition_states = ([previous] if previous else []) + states
-            down_transition = any(
-                before == "ESTABLISHED" and after != "ESTABLISHED"
-                for before, after in zip(transition_states, transition_states[1:], strict=False)
-            )
-            recovery_transition = any(
-                before != "ESTABLISHED" and after == "ESTABLISHED"
-                for before, after in zip(transition_states, transition_states[1:], strict=False)
-            )
-            if down_transition and recovery_transition:
-                event_type = "session_flap"
-            elif down_transition:
-                event_type = "session_down"
-            elif recovery_transition:
-                event_type = "session_recovered"
-            elif saw_down:
-                event_type = "non_established_observed"
-            elif state_filter == "all":
-                event_type = "established_observed"
-            else:
-                continue
-            if state_filter == "non_established" and not saw_down:
-                continue
-            if state_filter == "established" and latest != "ESTABLISHED":
-                continue
-            unique_states = list(dict.fromkeys(states))
-            events.append(
+            transition_pairs = list(zip(transition_states, transition_states[1:], strict=False))
+            event = _session_event(
                 {
                     "device": source,
                     "role": roles[source],
                     "peer": neighbor,
                     "peer_as": window[-1].get("asn"),
-                    "event_type": event_type,
                     "previous_state": previous,
                     "latest_state": latest,
-                    "states_observed": unique_states,
                     "first_seen": window[0].get("_time"),
                     "last_seen": window[-1].get("_time"),
                     "sample_count": len(window),
                     "prefixes_before": prior[-1].get("prefixes_received") if prior else None,
                     "prefixes_after": window[-1].get("prefixes_received"),
-                }
+                },
+                states,
+                transition_pairs,
+                state_filter,
             )
+            if event is not None:
+                events.append(event)
 
-        for source, samples in collections.items():
-            latest = samples[-1]
-            if not _bool(latest.get("collection_ok")):
-                events.append(
-                    {
-                        "device": source,
-                        "role": roles[source],
-                        "peer": None,
-                        "event_type": "collection_gap",
-                        "previous_state": None,
-                        "latest_state": None,
-                        "states_observed": [],
-                        "first_seen": samples[0].get("_time"),
-                        "last_seen": latest.get("_time"),
-                        "sample_count": len(samples),
-                        "error_type": latest.get("error_type"),
-                    }
-                )
-        selected_devices = {
-            name
-            for name, device_role in roles.items()
-            if (not device or name == device) and (not role or device_role == role)
+        collection_summaries = {
+            source: {
+                **samples[-1],
+                "first_seen": samples[0].get("_time"),
+                "last_seen": samples[-1].get("_time"),
+                "sample_count": len(samples),
+            }
+            for source, samples in collections.items()
         }
-        missing_devices = selected_devices - collections.keys() if not peer or device else set()
-        for source in missing_devices:
-            events.append(
-                {
-                    "device": source,
-                    "role": roles[source],
-                    "peer": None,
-                    "event_type": "collection_gap",
-                    "previous_state": None,
-                    "latest_state": None,
-                    "states_observed": [],
-                    "first_seen": None,
-                    "last_seen": None,
-                    "sample_count": 0,
-                    "error_type": "no_collection_samples",
-                }
-            )
-        return sorted(events, key=lambda event: (str(event.get("last_seen") or ""), event["device"]), reverse=True)
+        return _with_collection_gaps(events, collection_summaries, roles, device, peer, role)
 
     @staticmethod
     def _bgp_freshness_seconds(rows: list[dict[str, Any]], scope: dict[str, Any]) -> int | None:

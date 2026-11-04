@@ -43,7 +43,7 @@ def test_wait_for_sonic_requires_configdb_after_vtysh(monkeypatch):
     monkeypatch.setattr(apply_configs, "docker_prefix", lambda: [])
     _install_probe_transport(monkeypatch, fake_safe_run)
 
-    assert apply_configs._wait_for_sonic("spine1", "clab-demo-spine1", max_tries=1, delay=0)
+    assert apply_configs._wait_for_sonic("clab-demo-spine1", max_tries=1, delay=0)
     assert any("sonic-cfggen" in cmd for cmd in calls)
     assert any("vtysh" in cmd for cmd in calls)
 
@@ -74,7 +74,7 @@ def test_wait_for_sonic_ignores_fatal_startup_when_services_are_ready(monkeypatc
     monkeypatch.setattr(apply_configs, "docker_prefix", lambda: [])
     _install_probe_transport(monkeypatch, fake_safe_run)
 
-    assert apply_configs._wait_for_sonic("spine1", "clab-demo-spine1", max_tries=1, delay=0)
+    assert apply_configs._wait_for_sonic("clab-demo-spine1", max_tries=1, delay=0)
     repair_calls = [cmd for cmd in calls if "bash" in cmd and any("start.sh" in part for part in cmd)]
     assert repair_calls == []
 
@@ -95,7 +95,7 @@ def test_wait_for_sonic_does_not_repair_fatal_startup_without_configdb(monkeypat
     monkeypatch.setattr(apply_configs, "docker_prefix", lambda: [])
     _install_probe_transport(monkeypatch, fake_safe_run)
 
-    assert not apply_configs._wait_for_sonic("spine12", "clab-demo-spine12", max_tries=2, delay=0)
+    assert not apply_configs._wait_for_sonic("clab-demo-spine12", max_tries=2, delay=0)
     repair_calls = [cmd for cmd in calls if "bash" in cmd and any("start.sh" in part for part in cmd)]
     assert repair_calls == []
 
@@ -124,7 +124,7 @@ def test_wait_for_sonic_requires_key_supervisor_services(monkeypatch):
     monkeypatch.setattr(apply_configs, "docker_prefix", lambda: [])
     _install_probe_transport(monkeypatch, fake_safe_run)
 
-    assert not apply_configs._wait_for_sonic("spine1", "clab-demo-spine1", max_tries=1, delay=0)
+    assert not apply_configs._wait_for_sonic("clab-demo-spine1", max_tries=1, delay=0)
 
 
 def test_wait_for_sonic_requires_complete_counters_port_map(monkeypatch):
@@ -146,7 +146,6 @@ def test_wait_for_sonic_requires_complete_counters_port_map(monkeypatch):
     _install_probe_transport(monkeypatch, fake_safe_run)
 
     assert not apply_configs._wait_for_sonic(
-        "edge1",
         "clab-demo-edge1",
         max_tries=1,
         delay=0,
@@ -173,7 +172,6 @@ def test_wait_for_sonic_accepts_complete_counters_port_map(monkeypatch):
     _install_probe_transport(monkeypatch, fake_safe_run)
 
     assert apply_configs._wait_for_sonic(
-        "edge1",
         "clab-demo-edge1",
         max_tries=1,
         delay=0,

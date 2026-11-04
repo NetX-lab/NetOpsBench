@@ -8,7 +8,7 @@ import pytest
 
 from examples.agents.codex_agent.agent import CodexAgent, CodexEvents, redact, strict_output_schema
 from examples.agents.codex_agent.proxy import validate_destination
-from examples.agents.codex_agent.runtime import DiagnosticContainer, ensure_image
+from examples.agents.codex_agent.runtime import DiagnosticContainer, ensure_image, image_content_identity
 from netopsbench.platform.toolkit._core.common import ToolResult
 from netopsbench.platform.toolkit.mcp.session_server import session_mcp
 from netopsbench.sdk.agents import DiagnosticContext
@@ -73,6 +73,30 @@ def test_output_schema_and_cli_do_not_inherit_user_agent_state():
     assert "features.multi_agent=false" in args
     assert "features.apps=false" in args
     assert "mcp_servers.netopsbench.required=true" in args
+    assert 'service_tier="default"' in args
+    assert "features.fast_mode=false" in args
+    assert "features.ultrafast_mode=false" in args
+    assert CodexAgent().service_tier == "default"
+
+
+def test_image_content_identity_survives_store_conversion_but_detects_execution_changes(monkeypatch):
+    image = {
+        "Id": "manifest-id",
+        "Architecture": "amd64",
+        "Os": "linux",
+        "RootFS": {"Type": "layers", "Layers": ["sha256:layer"]},
+        "Config": {"Entrypoint": ["/entrypoint.sh"], "Env": ["PATH=/bin"]},
+    }
+    monkeypatch.setattr("examples.agents.codex_agent.runtime.docker", lambda *args: json.dumps([image]))
+    expected = image_content_identity("image")
+    image["Id"] = "config-id"
+    image["Config"].update(User="", WorkingDir="", StopSignal="", AttachStdin=False)
+    assert image_content_identity("image") == expected
+    image["Config"]["Entrypoint"] = ["/other.sh"]
+    assert image_content_identity("image") != expected
+    image["Config"]["Entrypoint"] = ["/entrypoint.sh"]
+    image["RootFS"]["Layers"] = ["sha256:other-layer"]
+    assert image_content_identity("image") != expected
 
 
 def test_secret_redaction_and_proxy_private_destination_rejection(monkeypatch):

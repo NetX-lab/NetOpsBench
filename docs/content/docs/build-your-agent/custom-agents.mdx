@@ -50,11 +50,13 @@ with NetOpsBench(workspace=".") as bench:
 |---|---|
 | `scenario_id` | Scenario or testcase identifier. |
 | `topology` | Switches, clients, links, and scale-specific topology metadata. |
-| `symptoms` | Episode observations, including Pingmesh summaries when available. |
+| `symptoms` | Pingmesh observations with their window and data-quality metadata. |
 | `tools` | Optional runtime or MCP-backed tool access. |
 | `metadata` | Runtime metadata such as worker-specific environment values. |
 
 The reference LLM agent builds a compact prompt from topology size, symptom keys, episode data, Pingmesh windows, and high-signal anomalies. A custom agent may instead use rules, symbolic logic, retrieval, additional tool calls, or another model wrapper.
+
+Initial symptoms do not include whole-network FIB differences or device-state summaries. Use diagnostic tools to investigate routing, BGP, interfaces, ACLs, services and logs. Private effect and recovery evidence is kept out of the agent context. This policy applies to new campaigns; archived and running frozen campaigns keep their original inputs and scores.
 
 ## Output: `DiagnosisResult`
 
@@ -70,7 +72,7 @@ The reference LLM agent builds a compact prompt from topology size, symptom keys
 | `confidence` | Float between 0 and 1. |
 | `reasoning` | Short explanation tied to observed evidence. |
 
-`success=False` is an agent execution failure, even if the fallback verdict is `inconclusive`. It does not count as a completed diagnosis. A successful `inconclusive` verdict remains a normal scored result. The acceptance runner checkpoints and stops on execution failures after fault recovery; it retains the lab for resume and quarantines failed recoveries. Ordinary SDK session ownership and teardown defaults are unchanged.
+`success=False` is an agent execution failure, even if the fallback verdict is `inconclusive`. It does not count as a completed diagnosis. A successful `inconclusive` verdict remains a normal scored result. Acceptance records the failed case and continues after verified fault recovery. Budget exhaustion, timeout and invalid agent output do not stop the suite. Diagnosis mode also continues after an invalid effect audit when a complete recovery health window succeeds; that case stays invalid and unscored. These finished failures are reported separately and skipped on resume. Setup failures, missing recovery proof, effects-only invalid cases and cancellation still stop execution; failed recovery quarantines the lab. Ordinary SDK session ownership and teardown defaults are unchanged.
 | `metadata` | Optional provider, model, tool-call, token, or timing details. |
 
 Return structured fields rather than only natural language. Free-form explanations are useful for review, but scoring depends on verdict, fault type, and location fields.

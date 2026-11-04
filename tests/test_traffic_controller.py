@@ -10,7 +10,6 @@ from netopsbench.platform.traffic.controller import (
     TrafficController,
     TrafficFlow,
     _client_plans,
-    _parse_bandwidth_bps,
     _plan_digest,
 )
 
@@ -148,7 +147,9 @@ def test_compact_plan_preserves_existing_flow_contract():
         },
     ]
     assert _plan_digest(plans["client1"]) == _plan_digest(plans["client1"])
-    assert _parse_bandwidth_bps("1G") == 1_000_000_000
+    from netopsbench.platform.traffic.estimator import bandwidth_to_bps
+
+    assert int(bandwidth_to_bps("1G")) == 1_000_000_000
 
 
 def test_synthetic_1024_client_plan_has_4096_flows():

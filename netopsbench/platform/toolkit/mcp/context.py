@@ -1,3 +1,4 @@
+from netopsbench.platform.toolkit.public import public_tool_result
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 _toolkit: AgentToolkit | None = None
@@ -11,4 +12,5 @@ def get_toolkit() -> AgentToolkit:
 
 
 def as_payload(result):
-    return result.data if result.success else {"error": result.error}
+    payload = public_tool_result(result)
+    return payload["data"] if payload["success"] else {"error": payload["error"]}
