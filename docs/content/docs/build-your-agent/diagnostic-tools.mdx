@@ -62,3 +62,11 @@ current episode window by default and filter by topology identity; responses
 include `time_scope`. A live fallback snapshot is explicitly separate from
 historical telemetry. Periodic faults can be healthy at the instant of a live
 query: inspect the full historical window before concluding network health.
+
+BGP tool parameters are enumerated in the MCP schema. For `get_bgp_neighbor`,
+use `view="detail"` or `view="advertised_routes"`; `advertised-routes` and
+`advertised` are accepted aliases for the latter. Received routes are not
+supported. `prefix` applies only to advertised routes and matches exactly.
+For `get_bgp_neighbors`, use `format="structured"`, `"raw"`, or `"both"`;
+`"json"` aliases `"structured"`. Invalid view/format values return argument
+guidance; collection failures remain redacted as `Observation unavailable`.

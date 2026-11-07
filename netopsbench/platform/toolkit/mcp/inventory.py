@@ -1,3 +1,5 @@
+from typing import Literal
+
 from .context import as_payload, get_toolkit
 from .contracts import ToolSpec
 
@@ -12,13 +14,21 @@ def get_device_interfaces(device: str, format: str = "summary", interface: str |
     return as_payload(get_toolkit().get_device_interfaces(device=device, format=format, interface=interface))
 
 
-def get_bgp_neighbors(device: str, format: str = "structured"):
-    """Get BGP neighbor status for a network device."""
+def get_bgp_neighbors(device: str, format: Literal["structured", "raw", "both", "json"] = "structured"):
+    """Get BGP neighbor status; format: structured (default), raw, both; json aliases structured."""
     return as_payload(get_toolkit().get_bgp_neighbors(device=device, format=format))
 
 
-def get_bgp_neighbor(device: str, peer: str, view: str = "detail", prefix: str | None = None):
-    """Get live detail for one BGP neighbor on one network device."""
+def get_bgp_neighbor(
+    device: str,
+    peer: str,
+    view: Literal["detail", "advertised_routes", "advertised-routes", "advertised"] = "detail",
+    prefix: str | None = None,
+):
+    """Get one BGP peer: detail or advertised_routes (aliases: advertised-routes, advertised); received routes unsupported.
+
+    prefix optionally filters advertised_routes by exact prefix; it does not filter detail.
+    """
     return as_payload(get_toolkit().get_bgp_neighbor(device=device, peer=peer, view=view, prefix=prefix))
 
 

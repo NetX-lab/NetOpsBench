@@ -176,3 +176,93 @@ def test_transport_receives_total_session_deadline(monkeypatch):
     with pytest.raises(TimeoutError):
         with tool_deadline_scope(time.monotonic() - 1):
             docker_exec("container", ["true"], timeout=30)
+
+
+@pytest.mark.parametrize("view", ["advertised_routes", "advertised-routes", "advertised"])
+def test_bgp_advertised_aliases_use_canonical_output(toolkit, monkeypatch, view):
+    from netopsbench.platform.toolkit.mcp import inventory
+
+    calls = []
+    monkeypatch.setattr(inventory, "get_toolkit", lambda: toolkit)
+
+    def run(container, args, timeout):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"advertisedRoutes": {"192.168.2.0/30": {}, "192.168.3.0/30": {}}})
+        )
+
+    monkeypatch.setattr(toolkit, "_docker_exec", run)
+    result = inventory.get_bgp_neighbor("leaf1", "10.0.0.1", view=view, prefix="192.168.2.0/30")
+    assert result["view"] == "advertised_routes"
+    assert result["advertised_routes"] == {"192.168.2.0/30": {}}
+    assert calls == [["vtysh", "-c", "show bgp ipv4 unicast neighbors 10.0.0.1 advertised-routes json"]]
+
+
+def test_bgp_json_format_is_structured(toolkit, monkeypatch):
+    monkeypatch.setattr(toolkit, "_docker_exec", lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout=""))
+    assert (
+        toolkit.get_bgp_neighbors("leaf1", "json").to_dict()
+        == toolkit.get_bgp_neighbors("leaf1", "structured").to_dict()
+    )
+
+
+@pytest.mark.parametrize("view", ["received-routes", "received_routes", "/private/fault.yml"])
+def test_bgp_invalid_view_has_safe_guidance_without_device_access(toolkit, monkeypatch, view):
+    from netopsbench.platform.toolkit.mcp import inventory
+    from netopsbench.platform.toolkit.public import public_tool_result
+
+    monkeypatch.setattr(inventory, "get_toolkit", lambda: toolkit)
+    monkeypatch.setattr(toolkit, "_resolve_container", lambda *args: pytest.fail("Invalid view accessed device"))
+    result = public_tool_result(toolkit.get_bgp_neighbor("leaf1", "10.0.0.1", view=view))
+    assert not result["success"]
+    assert "use detail or advertised_routes" in result["error"]
+    assert "Received routes are not supported" in result["error"]
+    assert "/private" not in result["error"]
+    assert inventory.get_bgp_neighbor("leaf1", "10.0.0.1", view=view) == {"error": result["error"]}
+    assert not validate_tool_call("get_bgp_neighbor", {"device": "leaf1", "peer": "10.0.0.1", "view": view})
+
+
+def test_bgp_invalid_format_and_collection_error_are_distinct(toolkit, monkeypatch):
+    from netopsbench.platform.toolkit.mcp import inventory
+
+    monkeypatch.setattr(inventory, "get_toolkit", lambda: toolkit)
+    monkeypatch.setattr(
+        toolkit,
+        "_docker_exec",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="/private/fault.yml corrupt 20%"),
+    )
+    assert "use structured, raw or both" in inventory.get_bgp_neighbors("leaf1", format="invalid")["error"]
+    assert inventory.get_bgp_neighbors("leaf1") == {"error": "Observation unavailable"}
+    assert inventory.get_bgp_neighbor("leaf1", "10.0.0.1", view="advertised") == {"error": "Observation unavailable"}
+
+
+def test_bgp_schema_lists_supported_values():
+    schemas = {s["name"]: s for s in tool_schemas()}
+    assert schemas["get_bgp_neighbor"]["input_schema"]["properties"]["view"]["enum"] == [
+        "detail",
+        "advertised_routes",
+        "advertised-routes",
+        "advertised",
+    ]
+    assert schemas["get_bgp_neighbors"]["input_schema"]["properties"]["format"]["enum"] == [
+        "structured",
+        "raw",
+        "both",
+        "json",
+    ]
+
+
+@pytest.mark.parametrize("with_gateway", [False, True])
+def test_bgp_fastmcp_schema_matches_registry(with_gateway):
+    import asyncio
+
+    from netopsbench.platform.toolkit.fastmcp_server import create_server
+
+    server = create_server(gateway=object() if with_gateway else None)
+    registered = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    schemas = {schema["name"]: schema for schema in tool_schemas()}
+    for name, argument in [("get_bgp_neighbor", "view"), ("get_bgp_neighbors", "format")]:
+        assert (
+            registered[name].parameters["properties"][argument]["enum"]
+            == schemas[name]["input_schema"]["properties"][argument]["enum"]
+        )

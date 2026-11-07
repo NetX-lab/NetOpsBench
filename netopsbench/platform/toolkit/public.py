@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime
 
+from ._core.common import PublicArgumentError
+
 _PRIVATE_KEYS = frozenset(
     {
         "injection",
@@ -32,7 +34,7 @@ def public_observation(value):
             if key in _PRIVATE_KEYS or (key.startswith("_") and key not in {"_truncation", "_truncated_text"}):
                 continue
             if key in _ERROR_KEYS and child:
-                projected[key] = "Observation unavailable"
+                projected[key] = child.value if isinstance(child, PublicArgumentError) else "Observation unavailable"
             elif key == "data_source_status" and child not in ("ok", "unavailable", "error"):
                 # Legacy observations append query exceptions to this status.
                 projected[key] = "error"

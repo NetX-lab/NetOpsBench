@@ -11,7 +11,7 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.platform.observability.bgp_parser import parse_bgp_summary
 from netopsbench.platform.topology.topology_utils import is_network_device_name
 
-from ..common import ToolResult, truncate_text_lines
+from ..common import PublicArgumentError, ToolResult, truncate_text_lines
 from .route_parsers import parse_route_table
 
 logger = get_logger(__name__)
@@ -67,10 +67,12 @@ class RoutingOpsMixin:
 
     def get_bgp_neighbors(self, device: str, format: str = "structured") -> ToolResult:
         try:
-            self._validate_device_name(device)
             safe_format = (format or "raw").lower()
+            if safe_format == "json":
+                safe_format = "structured"
             if safe_format not in {"raw", "structured", "both"}:
-                return ToolResult(success=False, data=None, error=f"Invalid format: {format}")
+                return ToolResult(success=False, data=None, error=PublicArgumentError.BGP_FORMAT)
+            self._validate_device_name(device)
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} does not run BGP")
             container = self._resolve_container(device)
@@ -100,14 +102,16 @@ class RoutingOpsMixin:
 
     def get_bgp_neighbor(self, device: str, peer: str, view: str = "detail", prefix: str | None = None) -> ToolResult:
         """Return live detail for one BGP session on one device."""
+        if view in {"advertised-routes", "advertised"}:
+            view = "advertised_routes"
+        if view not in {"detail", "advertised_routes"}:
+            return ToolResult(success=False, data=None, error=PublicArgumentError.BGP_VIEW)
         try:
             self._validate_device_name(device)
             safe_peer = self._validate_ip_address(peer, "peer")
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} does not run BGP")
             container = self._resolve_container(device)
-            if view not in {"detail", "advertised_routes"}:
-                raise ValueError("view must be detail or advertised_routes")
             if view == "advertised_routes":
                 safe_prefix = self._validate_prefix(prefix) if prefix else None
                 result = self._docker_exec(
