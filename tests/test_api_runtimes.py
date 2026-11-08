@@ -1126,8 +1126,10 @@ def test_provision_interrupt_retains_ownership_on_cleanup_failure(tmp_path, monk
 
     def fail_cleanup(*args):
         if metadata_failure:
+
             def fail_write(runtime):
                 raise OSError("metadata disk failure")
+
             monkeypatch.setattr(runtimes_mod.RuntimePool, "_write_metadata", fail_write)
         raise cleanup
 

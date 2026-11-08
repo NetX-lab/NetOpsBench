@@ -42,6 +42,15 @@ def _run_handle_from_payload(payload: dict[str, Any]) -> RunHandle:
     )
 
 
+class _SDKSessionOrchestrator(SessionOrchestrator):
+    def _execute_on_runtime_pool(self, *, runtime: Any, **kwargs: Any) -> Any:
+        # Internal execution needs platform pools for quarantine operations.
+        # Provisioning and teardown still use the SDK's exception mapping.
+        return super()._execute_on_runtime_pool(
+            runtime=runtime._runtime if isinstance(runtime, RuntimePool) else runtime, **kwargs
+        )
+
+
 class SessionManager:
     """SDK manager delegating benchmark execution to the shared episode kernel."""
 
@@ -55,7 +64,7 @@ class SessionManager:
     ):
         self.platform = platform
         self.name = "sessions"
-        self._executor = SessionOrchestrator(
+        self._executor = _SDKSessionOrchestrator(
             platform=platform,
             workspace=workspace,
             runtime_manager=runtime_manager,

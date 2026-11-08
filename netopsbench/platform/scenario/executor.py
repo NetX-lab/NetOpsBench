@@ -406,9 +406,7 @@ class ScenarioExecutor:
                 full_validation_reason = (
                     "custom_callback"
                     if not verified_callbacks
-                    else "recovery_retried"
-                    if attempts > 1 or state_audit.get("had_errors")
-                    else None
+                    else "recovery_retried" if attempts > 1 or state_audit.get("had_errors") else None
                 )
                 if (recovery_attempted or full_validation_reason) and baseline_window is not None:
                     try:

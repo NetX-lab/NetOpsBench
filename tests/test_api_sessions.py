@@ -761,6 +761,107 @@ def test_keep_runtime_false_tears_down_runtime_and_true_preserves_it(tmp_path, m
     assert preserved.report().raw["execution"] == "real_runtime_runner"
 
 
+@pytest.mark.parametrize("entry_point", ["run_scenario", "run_suite"])
+@pytest.mark.parametrize("failure_phase", ["cleanup", "final_calibration"])
+@pytest.mark.parametrize("keep_runtime", [False, True])
+def test_sdk_session_failure_quarantines_runtime_and_preserves_report(
+    tmp_path, monkeypatch, entry_point, failure_phase, keep_runtime
+):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+    import netopsbench.platform.session.dispatch as dispatch_mod
+
+    _install_real_runtime_mocks(monkeypatch)
+    _install_platform_runtime_mocks(monkeypatch)
+    executed, quarantined = [], []
+    original_quarantine = runtimes_mod.RuntimePool.mark_quarantined
+    original_error = f"original {failure_phase} failure"
+
+    class FailingRunner(dispatch_mod.ScenarioExecutor):
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            executed.append(scenario.id)
+            return {
+                "success": True,
+                "case_valid": True,
+                "episode": {},
+                "cleanup": {
+                    "success": failure_phase != "cleanup",
+                    "errors": [original_error] if failure_phase == "cleanup" else [],
+                },
+            }
+
+        def final_calibration(self, scenario, **kwargs):
+            raise RuntimeError(original_error)
+
+    def record_quarantine(runtime, reason, workers=None):
+        original_quarantine(runtime, reason, workers)
+        quarantined.append(runtime)
+
+    monkeypatch.setattr(dispatch_mod, "ScenarioExecutor", FailingRunner)
+    monkeypatch.setattr(runtimes_mod.RuntimePool, "mark_quarantined", record_quarantine)
+    with NetOpsBench(workspace=str(tmp_path)) as bench:
+        first = _make_scenario(scenario_id="first")
+        second = _make_scenario(scenario_id="second")
+        arguments = {"scenario": first} if entry_point == "run_scenario" else {"scenarios": [first, second]}
+        run = getattr(bench.sessions, entry_point)(
+            **arguments, agent=DummyAgent(), keep_runtime=keep_runtime, trace=False
+        )
+        report = run.report()
+
+        assert run.status == "failed"
+        assert quarantined
+        runtime = quarantined[0]
+        reason = "scenario_cleanup_failure" if failure_phase == "cleanup" else "final_calibration_failure"
+        assert runtime.metadata["quarantine_reason"] == reason
+        assert runtime.metadata["quarantined_workers"] == ["worker-1"]
+        assert runtime.metadata["quarantined"] is True
+        worker = report.raw["worker_summaries"][0]
+        expected_count = 2 if entry_point == "run_suite" and failure_phase == "final_calibration" else 1
+        assert len(executed) == expected_count
+        assert len(report.detailed_results) == expected_count
+        assert report.summary["total_cases"] == (2 if entry_point == "run_suite" else 1)
+        assert report.summary["average_score"] == 1.0
+        if failure_phase == "cleanup":
+            assert report.scenario_summaries[0]["failure_stage"] == "cleanup"
+            raw = json.loads(Path(report.scenario_summaries[0]["raw_result_path"]).read_text())
+            assert raw["cleanup"]["errors"] == [original_error]
+            if entry_point == "run_suite":
+                assert report.scenario_summaries[1]["status"] == "skipped_infrastructure_failure"
+        else:
+            assert worker["final_calibration"] == {"success": False, "error": original_error}
+
+        preserved = bench.runtimes.get(run.runtime_id)
+        if keep_runtime:
+            assert preserved.state == "quarantined"
+            persisted = json.loads((preserved.root_dir / "runtime.json").read_text())
+            assert persisted["metadata"]["quarantined"] is True
+        else:
+            assert preserved is None
+            assert not runtime.root_dir.exists()
+            assert report.raw["teardown"] == "performed"
+
+
+@pytest.mark.parametrize("failure_phase", ["provision", "teardown"])
+def test_sdk_session_retains_public_runtime_errors(tmp_path, monkeypatch, failure_phase):
+    import netopsbench.platform.runtime.manager as runtimes_mod
+    from netopsbench.sdk import RuntimeProvisionError
+
+    _install_real_runtime_mocks(monkeypatch)
+    _install_platform_runtime_mocks(monkeypatch)
+    original = OSError(f"original {failure_phase} failure")
+
+    def fail(*args, **kwargs):
+        raise original
+
+    owner = runtimes_mod.RuntimeManager if failure_phase == "provision" else runtimes_mod.RuntimePool
+    monkeypatch.setattr(owner, failure_phase, fail)
+    with NetOpsBench(workspace=str(tmp_path)) as bench:
+        with pytest.raises(RuntimeProvisionError, match=str(original)) as error:
+            bench.sessions.run_scenario(
+                scenario=_make_scenario(scenario_id="runtime-failure"), agent=DummyAgent(), trace=False
+            )
+    assert error.value.__cause__ is original
+
+
 def test_benchmark_report_exposes_spec_shape_and_void_helpers(tmp_path, capsys):
     report = BenchmarkReport(
         id="report-123",
