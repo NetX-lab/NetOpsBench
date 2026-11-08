@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_list.add_argument("path", nargs="?", default="scenarios", help="Scenario file or directory")
     scenario_validate = scenario_sub.add_parser("validate", help="Validate one scenario YAML")
     scenario_validate.add_argument("file", help="Scenario YAML file")
-    scenario_migrate = scenario_sub.add_parser("migrate", help="Copy scenarios to recovery policy v2")
+    scenario_migrate = scenario_sub.add_parser("migrate", help="Copy scenarios to recovery policy v3")
     scenario_migrate.add_argument("source", type=Path)
     scenario_migrate.add_argument("--out", type=Path, required=True)
     scenario_generate = scenario_sub.add_parser("generate", help="Generate scenario YAML for one scale")

@@ -47,3 +47,35 @@ def test_independent_evaluation_still_builds_truth_when_grade_is_absent(monkeypa
     )
     assert calls == ["topology"]
     assert result[0].score == 0
+
+
+def test_diagnosis_entrypoint_precedence_is_preserved():
+    from netopsbench.agents.base import DiagnosisResult
+    from netopsbench.evaluator.scorer import AgentOutput
+
+    diagnosis = DiagnosisResult(
+        agent_name="custom",
+        verdict="fault_detected",
+        findings={
+            "location": {"device": "leaf1"},
+            "device": "leaf2",
+            "interface": "Ethernet0",
+            "tool_calls": [{"tool": "findings"}],
+        },
+        metadata={"evidence": ["metadata evidence"], "fault_type": "link_down", "time_taken_seconds": 9},
+    )
+    sdk = AgentOutput.from_diagnosis(diagnosis)
+    runtime = AgentOutput.from_diagnosis(
+        diagnosis,
+        merge_location_fields=True,
+        metadata_evidence=False,
+        findings_tool_calls=False,
+        time_taken_seconds=2,
+    )
+    assert sdk.location == {"device": "leaf1"}
+    assert runtime.location == {"device": "leaf1", "interface": "Ethernet0"}
+    assert sdk.evidence == ["metadata evidence"] and runtime.evidence == []
+    assert sdk.tool_calls == [{"tool": "findings"}] and runtime.tool_calls == []
+    assert sdk.time_taken_seconds == 9 and runtime.time_taken_seconds == 2
+    assert sdk.fault_type == runtime.fault_type == "link_down"
+    assert diagnosis.findings["location"] == {"device": "leaf1"}

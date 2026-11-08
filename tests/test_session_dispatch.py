@@ -55,7 +55,7 @@ class _FakeEvaluator:
 
 def _scenario(scenario_id: str) -> ScenarioSpec:
     return ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id=scenario_id,
         name=scenario_id,
         description="test",

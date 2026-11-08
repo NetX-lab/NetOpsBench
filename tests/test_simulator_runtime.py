@@ -36,7 +36,7 @@ from netopsbench.sdk.simulators import SimulatorManager
 
 def _scenario(*, healthy: bool = False) -> ScenarioSpec:
     return ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="scenario-1",
         name="scenario-1",
         topology_scale="xs",
@@ -755,3 +755,19 @@ def test_failed_provision_cleanup_occupies_capacity_until_drain():
     pool.drain()
     assert runtime.teardowns == 1
     assert pool._runtime_count() == 0
+
+
+def test_public_step_required_flags_and_transition_serialization_are_preserved():
+    from pydantic import ValidationError
+
+    from netopsbench.platform.incident.engine import SessionTransition
+    from netopsbench.platform.simulator.environment import StepResult
+
+    transition = SessionTransition(state=SessionState.ACTIVE)
+    with pytest.raises(ValidationError):
+        StepResult(state=SessionState.ACTIVE)
+    result = StepResult.model_validate(transition.model_dump())
+    assert result.model_dump() == transition.model_dump()
+    assert set(StepResult.model_json_schema()["required"]) == {"valid", "case_valid", "state"}
+    with pytest.raises(ValidationError):
+        result.valid = False

@@ -23,7 +23,7 @@ def test_recovery_policy_authoring_and_legacy_roundtrip(tmp_path):
         metadata={"negative_sample": True},
     )
     new = manager.create(**kwargs)
-    assert RecoveryPolicy.from_metadata(new.metadata).version == 2
+    assert RecoveryPolicy.from_metadata(new.metadata).version == 3
     old = new.model_copy(deep=True)
     old.metadata.pop("recovery_policy")
     digest = old.digest
@@ -155,7 +155,7 @@ def test_validate_scenario_does_not_mutate_fault_type_alias():
         scenario_id="alias_case",
         name="Alias Case",
         topology_scale="xs",
-        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="static_route_misconfiguration",

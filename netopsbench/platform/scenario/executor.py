@@ -290,8 +290,7 @@ class ScenarioExecutor:
             self._calibration_current
             and handoff.ready
             and scope == handoff.scope
-            and window_error(handoff.window, self.minimum_baseline_seconds, max_age_seconds=handoff.max_age_seconds)
-            is None
+            and window_error(handoff.window, self.minimum_baseline_seconds) is None
         ):
             return {**self._last_calibration, "reused": True}
         try:

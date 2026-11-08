@@ -15,8 +15,6 @@ from pathlib import Path
 
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-MAX_WINDOW_AGE_SECONDS = 600
-
 
 @dataclass(frozen=True)
 class RuntimeScope:
@@ -107,7 +105,6 @@ class BaselineHandoff:
     last_verified_end: datetime | None = None
     uses: int = 0
     max_cases: int = 10
-    max_age_seconds: int = MAX_WINDOW_AGE_SECONDS
     ready: bool = False
 
     def clear(self, reason: str = "no_verified_window") -> None:
@@ -133,7 +130,7 @@ class BaselineHandoff:
             return None, "scope_changed"
         if self.epoch is None:
             return None, "recalibration_due"
-        reason = window_error(window, minimum_seconds, max_age_seconds=self.max_age_seconds)
+        reason = window_error(window, minimum_seconds)
         if reason:
             return None, reason
         self.uses += 1
@@ -142,11 +139,7 @@ class BaselineHandoff:
     def publish(
         self, window: dict, scope: RuntimeScope | None, source: str, minimum_seconds: int, *, verified: bool = False
     ) -> bool:
-        reason = (
-            "scope_unavailable"
-            if not scope
-            else window_error(window, minimum_seconds, max_age_seconds=self.max_age_seconds)
-        )
+        reason = "scope_unavailable" if not scope else window_error(window, minimum_seconds)
         if reason:
             self.window = None
             self.last_reason = reason
@@ -168,7 +161,7 @@ class BaselineHandoff:
         return True
 
 
-def window_error(window: dict, minimum_seconds: int, *, max_age_seconds: int = MAX_WINDOW_AGE_SECONDS) -> str | None:
+def window_error(window: dict, minimum_seconds: int) -> str | None:
     try:
         start = datetime.fromisoformat(window["start_time"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(window["end_time"].replace("Z", "+00:00"))
@@ -179,8 +172,6 @@ def window_error(window: dict, minimum_seconds: int, *, max_age_seconds: int = M
         age = (datetime.now(UTC) - end).total_seconds()
         if age < 0:
             return "future_window"
-        if age > max_age_seconds:
-            return "expired_window"
     except (KeyError, TypeError, ValueError, OverflowError):
         return "invalid_window"
     return None

@@ -36,7 +36,7 @@ def observation(*, healthy=True, complete=True):
 
 def scenario(name="case", fault="none"):
     return ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id=name,
         name=name,
         topology_scale="xs",
@@ -49,7 +49,7 @@ def scenario(name="case", fault="none"):
     )
 
 
-@pytest.mark.parametrize("age,duration,expected", [(0, 66, True), (601, 66, False), (-10, 66, False), (0, 30, False)])
+@pytest.mark.parametrize("age,duration,expected", [(0, 66, True), (601, 66, True), (-10, 66, False), (0, 30, False)])
 def test_window_age_and_full_coverage_duration(age, duration, expected):
     assert (window_error(window(age, duration), 60) is None) is expected
 
@@ -63,12 +63,6 @@ def test_handoff_requires_recovery_and_does_not_refresh_window():
     h.ready = True
     assert h.take("scope", 60)[0] == w
     assert h.uses == 2
-
-
-def test_changed_scope_rejects_handoff():
-    h = BaselineHandoff()
-    h.publish(window(), "old", "case", 60, verified=True)
-    assert h.take("changed", 60)[0] is None
 
 
 def test_only_a_new_verified_window_refreshes_calibration(monkeypatch):
@@ -94,9 +88,7 @@ def test_only_a_new_verified_window_refreshes_calibration(monkeypatch):
     assert handoff.uses == 2
 
 
-@pytest.mark.parametrize(
-    "age,duration,reason", [(601, 66, "expired_window"), (-10, 66, "future_window"), (0, 30, "short_window")]
-)
+@pytest.mark.parametrize("age,duration,reason", [(-10, 66, "future_window"), (0, 30, "short_window")])
 def test_rejected_publication_preserves_the_reason(age, duration, reason):
     handoff = BaselineHandoff()
     assert not handoff.publish(window(age, duration), "scope", "case", 60, verified=True)
@@ -215,7 +207,7 @@ def test_failed_baseline_retains_window_coverage_and_health_without_diagnosis(ru
     assert not runner._baseline_handoff.ready
 
 
-@pytest.mark.parametrize("invalid", ["scope", "expiry", "cleanup", "unhealthy", "incomplete", "missing_absolute"])
+@pytest.mark.parametrize("invalid", ["scope", "case_limit", "cleanup", "unhealthy", "incomplete", "missing_absolute"])
 def test_invalid_candidate_forces_fresh_single_baseline(runner, monkeypatch, invalid):
     if invalid in {"unhealthy", "incomplete", "missing_absolute"}:
         candidate = observation(healthy=invalid != "unhealthy", complete=invalid != "incomplete")
@@ -232,8 +224,8 @@ def test_invalid_candidate_forces_fresh_single_baseline(runner, monkeypatch, inv
     run(runner, "one")
     if invalid == "scope":
         monkeypatch.setattr(runner, "_baseline_scope", lambda _: "new")
-    if invalid == "expiry":
-        runner._baseline_handoff.window = window(age=601)
+    if invalid == "case_limit":
+        runner._baseline_handoff.uses = runner._baseline_handoff.max_cases
     monkeypatch.setattr(
         runner, "_cleanup_after_scenario", lambda *a, **k: {"success": True, "validation_level": "state_checked"}
     )
@@ -279,35 +271,16 @@ def test_verified_recovery_window_is_bound_to_its_new_identity(runner, monkeypat
     assert second["baseline_preparation"]["scope_changes"] == []
 
 
-def test_invalid_case_can_publish_an_independently_verified_recovery(runner, monkeypatch):
+@pytest.mark.parametrize("failure", ["observation", "agent"])
+def test_failed_case_preserves_failure_and_publishes_verified_recovery(runner, monkeypatch, failure):
     def analyze(windows, *args, **kwargs):
         if any(w.get("name") != "baseline" for w in windows):
             raise RuntimeError("Fault observation is invalid")
         return observation()
 
-    monkeypatch.setattr(runner, "_inject_fault", lambda *a: {"success": True})
-    monkeypatch.setattr(runner, "_merge_observation_windows", analyze)
-    monkeypatch.setattr(
-        runner,
-        "_cleanup_after_scenario",
-        lambda *a, **k: {
-            "success": True,
-            "validated_baseline": window(),
-            "validated_baseline_scope": RuntimeScope({}, {}, {}),
-        },
-    )
-    first = run(runner, "invalid", "link_down")
-    assert first["case_valid"] is False
-    assert first["success"] is False
-    assert first["cleanup"]["baseline_handoff"] is True
-    assert first["cleanup"]["baseline_handoff_reason"] == "verified_window_published"
-    monkeypatch.setattr(runner, "_merge_observation_windows", lambda *a, **k: observation())
-    second = run(runner, "next")
-    assert second["baseline_preparation"]["mode"] == "reused"
-    assert second["baseline_preparation"]["source_scenario_id"] == "invalid"
-
-
-def test_agent_failure_keeps_case_failure_and_verified_recovery_handoff(runner, monkeypatch):
+    if failure == "observation":
+        monkeypatch.setattr(runner, "_inject_fault", lambda *a: {"success": True})
+        monkeypatch.setattr(runner, "_merge_observation_windows", analyze)
     monkeypatch.setattr(
         runner,
         "_cleanup_after_scenario",
@@ -318,12 +291,19 @@ def test_agent_failure_keeps_case_failure_and_verified_recovery_handoff(runner, 
         },
     )
     first = runner.run_scenario(
-        scenario("failed-agent"), diagnosis_callback=lambda *a, **k: {"success": False, "error": "agent failed"}
+        scenario("failed", "link_down" if failure == "observation" else "none"),
+        diagnosis_callback=lambda *a, **k: (
+            {"success": False, "error": "agent failed"} if failure == "agent" else {"verdict": "network_healthy"}
+        ),
     )
-    assert first["case_valid"] is True
+    assert first["case_valid"] is (failure == "agent")
     assert first["success"] is False
     assert first["cleanup"]["baseline_handoff"] is True
-    assert run(runner, "next")["baseline_preparation"]["mode"] == "reused"
+    assert first["cleanup"]["baseline_handoff_reason"] == "verified_window_published"
+    monkeypatch.setattr(runner, "_merge_observation_windows", lambda *a, **k: observation())
+    second = run(runner, "next")
+    assert second["baseline_preparation"]["mode"] == "reused"
+    assert second["baseline_preparation"]["source_scenario_id"] == "failed"
 
 
 def test_runtime_scope_changes_on_restart_config_policy_and_traffic(tmp_path, monkeypatch):
@@ -477,3 +457,53 @@ def test_failed_state_recovery_cannot_reuse_previous_baseline(runner, monkeypatc
     assert result["cleanup_failed"] and result["cleanup"]["success"] is False
     assert runner._baseline_handoff.window is None
     assert not runner._baseline_handoff.ready
+
+
+def test_case_reset_preserves_runtime_state_and_clears_all_case_evidence(tmp_path):
+    generate_topology("xs", str(tmp_path))
+    runner = ScenarioExecutor(topology_dir=str(tmp_path))
+    traffic = runner.traffic_controller = object()
+    handoff = runner._baseline_handoff
+    runner._case_frr_before = {"old": True}
+    runner._case_initial_scope = object()
+    runner._case_routes = {"old": True}
+    runner._case_affected_pairs = ["old"]
+    runner._case_probe_pairs = ["old"]
+    runner.timings.skip("injection", "old")
+    runner.begin_case()
+    assert runner.traffic_controller is traffic
+    assert runner._baseline_handoff is handoff
+    assert runner.timings.phases == {}
+    assert runner._case_frr_before is None
+    assert runner._case_initial_scope is runner._case_routes is None
+    assert runner._case_affected_pairs == runner._case_probe_pairs == []
+
+
+@pytest.mark.parametrize("entry", ["benchmark", "simulator"])
+def test_elapsed_hours_do_not_refresh_or_replace_a_verified_baseline(runner, monkeypatch, entry):
+    from netopsbench.platform.scenario import baseline
+    from netopsbench.platform.scenario.incident_backend import ExecutorIncidentBackend
+
+    def execute(name):
+        if entry == "benchmark":
+            return run(runner, name)
+        backend = ExecutorIncidentBackend(runner)
+        backend.prepare(scenario(name))
+        backend.finish()
+        return {"baseline_preparation": backend.baseline_preparation}
+
+    execute("first")
+    original = dict(runner._baseline_handoff.window)
+    later = datetime.fromisoformat(original["end_time"]) + timedelta(hours=2)
+
+    class LaterDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return later
+
+    monkeypatch.setattr(baseline, "datetime", LaterDatetime)
+    second = execute("second")
+    assert second["baseline_preparation"]["mode"] == "reused"
+    assert runner._baseline_handoff.window == original
+    assert runner._baseline_handoff.uses == 2
+    assert runner.calls.count("reference") == 1

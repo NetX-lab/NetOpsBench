@@ -19,6 +19,23 @@ from scripts import validate_pingmesh_scales as cli
 BACKEND = {"provider": "upstream", "containerlab_version": "test"}
 
 
+@pytest.fixture
+def write_case(tmp_path):
+    def write(name, filename=None):
+        return save_scenario_file(
+            ScenarioSpec(
+                metadata={"recovery_policy": {"version": 3}},
+                scenario_id=name,
+                name=name,
+                topology_scale="xs",
+                episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
+            ),
+            tmp_path / f"{filename or name}.yaml",
+        )
+
+    return write
+
+
 @pytest.mark.parametrize(
     "change", [None, "imported_image", "content", "source", "agent", "backend", "health", "case", "fingerprint"]
 )
@@ -251,18 +268,8 @@ def test_resume_retains_valid_low_scores_and_retries_incomplete_cases():
     assert acceptance.finished_case_ids(entry) == {"low-score", "healthy"}
 
 
-def test_completed_campaign_returns_without_constructing_agent_or_executor(tmp_path):
-    path = tmp_path / "low-score.yaml"
-    save_scenario_file(
-        ScenarioSpec(
-            metadata={"recovery_policy": {"version": 2}},
-            scenario_id="low-score",
-            name="low-score",
-            topology_scale="xs",
-            episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
-        ),
-        path,
-    )
+def test_completed_campaign_returns_without_constructing_agent_or_executor(tmp_path, write_case):
+    path = write_case("low-score")
     entry = {
         "agents": {
             "codex": {
@@ -295,50 +302,11 @@ def test_completed_campaign_returns_without_constructing_agent_or_executor(tmp_p
     assert entry["agents"]["codex"]["selected_cases"] == [path.stem]
 
 
-def test_failed_execution_is_not_completed_model_acceptance():
-    failed = {
-        "scenario_summaries": [
-            {"scenario_id": "failed", "case_valid": True, "status": "failed", "cleanup_failed": False}
-        ]
-    }
-    assert acceptance.finished_case_ids({"cases": [failed]}) == set()
-
-
-def test_recovered_agent_failure_is_finished_but_not_a_completed_diagnosis():
-    summary = {
-        "scenario_id": "budget-exhausted",
-        "case_valid": True,
-        "status": "failed",
-        "failure_stage": "agent",
-        "cleanup_failed": False,
-    }
-    report = {"diagnosis_complete": False, "scenario_summaries": [summary]}
-    assert acceptance.finished_case_ids({"cases": [report]}) == {"budget-exhausted"}
-    assert report["diagnosis_complete"] is False
-    summary["cleanup_failed"] = True
-    assert acceptance.finished_case_ids({"cases": [report]}) == set()
-    summary.update(cleanup_failed=False, failure_stage="execution")
-    assert acceptance.finished_case_ids({"cases": [report]}) == set()
-
-
 @pytest.mark.parametrize("failure_stage", ["agent", "effect_validation"])
-def test_run_cases_records_case_failure_and_continues_without_retry(monkeypatch, tmp_path, failure_stage):
+def test_run_cases_records_case_failure_and_continues_without_retry(monkeypatch, tmp_path, write_case, failure_stage):
     import threading
 
-    paths = []
-    for name in ["agent-failed", "valid-zero"]:
-        path = tmp_path / f"{name}.yaml"
-        save_scenario_file(
-            ScenarioSpec(
-                metadata={"recovery_policy": {"version": 2}},
-                scenario_id=name,
-                name=name,
-                topology_scale="xs",
-                episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
-            ),
-            path,
-        )
-        paths.append(path)
+    paths = [write_case(name) for name in ("agent-failed", "valid-zero")]
     selected = []
 
     def execute(**kwargs):
@@ -395,21 +363,40 @@ def test_run_cases_records_case_failure_and_continues_without_retry(monkeypatch,
     assert selected == ["agent-failed", "valid-zero"]
 
 
-def test_resume_skips_verified_invalid_effect_without_scoring_it():
+@pytest.mark.parametrize(
+    "stage,valid,diagnosed,cleanup_failed,mode,finished",
+    [
+        pytest.param(None, True, None, False, None, False, id="unknown-execution-failure"),
+        pytest.param("agent", True, False, False, None, True, id="agent-failed-recovered"),
+        pytest.param("agent", True, False, True, None, False, id="agent-failed-unrecovered"),
+        pytest.param("execution", True, False, False, None, False, id="execution-failed"),
+        pytest.param("effect_validation", False, False, False, None, True, id="invalid-effect-recorded"),
+        pytest.param("effect_validation", False, False, False, "effects", False, id="effects-requires-validity"),
+        pytest.param("effect_validation", False, False, True, None, False, id="invalid-effect-unrecovered"),
+        pytest.param(None, True, True, True, None, True, id="retain-zero-score-despite-cleanup"),
+        pytest.param(None, True, False, True, None, False, id="incomplete-diagnosis-unrecovered"),
+        pytest.param(None, True, True, True, "effects", False, id="effects-requires-recovery"),
+    ],
+)
+def test_resume_failure_disposition(stage, valid, diagnosed, cleanup_failed, mode, finished):
     summary = {
-        "scenario_id": "acl-no-hit",
-        "status": "invalid",
-        "case_valid": False,
-        "failure_stage": "effect_validation",
-        "cleanup_failed": False,
+        "scenario_id": "case",
+        "case_valid": valid,
+        "status": "invalid" if stage == "effect_validation" else "failed",
+        "cleanup_failed": cleanup_failed,
     }
-    record = {"diagnosis_complete": False, "scenario_summaries": [summary]}
-    assert acceptance.finished_case_ids({"cases": [record]}) == {"acl-no-hit"}
-    record["mode"] = "effects"
-    assert acceptance.finished_case_ids({"cases": [record]}) == set()
-    record.pop("mode")
-    summary["cleanup_failed"] = True
-    assert acceptance.finished_case_ids({"cases": [record]}) == set()
+    report = {"scenario_summaries": [summary]}
+    if stage is not None:
+        summary["failure_stage"] = stage
+    if diagnosed is not None:
+        report["diagnosis_complete"] = diagnosed
+    if diagnosed:
+        report["summary"] = {"average_score": 0}
+    if mode is not None:
+        report["mode"] = mode
+    before = json.loads(json.dumps(report))
+    assert acceptance.finished_case_ids({"cases": [report]}) == ({"case"} if finished else set())
+    assert report == before
 
 
 def test_model_inconclusive_without_execution_error_remains_valid():
@@ -642,31 +629,19 @@ def test_retained_lab_capacity_does_not_charge_for_another_deployment(monkeypatc
 
 
 @pytest.mark.parametrize("change", ["add", "remove", "replace", "content"])
-def test_case_set_and_contents_are_immutable_on_resume(tmp_path, change):
-    def case(name, filename=None):
-        return save_scenario_file(
-            ScenarioSpec(
-                metadata={"recovery_policy": {"version": 2}},
-                scenario_id=name,
-                name=name,
-                topology_scale="xs",
-                episode=EpisodeSpec(episode_id="diagnosis", fault_type="none"),
-            ),
-            tmp_path / f"{filename or name}.yaml",
-        )
-
-    original = [case("one", "filename-is-not-id"), case("two")]
+def test_case_set_and_contents_are_immutable_on_resume(write_case, change):
+    original = [write_case("one", "filename-is-not-id"), write_case("two")]
     records = {}
     acceptance.freeze_cases(records, original)
     assert records["selected_cases"] == ["one", "two"]
     before = json.loads(json.dumps(records))
     changed = list(original)
     if change == "add":
-        changed.append(case("three"))
+        changed.append(write_case("three"))
     elif change == "remove":
         changed.pop()
     elif change == "replace":
-        changed[-1] = case("three")
+        changed[-1] = write_case("three")
     else:
         original[0].write_text(original[0].read_text() + "\n# changed\n")
     with pytest.raises(ValueError, match="scenario"):
@@ -877,22 +852,6 @@ def test_codex_resume_identity_checked_before_credentials_or_container_preflight
     monkeypatch.setattr("examples.agents.codex_agent.runtime.image_content_identity", lambda image: "image-content")
     with pytest.raises(ValueError, match="configuration"):
         cli.preflight_agents(["codex"], "deepseek", tmp_path, expected={"codex": expected})
-
-
-def test_resume_keeps_completed_zero_score_diagnosis_when_recovery_requires_rebuild():
-    report = {
-        "diagnosis_complete": True,
-        "summary": {"average_score": 0},
-        "scenario_summaries": [
-            {"scenario_id": "valid-zero", "case_valid": True, "status": "failed", "cleanup_failed": True}
-        ],
-    }
-    assert acceptance.finished_case_ids({"cases": [report]}) == {"valid-zero"}
-    report["diagnosis_complete"] = False
-    assert acceptance.finished_case_ids({"cases": [report]}) == set()
-    report["mode"] = "effects"
-    report["diagnosis_complete"] = True
-    assert acceptance.finished_case_ids({"cases": [report]}) == set()
 
 
 def test_resume_does_not_infer_missing_diagnosis_state_from_archived_raw_results(tmp_path):

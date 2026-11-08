@@ -924,7 +924,7 @@ def test_acceptance_control_reuses_executor_checkpoints_and_stops_after_failed_c
     executions, checkpoints, closes, builds = [], [], [], []
     scenarios = [
         ScenarioSpec(
-            metadata={"recovery_policy": {"version": 2}},
+            metadata={"recovery_policy": {"version": 3}},
             scenario_id=str(i),
             name=str(i),
             topology_scale="xs",

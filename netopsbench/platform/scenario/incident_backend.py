@@ -62,7 +62,6 @@ class ExecutorIncidentBackend:
             handoff.clear("recovery_policy_changed")
         self.executor.recovery_policy = policy
         handoff.max_cases = policy.baseline_max_cases
-        handoff.max_age_seconds = policy.baseline_max_age_seconds
         if self.executor.injector.active_faults:
             raise RuntimeError("Runtime contains unresolved faults; recovery is required before preparation")
         if scenario.metadata.get("experiment") is not None:

@@ -16,7 +16,7 @@ def shared_recovery_clock(monkeypatch):
 
 def _scenario() -> ScenarioSpec:
     return ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="cleanup-case",
         name="cleanup-case",
         description="cleanup boundary test",

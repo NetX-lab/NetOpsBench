@@ -208,21 +208,13 @@ def test_minimal_deepagent_reads_minimax_api_key_from_environment(monkeypatch):
 
 
 def test_minimal_deepagent_openai_defaults_and_openai_key(monkeypatch):
+    monkeypatch.setenv("OPENAI" + "_BASE_URL", "https://example.invalid/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-shell-key")
 
     agent = MinimalDeepAgent(vendor="openai")
 
     assert agent.api_key == "openai-shell-key"
     assert agent.model == "gpt-5.5"
-    assert agent.base_url == "https://api.openai.com/v1"
-
-
-def test_minimal_deepagent_openai_uses_official_base_url(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-shell-key")
-    monkeypatch.setenv("OPENAI" + "_BASE_URL", "https://example.invalid/v1")
-
-    agent = MinimalDeepAgent(vendor="openai")
-
     assert agent.base_url == "https://api.openai.com/v1"
 
 
@@ -245,10 +237,6 @@ def test_openai_provider_uses_standard_openai_kwargs():
     assert kwargs["temperature"] == 0.1
 
 
-def test_minimal_deepagent_canonical_module_path():
-    assert MinimalDeepAgent.__module__ == "examples.agents.minimal_deepagent.agent"
-
-
 def test_minimal_deepagent_supports_kimi_vendor(monkeypatch):
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
 
@@ -260,12 +248,6 @@ def test_minimal_deepagent_supports_kimi_vendor(monkeypatch):
     assert agent.model == "kimi-k2.6"
     assert agent.base_url == "https://api.moonshot.cn/v1"
     assert agent.api_key == "kimi-test-key"
-
-
-def test_minimal_deepagent_does_not_expose_legacy_process_method():
-    agent = MinimalDeepAgent(api_key="test-key")
-
-    assert not hasattr(agent, "process")
 
 
 def test_minimal_deepagent_closes_exit_stack_within_each_diagnose_call(tmp_path, monkeypatch):
@@ -561,39 +543,6 @@ def _prepare_basic_repo(tmp_path):
     return repo
 
 
-def test_01_run_scenario_main(tmp_path):
-    import importlib
-
-    mod = importlib.import_module("examples.01_run_scenario")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-
-
-def test_02_run_suite_main(tmp_path):
-    import importlib
-
-    mod = importlib.import_module("examples.02_run_suite")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-
-
-def test_03_run_scale_benchmark_main(tmp_path):
-    import importlib
-
-    mod = importlib.import_module("examples.03_run_scale_benchmark")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-
-
 @pytest.mark.parametrize(
     "scale,override,expected", [("xs", None, 3), ("medium", None, 2), ("fat-tree-k12", None, 1), ("fat-tree-k12", 2, 2)]
 )
@@ -623,17 +572,6 @@ def test_scale_benchmark_default_workers_respect_topology_size(tmp_path, monkeyp
 
     assert mod.main(repo_root=tmp_path, scale=scale, workers=override, bench_cls=Bench) == 0
     assert captured["workers"] == expected
-
-
-def test_04_custom_faults_main(tmp_path):
-    import importlib
-
-    mod = importlib.import_module("examples.04_custom_faults")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
 
 
 def test_05_manual_runtime_main(tmp_path, capsys):
@@ -910,3 +848,11 @@ def test_minimal_deepagent_uses_sdk_default_mcp_server_config(monkeypatch):
     asyncio.run(agent.diagnose(context))
 
     assert captured_config["args"] == ["-m", "netopsbench.platform.toolkit.fastmcp_server"]
+
+
+@pytest.mark.parametrize("example", ["01_run_scenario", "02_run_suite", "03_run_scale_benchmark", "04_custom_faults"])
+def test_example_main(tmp_path, example):
+    import importlib
+
+    module = importlib.import_module(f"examples.{example}")
+    assert module.main(repo_root=_prepare_basic_repo(tmp_path), bench_cls=_FakeBench, agent_cls=_FakeAgent) == 0

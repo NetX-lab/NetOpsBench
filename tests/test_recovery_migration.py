@@ -1,4 +1,4 @@
-"""Recovery v2 is explicit and cannot rewrite frozen source campaigns."""
+"""Recovery v3 is explicit and cannot rewrite frozen source campaigns."""
 
 import json
 from types import SimpleNamespace
@@ -22,9 +22,16 @@ def legacy():
     )
 
 
-def test_migration_preserves_case_and_source_and_changes_identity(tmp_path):
+@pytest.mark.parametrize("source_version", [None, 2])
+def test_migration_preserves_case_and_source_and_changes_identity(tmp_path, source_version):
     source = tmp_path / "frozen"
     case = legacy()
+    if source_version is not None:
+        case.metadata["recovery_policy"] = {
+            "version": source_version,
+            "baseline_max_cases": 10,
+            "baseline_max_age_seconds": 600,
+        }
     path = save_scenario_file(case, source / "healthy.yaml")
     original = path.read_bytes()
     output = migrate_recovery(source, tmp_path / "new")
@@ -44,7 +51,15 @@ def test_migration_preserves_case_and_source_and_changes_identity(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "policy", [None, {"version": 1}, {"mode": "full_window"}, {"version": 2, "mode": "state_checked"}]
+    "policy",
+    [
+        None,
+        {"version": 1},
+        {"version": 2},
+        {"version": 2, "baseline_max_age_seconds": 600},
+        {"mode": "full_window"},
+        {"version": 3, "baseline_max_age_seconds": 600},
+    ],
 )
 def test_old_policy_rejected_before_deployment(tmp_path, monkeypatch, policy):
     session = SessionOrchestrator(workspace=str(tmp_path))
@@ -73,4 +88,4 @@ def test_cli_migration_writes_a_new_campaign(tmp_path, monkeypatch):
         "sys.argv", ["netopsbench", "--workspace", str(tmp_path), "scenario", "migrate", "old.yaml", "--out", "new"]
     )
     assert main() == 0
-    assert RecoveryPolicy.from_metadata(parse_scenario_file(tmp_path / "new" / "old.yaml").metadata).version == 2
+    assert RecoveryPolicy.from_metadata(parse_scenario_file(tmp_path / "new" / "old.yaml").metadata).version == 3

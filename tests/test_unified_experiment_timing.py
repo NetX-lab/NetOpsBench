@@ -146,7 +146,7 @@ def test_late_recovery_cannot_be_published_as_clean(monkeypatch):
     monkeypatch.setattr(control.time, "monotonic", lambda: clock[0])
     result = runner._cleanup_after_scenario(
         ScenarioSpec(
-            metadata={"recovery_policy": {"version": 2}},
+            metadata={"recovery_policy": {"version": 3}},
             scenario_id="late",
             name="late",
             episode=EpisodeSpec(episode_id="a", fault_type="link_down"),
@@ -406,7 +406,7 @@ def test_fresh_baseline_is_one_capture_and_checks_absolute_health(tmp_path, monk
     monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **k: {"nodes": {}})
     monkeypatch.setattr(runner, "_merge_observation_windows", analyze)
     case = ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="healthy",
         name="healthy",
         topology_scale="xs",

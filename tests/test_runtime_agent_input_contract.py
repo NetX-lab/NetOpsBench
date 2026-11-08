@@ -264,7 +264,7 @@ def test_incident_keeps_route_validation_private_and_supports_explicit_route_que
             id="private-case",
             scale="medium",
             episode=episode,
-            metadata={"fault_catalog_version": 2, "recovery_policy": {"version": 2}},
+            metadata={"fault_catalog_version": 2, "recovery_policy": {"version": 3}},
         )
     )
     assert backend.symptoms["observations"] == observations

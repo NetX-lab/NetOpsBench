@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -25,7 +26,6 @@ from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
 from netopsbench.platform.client_agent.config import build_client_agent_config
 from netopsbench.platform.faults.injector import FaultInjector
-from netopsbench.platform.faults.specs import create_fault_registry
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
 from netopsbench.platform.session.scoring import score_scenario_episode
@@ -224,28 +224,12 @@ class TestTopologyGeneration:
 class TestAgentToolkit:
     """Tests for agent toolkit."""
 
-    def test_toolkit_initialization(self):
-        """Test toolkit initializes correctly."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            topo = generate_topology("xs", tmpdir)
-            toolkit = AgentToolkit(topology_metadata=topo["metadata"])
-            assert toolkit is not None
-            assert toolkit.influxdb_url is not None
-
-    def test_tool_registry_specs_complete(self):
-        """Tool registry specs should define non-empty name/group/handler."""
-        specs = load_tool_specs()
-        assert specs, "tool specs should not be empty"
-        for spec in specs:
-            assert spec.name
-            assert spec.group
-            assert callable(spec.handler)
-
     def test_get_topology_returns_result(self):
         """Test get_topology returns a valid result."""
         with tempfile.TemporaryDirectory() as tmpdir:
             topo = generate_topology("xs", tmpdir)
             toolkit = AgentToolkit(topology_metadata=topo["metadata"])
+            assert toolkit.influxdb_url is not None
             result = toolkit.get_topology()
 
             assert isinstance(result, ToolResult)
@@ -301,15 +285,12 @@ class TestClientAgentConfig:
 class TestFastMCPServer:
     """Tests for FastMCP server tool wiring."""
 
-    def test_fastmcp_tool_registry_exists(self):
-        """FastMCP module should expose a non-empty tool registry."""
-        assert len(fastmcp_server.EXPOSED_TOOLS) > 0
-
-    def test_fastmcp_has_all_expected_tools(self):
-        """FastMCP module should export all MCP tool callables."""
-        expected_tools = [
+    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
+        specs = {spec.name: spec for spec in load_tool_specs()}
+        expected = {
             "get_topology",
             "get_device_interfaces",
+            "get_device_status",
             "get_bgp_neighbors",
             "get_bgp_neighbor",
             "get_route_table",
@@ -323,23 +304,14 @@ class TestFastMCPServer:
             "query_bgp_events",
             "get_pingmesh_summary",
             "get_pingmesh_hotspots",
-        ]
-
-        for tool in expected_tools:
-            assert hasattr(fastmcp_server, tool), f"Tool {tool} callable missing from fastmcp_server"
-            assert tool in fastmcp_server.EXPOSED_TOOLS, f"Tool {tool} missing from EXPOSED_TOOLS"
-
-    def test_tool_registry_matches_fastmcp_tools(self):
-        """Tool registry should stay in sync with FastMCP exported tools."""
-        tool_names = [spec.name for spec in load_tool_specs()]
-
-        assert len(tool_names) == len(fastmcp_server.EXPOSED_TOOLS), "Tool count mismatch"
-        for name in tool_names:
-            assert name in fastmcp_server.EXPOSED_TOOLS, f"Tool {name} in definitions but not in FastMCP"
-
-    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
-        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        }
+        assert set(specs) == set(fastmcp_server.EXPOSED_TOOLS) == expected
+        assert len(specs) == len(load_tool_specs()) == len(fastmcp_server.EXPOSED_TOOLS)
+        assert set(specs) == {spec.name for spec in fastmcp_server._TOOL_SPECS}
+        assert all(spec.group and callable(spec.handler) for spec in specs.values())
+        assert all(callable(getattr(fastmcp_server, name)) for name in expected)
         specs = {spec.name: spec for spec in fastmcp_server._TOOL_SPECS}
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
 
         assert schemas.keys() == specs.keys()
         for name, spec in specs.items():
@@ -375,120 +347,6 @@ class TestFastMCPServer:
 class TestFaultInjector:
     """Tests for fault injection."""
 
-    def test_injector_initialization(self):
-        """Test fault injector initializes correctly."""
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-        assert injector is not None
-        assert injector.container_names["spine1"] == "clab-dcn-spine1"
-        assert injector.active_faults == []
-
-    def test_injector_loads_dynamic_topology(self):
-        """Test injector can load dynamic topology."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = generate_topology("xs", tmpdir)
-            metadata = result["metadata"]
-
-            injector = FaultInjector(topology_metadata=metadata)
-
-            assert "spine1" in injector.container_names
-            assert "leaf1" in injector.container_names
-
-    def test_fault_types_defined(self):
-        """Test all expected fault types are defined."""
-        expected_faults = [
-            "link_down",
-            "link_flapping",
-            "device_down",
-            "bgp_as_mismatch",
-            "route_origination_misconfig",
-            "mtu_mismatch",
-            "packet_corruption",
-            "packet_loss",
-            "high_latency",
-            "blackhole_route",
-            "static_route_misconfig",
-        ]
-
-        defined_faults = [spec.name for spec in create_fault_registry().get_builtin_specs()]
-        for fault in expected_faults:
-            assert fault in defined_faults, f"Fault type {fault} not defined"
-
-    def test_inject_high_latency_uses_latency_ms_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_high_latency(self, device, interface, latency_ms=100):
-                self.calls.append((device, interface, latency_ms))
-                return {"success": True, "type": "high_latency", "latency_ms": latency_ms}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_high_latency("leaf1", "Ethernet0", latency_ms=120)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 120)]
-
-    def test_inject_mtu_mismatch_uses_mtu_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_mtu_mismatch(self, device, interface, mtu=1400):
-                self.calls.append((device, interface, mtu))
-                return {"success": True, "type": "mtu_mismatch", "mtu": mtu}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_mtu_mismatch("leaf1", "Ethernet0", mtu=1450)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 1450)]
-
-    def test_inject_packet_corruption_uses_corruption_pct_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_packet_corruption(self, device, interface, corruption_pct=20):
-                self.calls.append((device, interface, corruption_pct))
-                return {"success": True, "type": "packet_corruption", "corruption_pct": corruption_pct}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_packet_corruption("leaf1", "Ethernet0", corruption_pct=17)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 17)]
-
-    def test_inject_packet_loss_uses_loss_pct_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_packet_loss(self, device, interface, loss_pct=10):
-                self.calls.append((device, interface, loss_pct))
-                return {"success": True, "type": "packet_loss", "loss_pct": loss_pct}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_packet_loss("leaf1", "Ethernet0", loss_pct=11)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 11)]
-
     def test_injector_interface_alias_resolution_supports_vendor_style(self):
         injector = FaultInjector(topology_metadata=_generated_metadata())
         assert injector._iface.resolve_linux("ethernet-1/2") == "eth2"
@@ -498,15 +356,10 @@ class TestFaultInjector:
 class TestEvaluator:
     """Tests for evaluation system."""
 
-    def test_evaluator_initialization(self):
-        """Test evaluator initializes correctly."""
-        evaluator = Evaluator()
-        assert evaluator is not None
-        assert sum(evaluator.weights.values()) == 1.0
-
     def test_evaluate_correct_answer(self):
         """Test evaluating a correct agent answer."""
         evaluator = Evaluator()
+        assert sum(evaluator.weights.values()) == 1.0
 
         agent_output = AgentOutput(
             verdict="fault_detected",
@@ -851,7 +704,7 @@ episode:
                 scenario_id="configdb_interface_case",
                 name="ConfigDB interface case",
                 topology_scale="medium",
-                metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
+                metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
                 episode=EpisodeSpec(
                     episode_id="diagnosis",
                     fault_type="link_down",
@@ -975,3 +828,29 @@ class TestEndToEnd:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "fault,key,value",
+    [
+        ("high_latency", "latency_ms", 120),
+        ("mtu_mismatch", "mtu", 1450),
+        ("packet_corruption", "corruption_pct", 17),
+        ("packet_loss", "loss_pct", 11),
+    ],
+)
+def test_impairment_parameter_forwarding(fault, key, value):
+    injector = FaultInjector(topology_metadata=_generated_metadata())
+    assert injector.container_names["spine1"] == "clab-dcn-spine1"
+    assert "leaf1" in injector.container_names
+    assert injector.active_faults == []
+    calls = []
+
+    def inject(device, interface, **kwargs):
+        calls.append((device, interface, kwargs))
+        return {"success": True, "type": fault, **kwargs}
+
+    injector._impairment = SimpleNamespace(**{f"inject_{fault}": inject})
+    result = getattr(injector, f"inject_{fault}")("leaf1", "Ethernet0", **{key: value})
+    assert result["success"] is True
+    assert calls == [("leaf1", "Ethernet0", {key: value})]

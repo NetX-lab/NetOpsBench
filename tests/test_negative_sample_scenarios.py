@@ -21,6 +21,11 @@ def observation_clock(monkeypatch):
         return {**_healthy_observation(duration), "name": kwargs.get("name", "window")}
 
     monkeypatch.setattr("netopsbench.platform.scenario.observation.capture_observation_window", capture)
+    # Episode capture uses the executor's imported reference, unlike baseline capture.
+    monkeypatch.setattr("netopsbench.platform.scenario.executor._capture_observation_window_impl", capture)
+    monkeypatch.setattr(
+        ScenarioExecutor, "sleep", lambda *args: pytest.fail("Diagnosis/scoring tests must not wait for real windows")
+    )
     from netopsbench.platform.scenario.baseline import RuntimeScope
 
     monkeypatch.setattr(ScenarioExecutor, "_baseline_scope", lambda *a: RuntimeScope({}, {}, {}))
@@ -34,7 +39,7 @@ def _metadata() -> dict:
 
 def _healthy_scenario() -> ScenarioSpec:
     return ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="healthy_001",
         name="healthy",
         topology_scale="xs",

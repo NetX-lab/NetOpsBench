@@ -70,7 +70,7 @@ def test_custom_pingmesh_policy_derives_complete_window_without_scale_name():
     assert manifest.require_pingmesh_plan().settings.complete_window_seconds == 66
 
 
-def test_executor_uses_v2_without_fixed_recovery_wait(tmp_path):
+def test_executor_uses_v3_without_fixed_recovery_wait(tmp_path):
     metadata = _minimal_canonical_topology()
     metadata["pingmesh"]["cycle_interval_seconds"] = 3
     from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
@@ -84,7 +84,7 @@ def test_executor_uses_v2_without_fixed_recovery_wait(tmp_path):
         topology_metadata=metadata,
     )
 
-    assert runner.recovery_policy.version == 2
+    assert runner.recovery_policy.version == 3
     assert not hasattr(runner, "post_recovery_wait_seconds")
 
 
@@ -93,7 +93,7 @@ def test_parse_scenario_allows_none_episode_without_target_device(tmp_path):
     scenario_path.write_text(
         yaml.safe_dump(
             {
-                "metadata": {"recovery_policy": {"version": 2}},
+                "metadata": {"recovery_policy": {"version": 3}},
                 "scenario_id": "baseline_only",
                 "name": "Baseline Only",
                 "description": "No fault episode",
@@ -122,7 +122,7 @@ def test_validate_scenario_accepts_xlarge_scale(tmp_path):
     scenario_path.write_text(
         yaml.safe_dump(
             {
-                "metadata": {"recovery_policy": {"version": 2}},
+                "metadata": {"recovery_policy": {"version": 3}},
                 "scenario_id": "generated_healthy_network_xlarge_001",
                 "name": "XLarge healthy case",
                 "description": "No fault episode",
@@ -169,7 +169,7 @@ def test_parse_scenario_preserves_episode_parameters(tmp_path):
                 "description": "parameter parsing",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"recovery_policy": {"version": 2}, "difficulty": "medium"},
+                "metadata": {"recovery_policy": {"version": 3}, "difficulty": "medium"},
                 "episode": {
                     "episode_id": "diagnosis",
                     "description": "fault",
@@ -207,7 +207,7 @@ def test_validate_scenario_rejects_blackhole_route_without_target_prefix(tmp_pat
                 "description": "missing required prefix",
                 "topology_scale": "xs",
                 "traffic_profile": "standard",
-                "metadata": {"recovery_policy": {"version": 2}, "difficulty": "medium"},
+                "metadata": {"recovery_policy": {"version": 3}, "difficulty": "medium"},
                 "episode": {
                     "episode_id": "diagnosis",
                     "description": "fault",
@@ -224,7 +224,7 @@ def test_validate_scenario_rejects_blackhole_route_without_target_prefix(tmp_pat
     scenario = parse_scenario_file(str(scenario_path))
     errors = validate_scenario(scenario)
 
-    assert any("blackhole_route requires target_prefix" in error for error in errors)
+    assert "Episode 0: blackhole_route requires target_prefix" in errors
 
 
 def test_validate_scenario_accepts_runtime_registered_fault():
@@ -234,7 +234,7 @@ def test_validate_scenario_accepts_runtime_registered_fault():
         scenario_id="synthetic",
         name="Synthetic",
         topology_scale="xs",
-        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="synthetic_schema_fault",
@@ -242,24 +242,6 @@ def test_validate_scenario_accepts_runtime_registered_fault():
         ),
     )
     assert validate_scenario(scenario, fault_registry=registry) == []
-
-
-def test_validate_scenario_enforces_blackhole_route_target_prefix():
-    scenario = ScenarioSpec(
-        scenario_id="blackhole_case",
-        name="Blackhole case",
-        topology_scale="xs",
-        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
-        episode=EpisodeSpec(
-            episode_id="diagnosis",
-            fault_type="blackhole_route",
-            target_device="leaf1",
-        ),
-    )
-
-    errors = validate_scenario(scenario)
-
-    assert "Episode 0: blackhole_route requires target_prefix" in errors
 
 
 def test_validate_scenario_runs_custom_fault_spec_validator():
@@ -274,7 +256,7 @@ def test_validate_scenario_runs_custom_fault_spec_validator():
         scenario_id="synthetic_validator",
         name="Synthetic Validator",
         topology_scale="xs",
-        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="synthetic_validated_fault",
@@ -294,7 +276,7 @@ def test_validate_scenario_topology_accepts_fat_tree_agg_target(tmp_path):
         scenario_id="fat_tree_agg_fault",
         name="Fat-tree aggregation fault",
         topology_scale="fat-tree-k8",
-        metadata={"recovery_policy": {"version": 2}, "difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="link_down",
@@ -315,7 +297,7 @@ def test_validate_scenario_topology_rejects_window_shorter_than_manifest_require
     topology_dir = tmp_path / "generated_topology_xs"
     generate_topology("xs", str(topology_dir), name="xs-window")
     scenario = ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="short-window",
         name="Short observation window",
         topology_scale="xs",
@@ -346,7 +328,7 @@ def test_validate_scenario_topology_rejects_legacy_grouped_topology(tmp_path):
         encoding="utf-8",
     )
     scenario = ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="legacy_schema",
         name="Legacy schema",
         topology_scale="xs",
@@ -500,7 +482,7 @@ def test_scenario_executor_returns_result_for_session_persistence(monkeypatch):
     monkeypatch.setattr(runner, "_recover_fault", lambda: {"success": True})
 
     scenario = ScenarioSpec(
-        metadata={"recovery_policy": {"version": 2}},
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="no-persist",
         name="No Persist",
         description="test",

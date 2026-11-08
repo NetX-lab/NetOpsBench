@@ -78,33 +78,6 @@ def test_runtime_manager_create_workers_1_returns_runtime_pool(tmp_path):
     assert runtime.status() == {"id": runtime.id, "name": runtime.name, "scale": "medium", "state": "created"}
 
 
-def test_xlarge_runtime_workers_use_non_overlapping_23_subnets(tmp_path):
-    from netopsbench.sdk.runtimes import RuntimeManager
-
-    runtime = RuntimeManager(workspace=tmp_path).create(scale="xlarge", workers=2, name="runtime-xlarge")
-
-    subnets = [worker.mgmt_subnet for worker in runtime.workers]
-    assert subnets[0].endswith("/23")
-    assert subnets[1].endswith("/23")
-    assert subnets[0] != subnets[1]
-    assert int(subnets[0].split(".")[2]) % 2 == 0
-    assert int(subnets[1].split(".")[2]) == int(subnets[0].split(".")[2]) + 2
-
-
-def test_fat_tree_k12_runtime_workers_use_non_overlapping_23_subnets(tmp_path):
-    from netopsbench.sdk.runtimes import RuntimeManager
-
-    runtime = RuntimeManager(workspace=tmp_path).create(scale="fat-tree-k12", workers=2, name="runtime-ft12")
-
-    subnets = [worker.mgmt_subnet for worker in runtime.workers]
-    assert subnets[0].endswith("/23")
-    assert subnets[1].endswith("/23")
-    assert subnets[0] != subnets[1]
-    assert int(subnets[0].split(".")[2]) >= 220
-    assert int(subnets[0].split(".")[2]) % 2 == 0
-    assert int(subnets[1].split(".")[2]) == int(subnets[0].split(".")[2]) + 2
-
-
 def test_runtime_manager_attach_list_get_roundtrip(tmp_path):
     from netopsbench.sdk.runtimes import RuntimeManager
 
@@ -1151,3 +1124,45 @@ def test_provision_interrupt_retains_ownership_on_cleanup_failure(tmp_path, monk
     else:
         payload = json.loads((error.runtime.root_dir / "runtime.json").read_text())
         assert payload["state"] == "cleanup_failed"
+
+
+@pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k12"])
+def test_large_runtime_workers_use_non_overlapping_23_subnets(tmp_path, scale):
+    from netopsbench.sdk.runtimes import RuntimeManager
+
+    runtime = RuntimeManager(workspace=tmp_path).create(scale=scale, workers=2, name="runtime-subnets")
+    first, second = [worker.mgmt_subnet for worker in runtime.workers]
+    assert first.endswith("/23") and second.endswith("/23")
+    assert first != second
+    assert int(first.split(".")[2]) % 2 == 0
+    assert int(second.split(".")[2]) == int(first.split(".")[2]) + 2
+    if scale == "fat-tree-k12":
+        assert int(first.split(".")[2]) >= 220
+
+
+def test_teardown_interrupted_deployment_preserves_cleanup_error_when_metadata_fails(tmp_path, monkeypatch):
+    from netopsbench.platform.runtime import manager as module
+
+    runtime = module.RuntimeManager(workspace=str(tmp_path)).create(scale="xs", name="interrupted")
+    runtime.metadata["deployment_started"] = True
+    failure = KeyboardInterrupt("cleanup interrupted")
+    calls = []
+
+    def interrupt(self, stage, pool):
+        calls.append(stage)
+        assert pool is runtime
+        raise failure
+
+    def persist_failure():
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(module.RuntimeLifecycle, "run", interrupt)
+    monkeypatch.setattr(runtime, "_write_metadata", persist_failure)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        runtime.teardown()
+    assert caught.value is failure
+    assert calls == ["teardown"]
+    assert runtime.state == "cleanup_failed"
+    assert runtime.metadata["quarantined"] is True
+    assert "metadata unavailable" in runtime.metadata["quarantine_persistence_error"]
+    assert runtime.root_dir.exists()

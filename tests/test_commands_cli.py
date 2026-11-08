@@ -101,7 +101,7 @@ def test_cli_scenario_validate_and_list(tmp_path, monkeypatch, capsys):
     scenario_dir.mkdir()
     scenario_file = scenario_dir / "s1.yaml"
     scenario_file.write_text(
-        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nmetadata:\n  recovery_policy: {version: 2}\n  difficulty: easy\nepisode:\n  episode_id: diagnosis\n  fault_type: link_down\n  target_device: leaf1\n  target_interface: Ethernet1\n",
+        "scenario_id: s1\nname: Scenario 1\ntopology_scale: xs\nmetadata:\n  recovery_policy: {version: 3}\n  difficulty: easy\nepisode:\n  episode_id: diagnosis\n  fault_type: link_down\n  target_device: leaf1\n  target_interface: Ethernet1\n",
         encoding="utf-8",
     )
 

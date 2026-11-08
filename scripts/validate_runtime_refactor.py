@@ -2,7 +2,7 @@
 """Isolated deterministic runtime audit, with no model calls or shortened windows.
 
 For version comparisons, run each snapshot's driver with PYTHONPATH pointing
-to that snapshot; this driver only generates recovery policy v2.
+to that snapshot; this driver only generates recovery policy v3.
 One repetition runs a coverage suite with fault/healthy pairs on a fresh lab.
 Multiple repetitions measure every requested type (plus healthy) on its own
 fresh lab, cold and reused, followed by a healthy check after each fault pair.
@@ -189,7 +189,7 @@ def run(args):
         source_hash.update(path.read_bytes())
     report = {
         "scale": args.scale,
-        "recovery_policy": {"version": 2, "baseline_max_cases": 10, "baseline_max_age_seconds": 600},
+        "recovery_policy": {"version": 3, "baseline_max_cases": 10},
         "tool_profile": args.tool_profile,
         "repetitions": [],
         "status": "running",

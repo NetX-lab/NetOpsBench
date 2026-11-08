@@ -3,6 +3,8 @@ import json
 import tempfile
 import time
 
+import pytest
+
 from netopsbench.models.topology import (
     Collector,
     Device,
@@ -815,120 +817,6 @@ def test_coverage_rejects_local_probe_errors():
     assert audit["invalid_rows"][0]["socket_batch_valid"] is True
 
 
-def test_coverage_rejects_df_send_error_even_with_strong_rtt_loss():
-    detector = _coverage_detector(2)
-    rows = _complete_coverage_rows(
-        {
-            ("client1", 0): {
-                "packets_lost": 3,
-                "df_mtu_drops": 15,
-                "local_probe_errors": 15,
-            }
-        }
-    )
-
-    audit = detector.summarize_coverage(rows)
-
-    assert audit["coverage_status"] == "incomplete"
-    assert audit["invalid_socket_rows"] == 1
-
-
-def test_coverage_rejects_local_df_error_despite_later_valid_sample():
-    detector = _coverage_detector(2)
-    rows = _complete_coverage_rows(
-        {
-            ("client1", 0): {
-                "packets_lost": 1,
-                "df_mtu_drops": 15,
-                "local_probe_errors": 15,
-            }
-        }
-    )
-    followup = _coverage_row("client1", "client2", 0, probe_cycle=4)
-    followup["packets_lost"] = 2
-    rows.append(followup)
-
-    audit = detector.summarize_coverage(rows)
-
-    assert audit["coverage_status"] == "incomplete"
-    assert audit["invalid_socket_rows"] == 1
-
-
-def test_coverage_does_not_use_loss_from_another_socket_batch_to_explain_df_error():
-    detector = _coverage_detector(2)
-    rows = _complete_coverage_rows(
-        {
-            ("client1", 0): {
-                "packets_lost": 1,
-                "df_mtu_drops": 15,
-                "local_probe_errors": 15,
-            },
-            ("client1", 1): {"packets_lost": 4},
-        }
-    )
-
-    audit = detector.summarize_coverage(rows)
-
-    assert audit["coverage_status"] == "incomplete"
-    assert audit["invalid_socket_rows"] == 1
-
-
-def test_coverage_rejects_df_send_error_without_strong_rtt_loss():
-    detector = _coverage_detector(2)
-
-    def audit_for(*, lost: int, local_errors: int, df_mtu_drops: int) -> dict:
-        rows = _complete_coverage_rows(
-            {
-                ("client1", 0): {
-                    "packets_lost": lost,
-                    "df_mtu_drops": df_mtu_drops,
-                    "local_probe_errors": local_errors,
-                }
-            }
-        )
-        return detector.summarize_coverage(rows)
-
-    for audit in (
-        audit_for(lost=2, local_errors=15, df_mtu_drops=15),
-        audit_for(lost=0, local_errors=15, df_mtu_drops=15),
-        audit_for(lost=3, local_errors=16, df_mtu_drops=15),
-    ):
-        assert audit["coverage_status"] == "incomplete"
-        assert audit["invalid_socket_rows"] == 1
-
-
-def test_pingmesh_time_scope_uses_explicit_window_first(monkeypatch):
-    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
-    toolkit.set_pingmesh_time_window("2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z")
-
-    result = toolkit.get_pingmesh_summary(
-        time_range_minutes=10,
-        start_time="2026-01-02T00:00:00Z",
-        end_time="2026-01-02T00:01:00Z",
-    )
-
-    assert result.success is True
-    assert result.data["time_scope"]["source"] == "explicit"
-    assert 'range(start: time(v: "2026-01-02T00:00:00Z")' in captured["query"]
-
-
-def test_pingmesh_time_scope_uses_toolkit_default_before_context_file(monkeypatch, tmp_path):
-    context_file = tmp_path / "pingmesh-window.json"
-    context_file.write_text(
-        json.dumps({"start_time": "2026-01-03T00:00:00Z", "end_time": "2026-01-03T00:01:00Z"}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_CONTEXT_FILE", str(context_file))
-    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
-    toolkit.set_pingmesh_time_window("2026-01-02T00:00:00Z", "2026-01-02T00:01:00Z")
-
-    result = toolkit.get_pingmesh_hotspots()
-
-    assert result.success is True
-    assert result.data["time_scope"]["source"] == "toolkit_default"
-    assert 'range(start: time(v: "2026-01-02T00:00:00Z")' in captured["query"]
-
-
 def test_pingmesh_hotspots_applies_global_loss_first_limit(monkeypatch):
     toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
 
@@ -968,50 +856,6 @@ def test_pingmesh_hotspots_queries_only_raw_leaf_pair_data(monkeypatch):
     assert 'r._measurement == "pingmesh"' in captured["query"]
     assert '|> group(columns: ["src_leaf", "dst_leaf", "_field"])' in captured["query"]
     assert "pingmesh_leaf_pair_30s" not in captured["query"]
-
-
-def test_pingmesh_time_scope_uses_context_file_before_env(monkeypatch, tmp_path):
-    context_file = tmp_path / "pingmesh-window.json"
-    context_file.write_text(
-        json.dumps({"start_time": "2026-01-03T00:00:00Z", "end_time": "2026-01-03T00:01:00Z"}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_CONTEXT_FILE", str(context_file))
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_START_TIME", "2026-01-04T00:00:00Z")
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_END_TIME", "2026-01-04T00:01:00Z")
-    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
-
-    result = toolkit.get_pingmesh_summary()
-
-    assert result.success is True
-    assert result.data["time_scope"]["source"] == "context_file"
-    assert 'range(start: time(v: "2026-01-03T00:00:00Z")' in captured["query"]
-
-
-def test_pingmesh_time_scope_uses_env_before_rolling(monkeypatch):
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_START_TIME", "2026-01-04T00:00:00Z")
-    monkeypatch.setenv("NETOPSBENCH_PINGMESH_END_TIME", "2026-01-04T00:01:00Z")
-    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
-
-    result = toolkit.get_pingmesh_summary()
-
-    assert result.success is True
-    assert result.data["time_scope"]["source"] == "env"
-    assert 'range(start: time(v: "2026-01-04T00:00:00Z")' in captured["query"]
-
-
-def test_pingmesh_time_scope_falls_back_to_rolling(monkeypatch):
-    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
-
-    result = toolkit.get_pingmesh_summary(time_range_minutes=7)
-
-    assert result.success is True
-    assert result.data["time_scope"] == {
-        "mode": "rolling",
-        "source": "time_range_minutes",
-        "time_range_minutes": 7,
-    }
-    assert "|> range(start: -7m)" in captured["query"]
 
 
 def test_fastmcp_pingmesh_tools_pass_absolute_window(monkeypatch):
@@ -1125,3 +969,65 @@ def test_scenario_observation_passes_current_topology_to_pingmesh_detector(monke
     assert observations["data_source_status"] == "ok"
     assert captured["topology_metadata"] is runner.manifest
     assert captured["query_deadline"] == deadline
+
+
+@pytest.mark.parametrize(
+    "lost,local_errors,extra",
+    [
+        pytest.param(3, 15, None, id="strong-rtt-loss"),
+        pytest.param(1, 15, "later", id="later-valid-sample"),
+        pytest.param(1, 15, "other-batch", id="other-socket-batch"),
+        pytest.param(2, 15, None, id="weak-rtt-loss"),
+        pytest.param(0, 15, None, id="no-rtt-loss"),
+        pytest.param(3, 16, None, id="additional-local-error"),
+    ],
+)
+def test_df_local_errors_remain_incomplete(lost, local_errors, extra):
+    detector = _coverage_detector(2)
+    overrides = {("client1", 0): {"packets_lost": lost, "df_mtu_drops": 15, "local_probe_errors": local_errors}}
+    if extra == "other-batch":
+        overrides[("client1", 1)] = {"packets_lost": 4}
+    rows = _complete_coverage_rows(overrides)
+    if extra == "later":
+        rows.append({**_coverage_row("client1", "client2", 0, probe_cycle=4), "packets_lost": 2})
+    audit = detector.summarize_coverage(rows)
+    assert audit["coverage_status"] == "incomplete"
+    assert audit["invalid_socket_rows"] == 1
+
+
+@pytest.mark.parametrize(
+    "source,day",
+    [
+        ("explicit", 1),
+        ("toolkit_default", 2),
+        ("context_file", 3),
+        ("env", 4),
+        ("time_range_minutes", 5),
+    ],
+)
+def test_pingmesh_window_precedence(monkeypatch, tmp_path, source, day):
+    toolkit, captured = _toolkit_with_captured_queries(monkeypatch)
+
+    def window(day):
+        return {"start_time": f"2026-01-0{day}T00:00:00Z", "end_time": f"2026-01-0{day}T00:01:00Z"}
+
+    for name in ("CONTEXT_FILE", "START_TIME", "END_TIME"):
+        monkeypatch.delenv(f"NETOPSBENCH_PINGMESH_{name}", raising=False)
+    if day <= 4:
+        for key, value in window(4).items():
+            monkeypatch.setenv(f"NETOPSBENCH_PINGMESH_{key.upper()}", value)
+    if day <= 3:
+        context = tmp_path / "window.json"
+        context.write_text(json.dumps(window(3)))
+        monkeypatch.setenv("NETOPSBENCH_PINGMESH_CONTEXT_FILE", str(context))
+    if day <= 2:
+        toolkit.set_pingmesh_time_window(**window(2))
+    query = toolkit.get_pingmesh_hotspots if source == "toolkit_default" else toolkit.get_pingmesh_summary
+    result = query(time_range_minutes=7, **(window(1) if source == "explicit" else {}))
+    assert result.success is True
+    assert result.data["time_scope"]["source"] == source
+    if day < 5:
+        assert f'range(start: time(v: "{window(day)["start_time"]}")' in captured["query"]
+    else:
+        assert result.data["time_scope"] == {"mode": "rolling", "source": source, "time_range_minutes": 7}
+        assert "|> range(start: -7m)" in captured["query"]

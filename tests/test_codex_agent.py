@@ -14,6 +14,31 @@ from netopsbench.platform.toolkit.mcp.session_server import session_mcp
 from netopsbench.sdk.agents import DiagnosticContext
 
 
+@pytest.fixture
+def isolated_agent(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager, nullcontext
+
+    import examples.agents.codex_agent.agent as module
+
+    @asynccontextmanager
+    async def endpoint(*a, **kw):
+        yield {"url": "http://127.0.0.1:1/mcp", "token": "private-token", "port": 1}
+
+    store = tmp_path / "auth"
+    store.mkdir()
+    (store / "auth.json").write_text('{"auth_mode":"chatgpt","tokens":{"access_token":"test-secret"}}')
+    monkeypatch.setattr(module, "session_mcp", endpoint)
+    monkeypatch.setattr(module, "openai_proxy", lambda *a: nullcontext(1))
+
+    def create(container, **kwargs):
+        monkeypatch.setattr(module, "DiagnosticContainer", container)
+        agent = CodexAgent(auth_store=store, artifacts_dir=tmp_path / "traces", **kwargs)
+        agent._image_id = "pinned-image"
+        return agent
+
+    return create
+
+
 def result_events():
     yield {
         "type": "item.completed",
@@ -238,10 +263,9 @@ print('isolation and authenticated MCP passed')
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["nonzero", "invalid", "timeout", "startup_timeout", "cancel"])
-async def test_native_process_failures_always_release_resources(monkeypatch, tmp_path, failure):
+async def test_native_process_failures_always_release_resources(monkeypatch, tmp_path, isolated_agent, failure):
     import sys
     import time
-    from contextlib import asynccontextmanager, nullcontext
 
     import examples.agents.codex_agent.agent as module
 
@@ -272,24 +296,13 @@ async def test_native_process_failures_always_release_resources(monkeypatch, tmp
         def close(self):
             releases.append(True)
 
-    @asynccontextmanager
-    async def endpoint(*a, **kw):
-        yield {"url": "http://127.0.0.1:1/mcp", "token": "private-token", "port": 1}
-
-    store = tmp_path / "auth"
-    store.mkdir()
-    (store / "auth.json").write_text('{"auth_mode":"chatgpt","tokens":{"access_token":"test-secret"}}')
-    monkeypatch.setattr(module, "DiagnosticContainer", Container)
-    monkeypatch.setattr(module, "session_mcp", endpoint)
-    monkeypatch.setattr(module, "openai_proxy", lambda *a: nullcontext(1))
     if failure == "startup_timeout":
         monkeypatch.setattr(
             module.asyncio,
             "create_subprocess_exec",
             lambda *a, **kw: pytest.fail("Expired startup must not launch CLI"),
         )
-    agent = CodexAgent(auth_store=store, artifacts_dir=tmp_path / "traces", timeout_seconds=0.05)
-    agent._image_id = "pinned-image"
+    agent = isolated_agent(Container, timeout_seconds=0.05)
     context = DiagnosticContext("anonymous", {}, {}, tools=None)
     task = asyncio.create_task(agent.diagnose(context))
     if failure == "cancel":
@@ -305,14 +318,13 @@ async def test_native_process_failures_always_release_resources(monkeypatch, tmp
             assert result.metadata["error_type"] == "TimeoutError"
     assert releases == [True]
     assert not agent._containers
+    store = tmp_path / "auth"
     assert list(store.iterdir()) == [store / "auth.json"]
 
 
 @pytest.mark.asyncio
-async def test_cancellation_joins_slow_startup_before_cleanup(monkeypatch, tmp_path):
+async def test_cancellation_joins_slow_startup_before_cleanup(isolated_agent):
     import threading
-
-    import examples.agents.codex_agent.agent as module
 
     started, release = threading.Event(), threading.Event()
     steps = []
@@ -329,12 +341,7 @@ async def test_cancellation_joins_slow_startup_before_cleanup(monkeypatch, tmp_p
         def close(self):
             steps.append("closed")
 
-    store = tmp_path / "auth"
-    store.mkdir()
-    (store / "auth.json").write_text('{"tokens":{"access_token":"test-secret"}}')
-    monkeypatch.setattr(module, "DiagnosticContainer", Container)
-    agent = CodexAgent(auth_store=store, artifacts_dir=tmp_path / "traces")
-    agent._image_id = "pinned-image"
+    agent = isolated_agent(Container)
     task = asyncio.create_task(agent.diagnose(DiagnosticContext("anonymous", {}, {}, tools=None)))
     assert await asyncio.to_thread(started.wait, 3)
     task.cancel()
@@ -409,11 +416,8 @@ def test_private_credentials_follow_newer_host_login_without_losing_case_refresh
 
 
 @pytest.mark.asyncio
-async def test_cleanup_failure_is_reported_without_mutating_frozen_result(monkeypatch, tmp_path):
+async def test_cleanup_failure_is_reported_without_mutating_frozen_result(isolated_agent):
     import sys
-    from contextlib import asynccontextmanager, nullcontext
-
-    import examples.agents.codex_agent.agent as module
 
     class Container:
         name, network, gateway = "owned-container", "owned-network", "127.0.0.1"
@@ -432,18 +436,7 @@ async def test_cleanup_failure_is_reported_without_mutating_frozen_result(monkey
         def close(self):
             raise RuntimeError("Docker removal failed")
 
-    @asynccontextmanager
-    async def endpoint(*a, **kw):
-        yield {"url": "http://unused", "token": "token", "port": 1}
-
-    store = tmp_path / "auth"
-    store.mkdir()
-    (store / "auth.json").write_text('{"tokens":{"access_token":"test-secret"}}')
-    monkeypatch.setattr(module, "DiagnosticContainer", Container)
-    monkeypatch.setattr(module, "session_mcp", endpoint)
-    monkeypatch.setattr(module, "openai_proxy", lambda *a: nullcontext(1))
-    agent = CodexAgent(auth_store=store, artifacts_dir=tmp_path / "traces")
-    agent._image_id = "image"
+    agent = isolated_agent(Container)
     result = await agent.diagnose(DiagnosticContext("anonymous", {}, {}, tools=None))
     assert result.success is False
     assert result.metadata["cleanup_errors"] == ["Docker removal failed"]

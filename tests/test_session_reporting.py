@@ -120,7 +120,7 @@ def test_session_report_keeps_execution_and_cleanup_failures_separate(tmp_path: 
         raise execution_error("execution exploded")
 
     monkeypatch.setattr(orchestrator, "_execute_on_runtime_pool", fail_execution)
-    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 2}})
+    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 3}})
 
     with pytest.raises(execution_error, match="execution exploded") as raised:
         orchestrator._run_with_platform_runtime(
@@ -173,7 +173,7 @@ def test_session_writes_performed_only_after_successful_teardown(tmp_path: Path,
         return SimpleNamespace(refresh=lambda: None)
 
     monkeypatch.setattr(orchestrator, "_execute_on_runtime_pool", execute)
-    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 2}})
+    scenario = SimpleNamespace(id="scenario-1", scale="xs", metadata={"recovery_policy": {"version": 3}})
     orchestrator._run_with_platform_runtime(
         mode="scenario",
         scenarios=[scenario],

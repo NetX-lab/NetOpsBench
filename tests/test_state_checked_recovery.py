@@ -24,14 +24,14 @@ def test_policy_does_not_rewrite_legacy_metadata():
     with pytest.raises(ValueError, match="migrate"):
         RecoveryPolicy.from_metadata(metadata)
     assert "recovery_policy" not in metadata
-    assert RecoveryPolicy().version == 2
+    assert RecoveryPolicy().version == 3
     assert RecoveryPolicy().baseline_max_cases == 10
     with pytest.raises(ValueError):
         RecoveryPolicy(version=1)
 
 
 def test_baseline_ten_uses_and_interrupted_consumer():
-    h = BaselineHandoff(max_cases=10, max_age_seconds=600)
+    h = BaselineHandoff(max_cases=10)
     scope = RuntimeScope({}, {}, {})
     w = window()
     assert h.publish(w, scope, "initial", 30, verified=True)
@@ -44,23 +44,25 @@ def test_baseline_ten_uses_and_interrupted_consumer():
     assert h.window == w
 
 
-@pytest.mark.parametrize("age,allowed", [(599, True), (601, False)])
-def test_reusable_age_is_original_window_age(age, allowed):
-    h = BaselineHandoff(max_age_seconds=600)
+@pytest.mark.parametrize("age", [599, 600, 601, 7200])
+def test_old_verified_window_remains_reusable_without_refresh(age):
+    h = BaselineHandoff()
     scope = RuntimeScope({}, {}, {})
-    assert h.publish(window(age), scope, "initial", 30, verified=True) is allowed
-    assert (h.take(scope, 30)[0] is not None) is allowed
+    original = window(age)
+    assert h.publish(original, scope, "initial", 30, verified=True)
+    assert h.take(scope, 30)[0] == original
+    assert h.uses == 1
 
 
 def test_identity_change_and_failure_invalidate_reuse():
-    h = BaselineHandoff(max_age_seconds=600)
+    h = BaselineHandoff()
     h.publish(window(), RuntimeScope({"generation": 1}, {}, {}), "initial", 30, verified=True)
     assert h.take(RuntimeScope({"generation": 2}, {}, {}), 30)[1] == "scope_changed"
     h.clear("recovery_failed")
     assert h.take(None, 30) == (None, "recovery_failed")
 
 
-def test_exact_age_boundary(monkeypatch):
+def test_elapsed_time_does_not_expire_a_valid_window(monkeypatch):
     from netopsbench.platform.scenario import baseline
 
     now = datetime.now(UTC)
@@ -77,9 +79,9 @@ def test_exact_age_boundary(monkeypatch):
         "end_time": end.isoformat(),
         "duration_seconds": 30,
     }
-    assert baseline.window_error(w, 30, max_age_seconds=600) is None
+    assert baseline.window_error(w, 30) is None
     now += timedelta(microseconds=1)
-    assert baseline.window_error(w, 30, max_age_seconds=600) == "expired_window"
+    assert baseline.window_error(w, 30) is None
 
 
 @pytest.mark.parametrize("wrong_neighbor,flap", [(False, False), (True, False), (False, True)])
@@ -165,41 +167,34 @@ def test_state_health_uses_identities_and_final_full_pass(monkeypatch, wrong_nei
         assert audit["network_rounds"] == 5 and audit["collected_at"] > 0
 
 
-def test_acl_recovery_exit_zero_does_not_hide_residual_rules(monkeypatch):
-    from netopsbench.platform.faults.handlers.network import NetworkFaultHandler
-
-    handler = NetworkFaultHandler(
-        None, None, None, None, SimpleNamespace(remove_faults=lambda f: pytest.fail("removed")), None
-    )
-    fault = {
-        "type": "acl_l4_port_misconfig",
-        "device": "leaf1",
-        "fault_id": "owned",
-        "journal": [{"kind": "docker", "restore": ["true"]}],
-        "evidence": {"original_iptables": "-P FORWARD ACCEPT", "acl_name": "owned"},
-    }
-    monkeypatch.setattr(handler, "_run", lambda *args: "-P FORWARD ACCEPT\n-A FORWARD -j DROP")
-    result = handler.recover(fault)
-    assert not result["recovered"] and not result["readback_verified"]
-    assert "Actual ACL rules" in result["error"]
-
-
-def test_frr_recovery_exit_zero_does_not_hide_config_drift(monkeypatch):
+@pytest.mark.parametrize("resource", ["acl", "frr"])
+def test_recovery_exit_zero_does_not_hide_resource_drift(monkeypatch, resource):
     from netopsbench.platform.faults.handlers.network import NetworkFaultHandler
     from netopsbench.platform.scenario.baseline import normalized_frr
 
     handler = NetworkFaultHandler(
         None, None, None, None, SimpleNamespace(remove_faults=lambda f: pytest.fail("removed")), None
     )
+    if resource == "acl":
+        fault_type = "acl_l4_port_misconfig"
+        evidence = {"original_iptables": "-P FORWARD ACCEPT", "acl_name": "owned"}
+        actual = "-P FORWARD ACCEPT\n-A FORWARD -j DROP"
+    else:
+        fault_type = "bgp_auth_mismatch"
+        evidence = {"original_frr_digest": normalized_frr("router bgp 65001\n")}
+        actual = "router bgp 65001\n neighbor 10.1.1.1 password wrong\n"
     fault = {
-        "type": "bgp_auth_mismatch",
+        "type": fault_type,
         "device": "leaf1",
         "fault_id": "owned",
         "journal": [{"kind": "docker", "restore": ["true"]}],
-        "evidence": {"original_frr_digest": normalized_frr("router bgp 65001\n")},
+        "evidence": evidence,
     }
-    monkeypatch.setattr(handler, "_run", lambda *args: "router bgp 65001\n neighbor 10.1.1.1 password wrong\n")
-    assert handler.recover(fault)["recovered"] is False
+    monkeypatch.setattr(handler, "_run", lambda *args: actual)
+    result = handler.recover(fault)
+    assert not result["recovered"] and not result["readback_verified"]
+    if resource == "acl":
+        assert "Actual ACL rules" in result["error"]
 
 
 def test_terminal_destroy_skips_window_but_never_accepts_active_faults():

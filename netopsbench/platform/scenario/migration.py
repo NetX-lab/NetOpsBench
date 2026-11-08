@@ -1,4 +1,4 @@
-"""Explicit, non-destructive migration of frozen scenarios to recovery v2."""
+"""Explicit, non-destructive migration of frozen scenarios to recovery v3."""
 
 from __future__ import annotations
 
