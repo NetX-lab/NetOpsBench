@@ -23,7 +23,6 @@ from examples._common import (
     resolve_repo_root,
     wait_and_print_run,
 )
-from examples.agents import MinimalDeepAgent
 from netopsbench.sdk import NetOpsBench
 
 
@@ -32,14 +31,18 @@ def main(
     *,
     vendor: str = "minimax",
     bench_cls=NetOpsBench,
-    agent_cls=MinimalDeepAgent,
+    agent_cls=None,
+    backend: str = "deepagent",
+    scenario_path: Path | None = None,
 ) -> int:
     repo = resolve_repo_root(repo_root)
     scenario = require_scenarios(
         repo,
-        "scenarios/generated/xs/generated_link_down_xs_001.yaml",
+        str(scenario_path)
+        if scenario_path is not None
+        else "scenarios/generated/medium/generated_link_down_medium_001.yaml",
         prepare_hint=(
-            "Generate benchmark assets first with " "`netopsbench benchmark prepare --scales xs` from the repo root."
+            "Generate benchmark assets first with `netopsbench benchmark prepare --scales medium` from the repo root."
         ),
     )[0]
 
@@ -48,7 +51,7 @@ def main(
 
     # ``with`` releases agent handles + manager resources on exit.
     with bench_cls(workspace=str(repo)) as bench:
-        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor)
+        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor, backend=backend)
         print_agent_banner("agent", vendor, raw_agent)
         try:
             run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
@@ -59,5 +62,11 @@ def main(
 
 
 if __name__ == "__main__":
-    args = build_arg_parser("Run one scenario").parse_args()
-    raise SystemExit(main(repo_root=args.repo_root, vendor=args.vendor))
+    parser = build_arg_parser("Run one scenario")
+    parser.add_argument(
+        "--scenario", type=Path, default=None, help="Scenario YAML path, relative to the repository or absolute."
+    )
+    args = parser.parse_args()
+    raise SystemExit(
+        main(repo_root=args.repo_root, vendor=args.vendor, backend=args.agent, scenario_path=args.scenario)
+    )

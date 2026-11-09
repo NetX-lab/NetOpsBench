@@ -7,6 +7,7 @@ from typing import Any
 
 from netopsbench.exceptions import ScenarioValidationError
 from netopsbench.models.profiles import ScaleRegistry, default_scale_registry, supported_scales
+from netopsbench.models.recovery import RecoveryPolicy
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.scenario.parser import parse_scenario_file, save_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario
@@ -26,19 +27,27 @@ class ScenarioManager:
         name: str,
         episode: EpisodeSpec | dict[str, Any],
         description: str = "",
-        scale: str = "xs",
+        scale: str = "medium",
         traffic_profile: str = "standard",
         metadata: dict[str, Any] | None = None,
         parameters: dict[str, Any] | None = None,
+        recovery_policy: RecoveryPolicy | dict[str, Any] | None = None,
     ) -> ScenarioSpec:
         try:
-            self.scale_registry.get(scale)
+            profile = self.scale_registry.get(scale)
         except (KeyError, ValueError) as exc:
             raise ScenarioValidationError(str(exc)) from exc
         if traffic_profile != "standard":
             raise ScenarioValidationError(f"Only the standard traffic profile is supported, got: {traffic_profile}")
         try:
             episode_spec = episode if isinstance(episode, EpisodeSpec) else EpisodeSpec.model_validate(episode)
+            authored_metadata = {"fault_catalog_version": 2, "purpose": profile.purpose, **(metadata or {})}
+            if recovery_policy is not None and "recovery_policy" in authored_metadata:
+                raise ValueError("Specify recovery_policy only once")
+            policy = RecoveryPolicy.model_validate(
+                recovery_policy if recovery_policy is not None else authored_metadata.get("recovery_policy", {})
+            )
+            authored_metadata["recovery_policy"] = policy.model_dump(mode="json")
             return ScenarioSpec(
                 scenario_id=id,
                 name=name,
@@ -46,7 +55,7 @@ class ScenarioManager:
                 topology_scale=scale,
                 traffic_profile="standard",
                 episode=episode_spec,
-                metadata=dict(metadata or {}),
+                metadata=authored_metadata,
                 parameters=dict(parameters or {}),
             )
         except ValueError as exc:

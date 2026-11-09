@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from netopsbench.evaluator.scorer import AgentOutput, Evaluator
 from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.topology.generator import generate_topology
+
+
+@pytest.fixture(autouse=True)
+def observation_clock(monkeypatch):
+    # These are diagnosis/scoring contracts; actual waiting is tested separately.
+    def capture(_runner, duration, **kwargs):
+        return {**_healthy_observation(duration), "name": kwargs.get("name", "window")}
+
+    monkeypatch.setattr("netopsbench.platform.scenario.observation.capture_observation_window", capture)
+    # Episode capture uses the executor's imported reference, unlike baseline capture.
+    monkeypatch.setattr("netopsbench.platform.scenario.executor._capture_observation_window_impl", capture)
+    monkeypatch.setattr(
+        ScenarioExecutor, "sleep", lambda *args: pytest.fail("Diagnosis/scoring tests must not wait for real windows")
+    )
+    from netopsbench.platform.scenario.baseline import RuntimeScope
+
+    monkeypatch.setattr(ScenarioExecutor, "_baseline_scope", lambda *a: RuntimeScope({}, {}, {}))
+    monkeypatch.setattr("netopsbench.platform.observability.routes.collect_routes", lambda *a, **k: {"nodes": {}})
 
 
 def _metadata() -> dict:
@@ -18,6 +39,7 @@ def _metadata() -> dict:
 
 def _healthy_scenario() -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="healthy_001",
         name="healthy",
         topology_scale="xs",
@@ -33,8 +55,8 @@ def _healthy_scenario() -> ScenarioSpec:
 
 def _healthy_observation(duration: int) -> dict:
     return {
-        "start_time": "2026-01-01T00:00:00Z",
-        "end_time": "2026-01-01T00:01:00Z",
+        "start_time": (datetime.now(UTC) - timedelta(seconds=duration)).isoformat(),
+        "end_time": datetime.now(UTC).isoformat(),
         "duration_seconds": duration,
         "pingmesh_metrics": {
             "summary": {
@@ -46,6 +68,11 @@ def _healthy_observation(duration: int) -> dict:
             },
             "quality": {"current_paths_observed": 2, "local_df_mtu_drops": 0},
             "anomalies": [],
+        },
+        "_baseline_health": {
+            "absolute_unreachable_paths": 0,
+            "absolute_packet_loss_paths": 0,
+            "absolute_network_mtu_paths": 0,
         },
         "anomalies_detected": False,
         "coverage_status": "complete",
@@ -64,8 +91,8 @@ def test_healthy_scenario_observes_and_diagnoses(monkeypatch):
     monkeypatch.setattr(runner, "_recover_fault", lambda: [])
     monkeypatch.setattr(
         runner,
-        "_wait_and_observe",
-        lambda duration, **_kwargs: _healthy_observation(duration),
+        "_merge_observation_windows",
+        lambda windows, total_duration_seconds, **_kwargs: _healthy_observation(total_duration_seconds),
     )
     calls = []
 
@@ -90,8 +117,8 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
     monkeypatch.setattr(runner, "_recover_fault", lambda: [])
     monkeypatch.setattr(
         runner,
-        "_wait_and_observe",
-        lambda duration, **_kwargs: _healthy_observation(duration),
+        "_merge_observation_windows",
+        lambda windows, total_duration_seconds, **_kwargs: _healthy_observation(total_duration_seconds),
     )
 
     def fail(_payload, **_kwargs):
@@ -99,7 +126,8 @@ def test_agent_exception_is_zero_outcome_not_infrastructure_failure(monkeypatch)
 
     result = runner.run_scenario(_healthy_scenario(), diagnosis_callback=fail)
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert result["case_valid"] is True
     assert result["episode"]["diagnosis"]["error"] == "agent crashed"
     assert result["episode"]["execution"]["reward"] == 0.0
     assert result["episode"]["execution"]["failure"]["domain"] == "agent"
@@ -115,8 +143,8 @@ def test_invalid_diagnosis_schema_is_protocol_outcome_zero(monkeypatch):
     monkeypatch.setattr(runner, "_recover_fault", lambda: [])
     monkeypatch.setattr(
         runner,
-        "_wait_and_observe",
-        lambda duration, **_kwargs: _healthy_observation(duration),
+        "_merge_observation_windows",
+        lambda windows, total_duration_seconds, **_kwargs: _healthy_observation(total_duration_seconds),
     )
 
     result = runner.run_scenario(
@@ -128,7 +156,7 @@ def test_invalid_diagnosis_schema_is_protocol_outcome_zero(monkeypatch):
     )
 
     execution = result["episode"]["execution"]
-    assert result["success"] is True
+    assert result["success"] is False
     assert execution["reward"] == 0.0
     assert execution["failure"]["domain"] == "protocol"
     assert execution["termination_reason"] == "protocol_error"

@@ -59,7 +59,7 @@ def _fat_tree_config(
 
 
 def generate_topology(
-    scale: str = "xs",
+    scale: str = "medium",
     output_dir: str | None = None,
     name: str | None = None,
     mgmt_subnet: str | None = None,

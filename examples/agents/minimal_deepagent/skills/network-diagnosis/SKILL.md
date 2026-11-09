@@ -20,7 +20,7 @@ Use this skill for the public DeepAgent example when you need to diagnose a like
    - Do not assume client-facing prefixes should be `/24`. NetOpsBench commonly uses `/30`
      point-to-point access subnets; compare the configured prefix with topology and route
      evidence before calling it a misconfiguration.
-   - Report the canonical fault label `bgp_neighbor_misconfig`; do not substitute `bgp_down` or `link_flap`.
+   - Distinguish `bgp_as_mismatch`, `bgp_auth_mismatch`, `bgp_update_source_mismatch`, `bgp_neighbor_shutdown`, and `bgp_max_prefix_misconfig` using actual configuration and session evidence.
    - For an AS mismatch, set `location.device` to the device whose configured remote-AS disagrees with the peer's actual local AS. Do not report the correctly configured peer.
    - Separate a control-plane session event from confirmed data-plane impact. Historical events outside the episode window are not current faults.
    - `get_device_logs`: always pass the observation `start_time` and `end_time`; ignore log entries outside that episode window.

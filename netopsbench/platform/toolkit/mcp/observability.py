@@ -53,6 +53,7 @@ def query_bgp_events(
     role: str = "",
     state: str = "non_established",
     limit: int = 100,
+    event_type: str = "session",
 ):
     """Find BGP session events from centralized historical telemetry."""
     return as_payload(
@@ -64,6 +65,7 @@ def query_bgp_events(
             peer=peer or None,
             role=role or None,
             state=state,
+            event_type=event_type,
             limit=limit,
         )
     )
@@ -73,10 +75,14 @@ def get_pingmesh_summary(
     time_range_minutes: int = 10,
     start_time: str = "",
     end_time: str = "",
+    src_client: str | None = None,
+    dst_client: str | None = None,
 ):
     """Get Pingmesh summary by path type."""
     return as_payload(
         get_toolkit().get_pingmesh_summary(
+            src_client=src_client,
+            dst_client=dst_client,
             time_range_minutes=time_range_minutes,
             start_time=start_time or None,
             end_time=end_time or None,

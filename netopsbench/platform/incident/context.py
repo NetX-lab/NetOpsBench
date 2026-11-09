@@ -6,12 +6,22 @@ import copy
 import hashlib
 from typing import Any
 
+from netopsbench.platform.toolkit.public import public_observation
 from netopsbench.platform.toolkit.toolkit import AgentToolkit
 
 _EPISODE_ALLOWED_KEYS = {
-    "episode_id",
     "duration_seconds",
     "stabilization_time",
+}
+_OBSERVATION_ALLOWED_KEYS = {
+    "start_time",
+    "end_time",
+    "duration_seconds",
+    "pingmesh_metrics",
+    "anomalies_detected",
+    "coverage_status",
+    "data_source_status",
+    "observation_windows",
 }
 _MAX_CANONICAL_ANOMALIES = 12
 
@@ -53,19 +63,19 @@ def extract_episode_pingmesh_query_window(episode_result: dict[str, Any]) -> dic
     return {"start_time": None, "end_time": None}
 
 
-def _bounded_observations(observations: dict[str, Any]) -> dict[str, Any]:
-    """Return the complete public observation payload.
+def _public_observations(observations: dict[str, Any]) -> dict[str, Any]:
+    """Expose Pingmesh symptoms and their window/data-quality metadata.
 
-    Model-specific prompt compaction belongs to the canonical observation
-    consumer.  It must not silently alter ``DiagnosticContext.symptoms`` for
-    third-party benchmark agents.
+    Device-state snapshots and differences belong to private effect/recovery
+    validation. Agents obtain device evidence through diagnostic tools.
+    Keep the Pingmesh payload complete; only the canonical view compacts it.
     """
-    return copy.deepcopy(observations)
+    return public_observation({key: value for key, value in observations.items() if key in _OBSERVATION_ALLOWED_KEYS})
 
 
 def _compact_model_observations(observations: dict[str, Any]) -> dict[str, Any]:
     """Compact only the optional model-facing canonical view."""
-    compacted = copy.deepcopy(observations)
+    compacted = _public_observations(observations)
     metrics = compacted.get("pingmesh_metrics")
     if not isinstance(metrics, dict):
         return compacted
@@ -114,7 +124,7 @@ def build_public_symptoms(*, episode_result: dict[str, Any], pingmesh_query_wind
     )
     return {
         "episode": safe_episode,
-        "observations": _bounded_observations(observations) if isinstance(observations, dict) else {},
+        "observations": _public_observations(observations) if isinstance(observations, dict) else {},
         "pingmesh_query_window": pingmesh_query_window if isinstance(pingmesh_query_window, dict) else {},
         "observation_type": "scenario_episode",
     }

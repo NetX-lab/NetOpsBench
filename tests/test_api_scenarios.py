@@ -12,13 +12,38 @@ from netopsbench.sdk.exceptions import ScenarioValidationError
 from netopsbench.sdk.scenarios import ScenarioManager
 
 
+def test_recovery_policy_authoring_and_legacy_roundtrip(tmp_path):
+    from netopsbench.sdk import RecoveryPolicy
+
+    manager = ScenarioManager(workspace=tmp_path)
+    kwargs = dict(
+        id="healthy",
+        name="healthy",
+        episode={"episode_id": "diagnosis", "fault_type": "none"},
+        metadata={"negative_sample": True},
+    )
+    new = manager.create(**kwargs)
+    assert RecoveryPolicy.from_metadata(new.metadata).version == 3
+    old = new.model_copy(deep=True)
+    old.metadata.pop("recovery_policy")
+    digest = old.digest
+    path = manager.save(old, tmp_path / "legacy.yaml")
+    with pytest.raises(ScenarioValidationError, match="migrate"):
+        manager.load(path)
+    from netopsbench.platform.scenario.parser import parse_scenario_file
+
+    assert parse_scenario_file(path).digest == digest
+    with pytest.raises(ScenarioValidationError, match="only once"):
+        manager.create(**{**kwargs, "metadata": {"recovery_policy": {}}}, recovery_policy={})
+
+
 def test_scenario_manager_can_create_and_roundtrip_yaml(tmp_path):
     manager = ScenarioManager(workspace=tmp_path)
     scenario = manager.create(
         id="scenario_x",
         name="Scenario X",
         description="desc",
-        scale="small",
+        scale="medium",
         episode={
             "episode_id": "diagnosis",
             "fault_type": "static_route_misconfig",
@@ -33,7 +58,7 @@ def test_scenario_manager_can_create_and_roundtrip_yaml(tmp_path):
 
     assert loaded == scenario
     assert loaded.id == "scenario_x"
-    assert loaded.scale == "small"
+    assert loaded.scale == "medium"
     assert loaded.episode.fault_type == "static_route_misconfig"
     assert scenario_from_dict(scenario.to_dict()) == scenario
 
@@ -86,7 +111,15 @@ def test_scenario_manager_rejects_nonstandard_traffic_profile(tmp_path, profile)
 def test_supported_scales_are_available_from_public_sdk():
     from netopsbench.sdk import supported_scales
 
-    assert supported_scales() == ("xs", "small", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12")
+    assert supported_scales() == (
+        "xs",
+        "medium",
+        "large",
+        "xlarge",
+        "fat-tree-k8",
+        "fat-tree-k12",
+        "fat-tree-k18",
+    )
 
 
 def test_scenario_validation_uses_fault_registry(tmp_path):
@@ -122,7 +155,7 @@ def test_validate_scenario_does_not_mutate_fault_type_alias():
         scenario_id="alias_case",
         name="Alias Case",
         topology_scale="xs",
-        metadata={"difficulty": "easy"},
+        metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
         episode=EpisodeSpec(
             episode_id="diagnosis",
             fault_type="static_route_misconfiguration",

@@ -1,7 +1,15 @@
 """Shared agent toolkit types."""
 
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from typing import Any
+
+
+class PublicArgumentError(StrEnum):
+    """Fixed, safe argument guidance; never contains runtime or user-supplied text."""
+
+    BGP_VIEW = "Invalid view: use detail or advertised_routes (aliases: advertised-routes, advertised). Received routes are not supported."
+    BGP_FORMAT = "Invalid format: use structured, raw or both (json is an alias for structured)."
 
 
 @dataclass

@@ -8,10 +8,9 @@
 #   bash scripts/run_all_benchmarks.sh          # 前台跑
 #
 # 每个 scale 使用不同并发 worker 数:
-#   xs:     3 workers  (14 scenarios, 3×6=18 containers)
-#   small:  3 workers  (15 scenarios, 3×14=42 containers)
-#   medium: 2 workers  (28 scenarios, 2×28=56 containers)
-#   large:  2 workers  (52 scenarios, 2×84=168 containers)
+#   xs:     3 workers  (4 validation scenarios, 3×6=18 containers)
+#   medium: 2 workers  (64 scenarios, 2×28=56 containers)
+#   large:  2 workers  (64 scenarios, 2×84=168 containers)
 #   xlarge/fat-tree: 1 worker by default
 #
 # 跑完后汇总 CSV 写入 scenario_results/benchmark_summary_<ts>.csv
@@ -32,15 +31,15 @@ VENDOR="${BENCH_VENDOR:-minimax}"
 # BENCH_WORKERS_LARGE=4 bash scripts/run_all_benchmarks.sh
 declare -A SCALE_WORKERS=(
     [xs]="${BENCH_WORKERS_XS:-3}"
-    [small]="${BENCH_WORKERS_SMALL:-3}"
     [medium]="${BENCH_WORKERS_MEDIUM:-2}"
     [large]="${BENCH_WORKERS_LARGE:-2}"
     [xlarge]="${BENCH_WORKERS_XLARGE:-1}"
     [fat-tree-k8]="${BENCH_WORKERS_FAT_TREE_K8:-1}"
     [fat-tree-k12]="${BENCH_WORKERS_FAT_TREE_K12:-1}"
+    [fat-tree-k18]="${BENCH_WORKERS_FAT_TREE_K18:-1}"
 )
-# Ordered list of scales to run (override with BENCH_SCALES="xs small")
-IFS=' ' read -ra SCALES <<< "${BENCH_SCALES:-xs small medium large}"
+# Ordered list of scales to run (override with BENCH_SCALES="medium large")
+IFS=' ' read -ra SCALES <<< "${BENCH_SCALES:-medium large}"
 
 # 加载 API keys
 set -a
@@ -158,6 +157,7 @@ SUMMARY_CSV="${REPO_ROOT}/scenario_results/benchmark_summary_${TIMESTAMP}.csv"
 import json, sys, csv
 from pathlib import Path
 from datetime import datetime
+from netopsbench.models.profiles import get_scale_profile, supported_scales
 
 repo = Path(sys.argv[1])
 ts = sys.argv[2]
@@ -209,10 +209,16 @@ for rj in report_paths:
         if not sid:
             raw_ids = (data.get("raw") or {}).get("scenario_ids") or []
             sid = raw_ids[0] if raw_ids else ""
-        for sc in ("xs", "small", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"):
+        for sc in supported_scales():
             if f"_{sc}_" in sid:
                 scale = sc
                 break
+
+    if s.get("included_in_benchmark") is False or (
+        scale in supported_scales() and get_scale_profile(scale).purpose == "validation"
+    ):
+        print(f"Validation result preserved, excluded from benchmark CSV: {rj}")
+        continue
 
     reports.append({
         "run_dir": str(rj.parent.relative_to(results_dir)),
@@ -245,7 +251,7 @@ if not reports:
     sys.exit(0)
 
 # Sort by vendor, scale
-scale_order = {"xs": 0, "small": 1, "medium": 2, "large": 3, "xlarge": 4, "fat-tree-k8": 5, "fat-tree-k12": 6}
+scale_order = {scale: index for index, scale in enumerate(supported_scales())}
 reports.sort(key=lambda r: (r["vendor"], scale_order.get(r["scale"], 99), r["started_at"]))
 
 # Write CSV

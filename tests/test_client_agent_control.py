@@ -50,7 +50,7 @@ def test_request_agent_sends_and_validates_one_json_line(monkeypatch):
         "payload": {},
         "protocol_version": 1,
     }
-    assert connection.timeout == 3.0
+    assert 0 < connection.timeout <= 3.0
 
 
 @pytest.mark.parametrize(

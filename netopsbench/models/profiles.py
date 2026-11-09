@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from functools import cached_property
+from functools import cached_property, lru_cache
 from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Literal
@@ -49,6 +49,7 @@ class ManagementProfile(BaseModel):
 
 
 class PingmeshProfile(BaseModel):
+    cross_rack_pairs: int | None = Field(default=None, gt=0)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     destination_batch_size: int | None = Field(default=None, gt=0)
@@ -78,17 +79,40 @@ class RuntimeProfile(BaseModel):
     containerlab_max_workers: int | None = Field(default=None, gt=0)
 
 
+class ExperimentProfile(BaseModel):
+    """One immutable experiment policy, independent of the injected fault."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    observation_seconds: int = Field(gt=0)
+    diagnosis_timeout_seconds: int = Field(gt=0)
+    recovery_timeout_seconds: int = Field(gt=0)
+    flapping_down_seconds: int = Field(gt=0)
+    flapping_up_seconds: int = Field(gt=0)
+
+    def window_seconds(self, complete_window_seconds: int) -> int:
+        return max(self.observation_seconds, complete_window_seconds)
+
+
+@lru_cache(maxsize=1)
+def default_experiment_profile() -> ExperimentProfile:
+    payload = yaml.safe_load(files("netopsbench.models").joinpath("scale_profiles.yaml").read_text())
+    return ExperimentProfile.model_validate(payload["experiment_defaults"])
+
+
 class ScaleProfile(BaseModel):
     """Validated scale facts shared by topology and runtime subsystems."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1)
+    purpose: Literal["benchmark", "validation"] = "benchmark"
     topology: TopologyProfile
     management: ManagementProfile
     pingmesh: PingmeshProfile
     traffic: TrafficProfile
     runtime: RuntimeProfile
+    experiment: ExperimentProfile = Field(default_factory=default_experiment_profile)
 
     @property
     def family(self) -> Literal["clos", "fat-tree"]:
@@ -196,9 +220,31 @@ class ScaleProfile(BaseModel):
 class ScaleProfileDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     override: bool = False
     profiles: list[ScaleProfile]
+    experiment_defaults: ExperimentProfile = Field(default_factory=default_experiment_profile)
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_experiment_defaults(cls, value):
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        supplied = payload.get("experiment_defaults") or {}
+        if isinstance(supplied, ExperimentProfile):
+            supplied = supplied.model_dump()
+        defaults = {**default_experiment_profile().model_dump(), **supplied}
+        payload["experiment_defaults"] = defaults
+        payload["profiles"] = [
+            (
+                {**profile, "experiment": {**defaults, **profile.get("experiment", {})}}
+                if isinstance(profile, dict)
+                else profile
+            )
+            for profile in payload.get("profiles", [])
+        ]
+        return payload
 
 
 class ScaleRegistry(BaseModel):
@@ -301,6 +347,8 @@ def get_scale_profile(name: str, registry: ScaleRegistry | None = None) -> Scale
 
 
 __all__ = [
+    "ExperimentProfile",
+    "default_experiment_profile",
     "ClosTopologyProfile",
     "FatTreeTopologyProfile",
     "ManagementProfile",

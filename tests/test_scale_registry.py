@@ -15,7 +15,7 @@ from netopsbench.sdk import NetOpsBench
 
 def _write_profile(path: Path, *, name: str = "clos-lab", override: bool = False, leafs: int = 3) -> Path:
     path.write_text(
-        f"""schema_version: \"1\"
+        f"""schema_version: \"2\"
 override: {str(override).lower()}
 profiles:
   - name: {name}
@@ -46,12 +46,12 @@ def test_custom_same_family_scale_generates_without_code_changes(tmp_path: Path)
 
 
 def test_profile_override_must_be_explicit(tmp_path: Path):
-    profile_file = _write_profile(tmp_path / "scale.yaml", name="small")
+    profile_file = _write_profile(tmp_path / "scale.yaml", name="medium")
     with pytest.raises(ValueError, match="override: true"):
         ScaleRegistry.with_builtins([profile_file])
 
-    registry = ScaleRegistry.with_builtins([_write_profile(profile_file, name="small", override=True, leafs=5)])
-    assert registry.get("small").num_leafs == 5
+    registry = ScaleRegistry.with_builtins([_write_profile(profile_file, name="medium", override=True, leafs=5)])
+    assert registry.get("medium").num_leafs == 5
 
 
 def test_registry_digest_is_stable_and_changes_with_profile(tmp_path: Path):
@@ -88,3 +88,31 @@ def test_large_limits_containerlab_deploy_parallelism():
     profile = ScaleRegistry.with_builtins().get("large")
 
     assert profile.containerlab_max_workers == 16
+
+
+def test_k8_uses_official_containerlab_parallelism():
+    profile = ScaleRegistry.with_builtins().get("fat-tree-k8")
+
+    assert profile.containerlab_max_workers == 16
+    assert profile.worker_deploy_parallelism == 1
+
+
+def test_k12_defaults_select_the_validated_fast_combination():
+    from netopsbench.models.profiles import default_scale_registry
+    from netopsbench.models.topology import PingmeshPolicy
+
+    profile = default_scale_registry().get("fat-tree-k12")
+    assert profile.containerlab_max_workers == 16
+    policy = PingmeshPolicy.model_validate(profile.pingmesh.model_dump())
+    assert policy.destination_batch_size == 32
+    assert policy.cycle_interval_seconds == 3
+    assert policy.rtt_ports_per_cycle == 4
+    from netopsbench.platform.topology.config import config_for_scale
+    from netopsbench.platform.topology.fat_tree_builder import build_fat_tree_plan
+
+    assert (
+        build_fat_tree_plan(config_for_scale("fat-tree-k12"))
+        .manifest.require_pingmesh_plan()
+        .settings.complete_window_seconds
+        == 42
+    )

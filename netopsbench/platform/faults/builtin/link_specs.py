@@ -24,9 +24,8 @@ def _inject_link_flapping_episode(injector, episode):
     return injector.inject_link_flapping(
         device=episode.target_device,
         interface=episode.target_interface or "Ethernet0",
-        iterations=episode_param(episode, "iterations", 10),
-        down_time=episode_param(episode, "down_time", 2),
-        up_time=episode_param(episode, "up_time", 3),
+        down_time=episode_param(episode, "down_time", None),
+        up_time=episode_param(episode, "up_time", None),
     )
 
 

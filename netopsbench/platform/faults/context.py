@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from netopsbench.models.profiles import ExperimentProfile, default_experiment_profile
 from netopsbench.models.topology import TopologyManifest
 from netopsbench.platform.topology.topology_utils import clab_container_name
 
@@ -16,6 +17,7 @@ class FaultRuntimeContext:
 
     manifest: TopologyManifest
     topology_dir: Path
+    experiment: ExperimentProfile = field(default_factory=default_experiment_profile)
 
     @property
     def topology_file(self) -> Path:

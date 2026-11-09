@@ -1,0 +1,72 @@
+---
+title: Diagnostic Tools
+description: The shared diagnostic surface for DeepAgent, native Codex and custom agents.
+---
+
+All agents use the same 16-entry registry, parameter validation, episode window,
+budget and tracing. Native Codex receives it through authenticated per-case MCP
+HTTP; public stdio MCP remains available. The registry exposes ordinary device
+and telemetry observations. Pingmesh task/batch completeness is private runtime
+validation; there is no `get_pingmesh_flows` tool.
+
+Existing required parameters and default views retain their meanings. The
+following additions are optional:
+
+| Tool | Optional capability |
+|---|---|
+| `get_device_status(device)` | New entry: actual node running/accessibility, supported bgpd/zebra service states and collection time. Unavailable service data is reported explicitly, without an inferred fault label. |
+| `get_route_table(device, view="kernel", prefix=...)` | Actual kernel IPv4 FIB, including multipath next hops. The default `view="frr"` remains the FRR route table. |
+| `get_bgp_neighbor(device, peer, view="advertised_routes", prefix=...)` | Live advertised routes for one peer; optional exact-prefix filter. The default `view="detail"` retains session details. |
+| `get_device_interfaces(device, interface=...)` | Interface state/counters and actual IPv4 addresses/masks, optionally filtered by interface (including aliases). Traffic-control injection configuration is not exposed. |
+| `get_device_acl(device)` | SONiC table/rule match fields, port/stage attachment and iptables FORWARD counters, including input/output interfaces. |
+| `query_bgp_events(event_type="prefix_count")` | Prefix-count changes from the existing BGP collector. Default session mode is unchanged; prefix mode does not apply the session-state filter. Collection gaps are explicit, and failed collection never becomes prefix count zero. |
+| `get_pingmesh_summary(src_client=..., dst_client=...)` | Optional client filters over the existing aggregated output. |
+| `traceroute(src, dst_ip, max_hops=...)` | Default 8, maximum 32 hops, bounded by the diagnostic session deadline. |
+
+A count decrease is a clue. Confirm the specific prefix through RIB, advertised
+routes and kernel FIB. A missing container, a stopped bgpd and a down BGP peer
+are separate observations; avoid treating collection failure as routing failure.
+
+Pingmesh query times retain this precedence: explicit `start_time`/`end_time`,
+current toolkit episode window, context file, environment times, rolling
+fallback. `get_pingmesh_hotspots` remains aggregated by leaf/edge pair. Filtering
+summary clients does not change the hotspot granularity.
+
+Initial symptoms contain Pingmesh observations and their window/data-quality
+metadata. Agents receive normal topology and configuration intent, then query
+tools for device status, routing, BGP, interfaces, ACLs and logs. Whole-network
+FIB/BGP snapshots and healthy/fault differences stay in private effect and
+recovery validation; they are not supplied as initial localization clues.
+ECMP can lose next hops while RTT/loss remain normal, so normal Pingmesh alone
+does not establish routing redundancy or configuration health.
+
+This input policy applies to new runs. Frozen campaigns retain their source
+snapshots, observations and scores; use a new campaign for this policy.
+
+Only anonymous case identifiers, normal topology/configuration intent and
+public observations reach an agent. Injection targets, mechanisms, recovery
+journals, private effect audits and grading answers stay outside prompts and
+tool output. Agents return the existing diagnosis schema; mechanism is not a
+new output field or scoring KPI.
+
+`include_tc` has been removed from MCP and direct toolkit calls; omit the
+argument. Direct callers passing it receive Python `TypeError`. Raw interface
+views omit the qdisc implementation field while preserving interface state,
+MTU and counters. In `both` format, `structured` consistently contains a
+`device` field and an `interfaces` list, including Linux fallbacks.
+Netem loss/corruption/delay settings belong to private injection validation, not
+measured packet loss, corruption counters or latency.
+
+Device snapshots carry `collected_at`. Logs and interface telemetry use the
+current episode window by default and filter by topology identity; responses
+include `time_scope`. A live fallback snapshot is explicitly separate from
+historical telemetry. Periodic faults can be healthy at the instant of a live
+query: inspect the full historical window before concluding network health.
+
+BGP tool parameters are enumerated in the MCP schema. For `get_bgp_neighbor`,
+use `view="detail"` or `view="advertised_routes"`; `advertised-routes` and
+`advertised` are accepted aliases for the latter. Received routes are not
+supported. `prefix` applies only to advertised routes and matches exactly.
+For `get_bgp_neighbors`, use `format="structured"`, `"raw"`, or `"both"`;
+`"json"` aliases `"structured"`. Invalid view/format values return argument
+guidance; collection failures remain redacted as `Observation unavailable`.

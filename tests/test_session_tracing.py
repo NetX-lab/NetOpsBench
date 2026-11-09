@@ -148,7 +148,7 @@ def test_trace_writer_persists_atif_and_index_with_redaction(tmp_path):
         worker="worker-1",
         topology_id="topo-1",
         runtime_id="runtime-1",
-        topology_scale="small",
+        topology_scale="medium",
         agent=SimpleNamespace(name="agent-x"),
         diagnostic_context=context,
         diagnosis=diagnosis,
@@ -173,13 +173,13 @@ def test_trace_writer_persists_atif_and_index_with_redaction(tmp_path):
     assert atif["steps"][2]["message"].startswith("Final diagnosis:")
     assert atif["extra"]["final_diagnosis"]["metadata"]["OPENAI_API_KEY"] == "<redacted>"
     assert atif["extra"]["final_diagnosis"]["metadata"]["worker_env"]["NETOPSBENCH_TOKEN"] == "<redacted>"
-    assert atif["extra"]["topology_scale"] == "small"
+    assert atif["extra"]["topology_scale"] == "medium"
     assert atif["final_metrics"]["total_prompt_tokens"] == 10
     assert index[0]["case_id"] == "case-123"
     assert index[0]["status"] == "completed"
     assert index[0]["provider"] == "openai"
     assert index[0]["model"] == "gpt-test"
-    assert index[0]["topology_scale"] == "small"
+    assert index[0]["topology_scale"] == "medium"
     assert index[0]["started_at"] == "2026-01-01T00:00:00+00:00"
     assert index[0]["duration_seconds"] == 2.0
 
@@ -197,7 +197,7 @@ def test_trace_writer_falls_back_to_agent_display_metadata_on_early_failure(tmp_
         worker="worker-1",
         topology_id="topo-1",
         runtime_id="runtime-1",
-        topology_scale="small",
+        topology_scale="medium",
         agent=agent,
         diagnostic_context=context,
         diagnosis=diagnosis,
@@ -212,7 +212,7 @@ def test_trace_writer_falls_back_to_agent_display_metadata_on_early_failure(tmp_
 
     assert index[0]["provider"] == "deepseek"
     assert index[0]["model"] == "deepseek-v4-pro"
-    assert index[0]["topology_scale"] == "small"
+    assert index[0]["topology_scale"] == "medium"
     assert atif["agent"]["model_name"] == "deepseek-v4-pro"
     assert atif["agent"]["extra"]["provider"] == "deepseek"
 
@@ -274,7 +274,7 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
         worker="worker-1",
         topology_id="topo",
         runtime_id="runtime",
-        topology_scale="small",
+        topology_scale="medium",
         agent=SimpleNamespace(name="agent"),
         diagnostic_context=context,
         diagnosis=diagnosis,
@@ -329,12 +329,12 @@ def test_export_traces_writes_harbor_jobs_directory(tmp_path):
     eval_stats = next(iter(job_result["stats"]["evals"].values()))
     assert eval_stats["metrics"][0]["reward"] == 1.0
     assert eval_stats["metrics"][0]["score"] == 1.0
-    assert job_config["datasets"][0]["name"] == "netopsbench-small"
+    assert job_config["datasets"][0]["name"] == "netopsbench-medium"
     assert job_config["agents"][0]["name"] == "agent"
     assert job_config["agents"][0]["model_name"] == "openai/gpt-test"
     assert trial_result["task_name"] == "scenario-1"
-    assert trial_result["source"] == "netopsbench-small"
-    assert trial_result["config"]["task"]["source"] == "netopsbench-small"
+    assert trial_result["source"] == "netopsbench-medium"
+    assert trial_result["config"]["task"]["source"] == "netopsbench-medium"
     assert trial_result["agent_info"]["model_info"]["provider"] == "openai"
     assert trial_result["agent_result"]["n_input_tokens"] == 5
     assert verifier["reward"] == 1.0

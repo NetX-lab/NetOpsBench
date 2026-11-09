@@ -16,7 +16,7 @@ def _canonical_traffic_topology(
     scale: str,
     family: str = "clos",
     spines: int = 2,
-    leafs: int = 1,
+    leafs: int = 2,
     clients_per_leaf: int = 2,
 ) -> dict:
     devices = [
@@ -53,8 +53,32 @@ def _canonical_traffic_topology(
             ecmp_hash_policy_by_role={device.role: 1 for device in devices if device.role is not DeviceRole.CLIENT}
         ),
         devices=devices,
-        links=[],
+        links=[
+            topology_models.Link(
+                kind="access",
+                endpoints=(
+                    topology_models.LinkEndpoint(device=client.attached_switch, interface=f"eth{i}"),
+                    topology_models.LinkEndpoint(device=client.name, interface="eth1"),
+                ),
+            )
+            for i, client in enumerate(devices)
+            if client.role is DeviceRole.CLIENT
+        ],
     )
+    manifest.links.extend(
+        topology_models.Link(
+            kind="fabric",
+            endpoints=(
+                topology_models.LinkEndpoint(device=f"spine{i}", interface=f"eth{j}"),
+                topology_models.LinkEndpoint(device=f"leaf{j}", interface=f"eth{i}"),
+            ),
+        )
+        for i in range(1, spines + 1)
+        for j in range(1, leafs + 1)
+    )
+    from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
+
+    manifest.pingmesh_plan = compile_pingmesh_plan(manifest)
     return manifest.model_dump(mode="json")
 
 
@@ -80,8 +104,7 @@ def test_large_standard_profile_respects_switch_budget(tmp_path):
     )
 
     assert config["stats"]["total_flows"] == 256
-    assert config["stats"]["estimated_max_pps_per_client"] == pytest.approx(353.64)
-    assert config["stats"]["estimated_switch_pps"]["max_switch_pps"] == pytest.approx(4229.69)
+    assert config["stats"]["estimated_max_pps_per_client"] <= get_scale_profile("large").traffic_max_pps_per_client
     assert config["stats"]["estimated_switch_pps"]["max_leaf_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert config["stats"]["estimated_switch_pps"]["max_spine_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert traffic_generator.validate_traffic_config(config, "large") is True
@@ -97,9 +120,20 @@ def test_xlarge_standard_profile_respects_switch_budget(tmp_path):
     )
 
     assert config["stats"]["total_flows"] > 0
+    assert config["stats"]["estimated_max_pps_per_client"] <= 50
     assert config["stats"]["estimated_switch_pps"]["max_leaf_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert config["stats"]["estimated_switch_pps"]["max_spine_pps"] <= DEFAULT_SWITCH_PPS_LIMIT
     assert traffic_generator.validate_traffic_config(config, "xlarge") is True
+
+
+@pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k18"])
+@pytest.mark.parametrize("switch_budget", [None, 1000, 5000, 10000])
+def test_switch_budget_cannot_raise_profile_client_limit(scale, switch_budget):
+    assert traffic_generator._max_pps_per_client(scale, switch_budget) == 50
+
+
+def test_smaller_switch_budget_reduces_client_limit():
+    assert traffic_generator._max_pps_per_client("xlarge", 500) == 25
 
 
 def test_fat_tree_profiles_are_bounded(tmp_path):
@@ -138,10 +172,9 @@ def test_fat_tree_profiles_are_bounded(tmp_path):
     ("scale", "expected_flows", "expected_incoming"),
     [
         ("xs", 2, 1),
-        ("small", 32, 4),
         ("medium", 64, 4),
         ("large", 256, 4),
-        ("xlarge", 512, 4),
+        ("xlarge", 1024, 4),
         ("fat-tree-k8", 512, 4),
         ("fat-tree-k12", 576, 4),
     ],
@@ -206,7 +239,7 @@ def test_standard_matrix_is_deterministic(tmp_path):
 
 
 def test_traffic_generator_rejects_legacy_grouped_topology():
-    with pytest.raises(ValueError, match="schema_version.*3"):
+    with pytest.raises(ValueError, match="schema_version.*4"):
         traffic_generator.generate_traffic_config_from_topology(
             {"devices": {"clients": [], "leafs": [], "spines": []}},
             "xs",

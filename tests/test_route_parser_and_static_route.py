@@ -1,4 +1,3 @@
-import random
 import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -8,7 +7,6 @@ import pytest
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.observability.bgp_parser import parse_bgp_summary
 from netopsbench.platform.observability.influxdb import FluxQueryResult
-from netopsbench.platform.scenario import generator as _generate_scenarios_mod
 from netopsbench.platform.toolkit._core.device.route_parsers import parse_route_table
 from netopsbench.platform.toolkit._core.device.telemetry_parsers import (
     parse_influx_metric_rows,
@@ -115,30 +113,6 @@ def test_parse_route_table_preserves_blackhole_discard_kind():
     assert routes[0]["discard_interface"] == "blackhole"
 
 
-def test_build_fault_instance_static_route_targets_remote_client(tmp_path):
-    gs = _generate_scenarios_mod
-    topology_dir = tmp_path / "topology"
-    generate_topology("xs", str(topology_dir))
-    topo = gs.load_topology("xs", str(topology_dir))
-    template = {"name": "static_route_misconfig", "device_role": "leaf", "severity": "medium"}
-    defaults = {"seed": 42}
-
-    scenario = gs.build_fault_instance(
-        "static_route_misconfig",
-        "hard",
-        topo,
-        random.Random(1),
-        defaults,
-        template,
-        1,
-    )
-
-    episode = scenario["episode"]
-    assert episode["target_device"] == "leaf1"
-    assert episode["metadata"]["target_ip"] == "192.168.102.2/32"
-    assert episode["metadata"]["wrong_nexthop"] == "auto"
-
-
 def test_recover_static_route_misconfig_prefers_specific_nexthop(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     injector.active_faults = [
@@ -193,34 +167,36 @@ def test_inject_static_route_misconfig_auto_uses_topology_clients(monkeypatch):
     class Result:
         returncode = 0
         stderr = ""
-        stdout = "ip route 192.168.102.2/32 192.168.101.2\n"
+        stdout = "ip route 192.168.2.2/32 192.168.1.2\n"
 
     captured = []
 
     def fake_vtysh(device, commands):
         if commands == ["show running-config"]:
             return Result()
-        if commands == ["show ip route 192.168.102.2/32"]:
+        if commands == ["show ip route 192.168.2.2/32"]:
             return Result()
         captured.append((device, commands))
         return Result()
 
     monkeypatch.setattr(injector._static_route._sonic, "vtysh", fake_vtysh)
 
+    monkeypatch.setattr(injector._static_route, "_running_config_has_route", lambda *args: False)
+    monkeypatch.setattr(injector._cmd, "docker_exec", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="0"))
     result = injector.inject_static_route_misconfig(
         device="leaf1",
-        target_ip="192.168.102.2/32",
+        target_ip="192.168.2.2/32",
         wrong_nexthop="auto",
     )
 
     assert result["success"] is True
-    assert result["wrong_nexthop"] == "192.168.101.2"
+    assert result["wrong_nexthop"] == "192.168.1.2"
     assert captured == [
         (
             "leaf1",
             [
                 "configure terminal",
-                "ip route 192.168.102.2/32 192.168.101.2",
+                "ip route 192.168.2.2/32 192.168.1.2",
                 "end",
                 "write memory",
             ],
@@ -322,6 +298,7 @@ def test_netem_readback_compares_normalized_numeric_values(monkeypatch):
 
     monkeypatch.setattr(injector._impairment._cmd, "docker_exec", fake_docker_exec)
 
+    monkeypatch.setattr(injector._impairment, "_require_default_qdisc", lambda *args: None)
     result = injector.inject_packet_loss("spine1", "Ethernet0", loss_pct=10.0)
 
     assert result["success"] is True

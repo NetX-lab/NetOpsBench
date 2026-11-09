@@ -57,11 +57,22 @@ class FabricPlan:
         plan_names = [device_plan.name for device_plan in self.device_plans]
         if manifest_names != plan_names:
             raise ValueError("FabricPlan device plans must match canonical manifest device order")
+        used_interfaces: set[tuple[str, str]] = set()
+        degrees: dict[str, int] = {}
+        for link in self.manifest.links:
+            for endpoint in link.endpoints:
+                key = (endpoint.device, endpoint.interface)
+                if key in used_interfaces:
+                    raise ValueError(f"Topology reuses data interface {endpoint.device}:{endpoint.interface}")
+                used_interfaces.add(key)
+                degrees[endpoint.device] = degrees.get(endpoint.device, 0) + 1
         for device_plan in self.device_plans:
             if device_plan.is_client:
                 continue
             if device_plan.required_ports <= 0:
                 raise ValueError(f"switch {device_plan.name} must define required_ports")
+            if degrees.get(device_plan.name, 0) != device_plan.required_ports:
+                raise ValueError(f"switch {device_plan.name} port capacity does not match its data links")
             if device_plan.bgp_asn is None or device_plan.bgp_router_id is None:
                 raise ValueError(f"switch {device_plan.name} must define BGP identity")
 

@@ -20,6 +20,7 @@ from netopsbench.models.topology import (
 from .config import FatTreeConfig
 from .plan import BGPNeighborPlan, DevicePlan, FabricPlan
 from .planning import (
+    ClientAddressing,
     ManagementAddressing,
     build_render_settings,
     client_commands,
@@ -29,18 +30,25 @@ from .planning import (
 
 
 def _validate_config(config: FatTreeConfig) -> None:
-    if config.num_total_edge > 155:
-        raise ValueError(
-            "num_total_edge must fit the client subnet scheme 192.168.(100+edge).0/24 "
-            f"(1-155), got {config.num_total_edge}"
-        )
-    if int(config.clients_per_edge or 0) > 64:
-        raise ValueError("clients_per_edge must fit the per-edge /30 allocation")
+    ClientAddressing(config.num_total_edge, int(config.clients_per_edge or 0))
+    if max(config.num_core, config.num_total_agg, config.num_total_edge) > 255:
+        raise ValueError("Router ID pool exceeds one IPv4 octet")
+    if (
+        not 64512 <= config.asn_base
+        or config.asn_base + config.num_core + config.num_total_agg + config.num_total_edge - 1 > 65534
+    ):
+        raise ValueError("Fat-tree ASNs exceed the private 16-bit pool")
+    if config.k * config.half * config.half > 16384:
+        raise ValueError("Fat-tree fabric /30 address pool exhausted")
 
 
 def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
     """Return a complete fat-tree plan without writing any artifacts."""
     _validate_config(config)
+    client_addressing = ClientAddressing(config.num_total_edge, int(config.clients_per_edge or 0))
+    core_asn_start = config.asn_base
+    agg_asn_start = core_asn_start + config.num_core
+    edge_asn_start = agg_asn_start + config.num_total_agg
     half = config.half
     clients_per_edge = int(config.clients_per_edge or 0)
 
@@ -105,7 +113,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
     for core_idx in range(1, config.num_core + 1):
         name = f"core{core_idx}"
         router_id = f"10.0.1.{core_idx}"
-        asn = config.core_asn_start + core_idx - 1
+        asn = core_asn_start + core_idx - 1
         device = Device(
             name=name,
             role=DeviceRole.CORE,
@@ -121,7 +129,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
         neighbors = tuple(
             BGPNeighborPlan(
                 peer_ip=core_agg_ips[(core_idx, agg_idx)][1],
-                remote_as=config.agg_asn_start + agg_idx - 1,
+                remote_as=agg_asn_start + agg_idx - 1,
             )
             for agg_idx in neighbors_for_device
         )
@@ -140,7 +148,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
     for agg_idx in range(1, config.num_total_agg + 1):
         name = f"agg{agg_idx}"
         router_id = f"10.0.2.{agg_idx}"
-        asn = config.agg_asn_start + agg_idx - 1
+        asn = agg_asn_start + agg_idx - 1
         device = Device(
             name=name,
             role=DeviceRole.AGG,
@@ -165,14 +173,14 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
             [
                 BGPNeighborPlan(
                     peer_ip=core_agg_ips[(core_idx, agg_idx)][0],
-                    remote_as=config.core_asn_start + core_idx - 1,
+                    remote_as=core_asn_start + core_idx - 1,
                 )
                 for core_idx in core_peers
             ]
             + [
                 BGPNeighborPlan(
                     peer_ip=agg_edge_ips[(agg_idx, edge_idx)][1],
-                    remote_as=config.edge_asn_start + edge_idx - 1,
+                    remote_as=edge_asn_start + edge_idx - 1,
                 )
                 for edge_idx in edge_peers
             ]
@@ -192,7 +200,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
     for edge_idx in range(1, config.num_total_edge + 1):
         name = f"edge{edge_idx}"
         router_id = f"10.0.3.{edge_idx}"
-        asn = config.edge_asn_start + edge_idx - 1
+        asn = edge_asn_start + edge_idx - 1
         device = Device(
             name=name,
             role=DeviceRole.EDGE,
@@ -201,7 +209,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
             router_id=router_id,
             metadata={
                 "pod": edge_pod[edge_idx],
-                "client_subnet": f"192.168.{100 + edge_idx}.0/24",
+                "client_subnet": str(client_addressing.rack_subnet(edge_idx)),
             },
         )
         agg_peers = sorted(edge_agg_neighbors[edge_idx])
@@ -211,13 +219,13 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
         }
         networks: list[str] = []
         for client_position in range(1, clients_per_edge + 1):
-            subnet_base = (client_position - 1) * 4
-            interfaces[sonic_port_name(half + client_position)] = (f"192.168.{100 + edge_idx}.{subnet_base + 1}/30",)
-            networks.append(f"192.168.{100 + edge_idx}.{subnet_base}/30")
+            subnet, gateway, client_ip = client_addressing.access(edge_idx, client_position)
+            interfaces[sonic_port_name(half + client_position)] = (gateway + "/30",)
+            networks.append(subnet)
         neighbors = tuple(
             BGPNeighborPlan(
                 peer_ip=agg_edge_ips[(agg_idx, edge_idx)][0],
-                remote_as=config.agg_asn_start + agg_idx - 1,
+                remote_as=agg_asn_start + agg_idx - 1,
             )
             for agg_idx in agg_peers
         )
@@ -238,9 +246,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
     for edge_idx in range(1, config.num_total_edge + 1):
         for client_position in range(1, clients_per_edge + 1):
             client_idx += 1
-            subnet_base = (client_position - 1) * 4
-            client_ip = f"192.168.{100 + edge_idx}.{subnet_base + 2}"
-            gateway = f"192.168.{100 + edge_idx}.{subnet_base + 1}"
+            _, gateway, client_ip = client_addressing.access(edge_idx, client_position)
             client = Device(
                 name=f"client{client_idx}",
                 role=DeviceRole.CLIENT,
@@ -296,6 +302,7 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
         topology_id=config.name,
         name=config.name,
         scale=scale_name,
+        purpose=config.purpose,
         family="fat-tree",
         management=Management(
             network=config.mgmt_network_name or f"clab-mgmt-{config.name}",
@@ -318,9 +325,9 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
         devices=devices,
         links=links,
         routing=RoutingMetadata(
-            core_asn_range=f"{config.core_asn_start}-{config.core_asn_start + config.num_core - 1}",
-            agg_asn_range=f"{config.agg_asn_start}-{config.agg_asn_start + config.num_total_agg - 1}",
-            edge_asn_range=f"{config.edge_asn_start}-{config.edge_asn_start + config.num_total_edge - 1}",
+            core_asn_range=f"{core_asn_start}-{core_asn_start + config.num_core - 1}",
+            agg_asn_range=f"{agg_asn_start}-{agg_asn_start + config.num_total_agg - 1}",
+            edge_asn_range=f"{edge_asn_start}-{edge_asn_start + config.num_total_edge - 1}",
             ecmp_hash_policy_by_role={DeviceRole.CORE: 1, DeviceRole.AGG: 0, DeviceRole.EDGE: 1},
         ),
         pingmesh=config.pingmesh_policy or pingmesh_policy_for_scale(scale_name),
@@ -334,6 +341,9 @@ def build_fat_tree_plan(config: FatTreeConfig) -> FabricPlan:
 # - Preseeded SONiC startup artifacts
 
 """
+    from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
+
+    manifest.pingmesh_plan = compile_pingmesh_plan(manifest)
     return FabricPlan(
         manifest=manifest,
         device_plans=tuple(device_plans),

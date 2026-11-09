@@ -133,8 +133,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,agent]"
 
-      - name: Generate benchmark assets (xs scale)
-        run: netopsbench benchmark prepare --scales xs
+      - name: Generate validation and default benchmark assets
+        run: netopsbench benchmark prepare --scales xs,medium
 
       - name: Run regression suite (no real-environment tests)
         run: |

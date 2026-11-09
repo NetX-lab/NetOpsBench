@@ -17,14 +17,14 @@ NetOpsBench has one execution path with several entrypoints. Start with one scen
 Prepare scenario assets before these runs:
 
 ```bash
-# prepare benchmark scenarios for all seven built-in topology scales
+# prepare benchmark scenarios for the six formal benchmark scales
 netopsbench benchmark prepare
 ```
 
 Use `--seed` when you need reproducible scenario generation, default seed is 42:
 
 ```bash
-netopsbench benchmark prepare --scales xs,small --seed 42
+netopsbench benchmark prepare --scales medium,large --seed 42
 ```
 
 ## One scenario
@@ -54,18 +54,32 @@ The script passes a list of scenarios and requests multiple workers:
 run = bench.sessions.run_suite(
     scenarios=scenarios,
     agent=agent,
-    scale="xs",
+    scale="medium",
     workers=3,
 )
 ```
 
 Use a small suite to check whether an agent generalizes beyond one selected case before paying the cost of a full generated corpus.
 
+## Baseline handoff between cases
+
+Within one suite, each worker keeps its topology and traffic running. A case can hand its verified healthy window to the next case on that same worker. Healthy cases offer their observation window only after it passes the absolute health gate; fault cases offer the post-recovery validation window. Cleanup and the full worker health check must succeed before either can be reused.
+
+Recovery convergence, the validation window, snapshot queries and coverage retries share one deadline. The recovery budget comes from the profile's explicit `experiment.recovery_timeout_seconds`, independently of the observation window. If the remaining budget cannot cover a complete validation window, recovery remains unverified and the runtime is quarantined; a shortened window is never published as a healthy baseline.
+
+The next case always captures its own full observation window. A fresh baseline now uses one complete healthy capture and an absolute-health validation query. Reuse avoids that capture (42 seconds for K12), while observations are queried again. This changes baseline selection; performance comparisons should use the same handoff policy and case ordering.
+
+Handoff is rejected if the window ended more than 120 seconds ago, is too short, or the runtime containers, generated configuration, scale policy, traffic profile, or verified traffic plan have changed. A fresh capture and absolute-health validation are required after 600 seconds since the last fresh calibration. The worker owns one consumable candidate; a broken incident or failed cleanup clears it. This assumes exclusive ownership of the worker during the suite: do not edit live device configuration out of band while it runs.
+
+Only window timestamps are handed off. Telemetry is queried again, so late-arriving data remains visible. Baseline and observation queries overlap under a process-wide limit of four InfluxDB HTTP requests. Each raw case result records `baseline_preparation` (fresh/reused and reason) and `cleanup.baseline_handoff`.
+
+Use one `run_suite(...)` or `run_on_runtime_suite(...)` call for a batch. Separate `run_on_runtime_scenario(...)` calls create separate executors and do not share a baseline. No handoff survives the end of a suite.
+
 ## Full scale run
 
 ```bash
 PYTHONPATH=. python examples/03_run_scale_benchmark.py \
-  --scale xs \
+  --scale medium \
   --workers 3 \
   --vendor <vendor>
 ```
@@ -77,19 +91,21 @@ Scale choice changes both runtime cost and diagnosis difficulty:
 | Scale | Use |
 |---|---|
 | `xs` | Fastest feedback and provider validation. |
-| `small` | More topology variety with moderate runtime cost. |
-| `medium` | Broader fabric behavior and more generated scenarios. |
+| `medium` | Default formal benchmark scale. |
 | `large` | Stress test for runtime stability, observability volume, and agent efficiency. |
-| `xlarge` | 144-switch CLOS benchmark with 128 clients and 70 cases. |
-| `fat-tree-k8` | 80-switch, three-tier Fat-tree with 128 clients and 70 cases. |
-| `fat-tree-k12` | 180-switch, three-tier Fat-tree with 144 clients and 70 cases. |
+| `xlarge` | 144-switch CLOS benchmark with 256 clients and 64 cases. |
+| `fat-tree-k8` | 80-switch, three-tier Fat-tree with 128 clients and 108 cases. |
+| `fat-tree-k12` | 180-switch, three-tier Fat-tree with 144 clients and 108 cases. |
+| `fat-tree-k18` | 405-switch, three-tier Fat-tree with 324 clients and 108 cases. |
+
+By default, the scale example uses 3 workers for xs, 2 for medium/large, and 1 for xlarge/Fat-tree, matching the batch shell script. An explicit `--workers` overrides this selection.
 
 Worker count controls concurrency. Each worker provisions its own lab resources. If Docker, Containerlab, or provider rate limits become unstable, reduce `--workers`.
 
 For Xlarge and Fat-tree, begin with one worker and confirm host capacity, baseline health, provider connectivity, and exact teardown before increasing concurrency:
 
 ```bash
-netopsbench benchmark prepare --scales xlarge,fat-tree-k8,fat-tree-k12
+netopsbench benchmark prepare --scales xlarge,fat-tree-k8,fat-tree-k12,fat-tree-k18
 PYTHONPATH=. python examples/03_run_scale_benchmark.py \
   --scale fat-tree-k12 --workers 1 --vendor deepseek
 ```
@@ -107,7 +123,7 @@ Preparing all three profiles does not deploy three labs. A lab is provisioned on
 ## Multi-scale batches
 
 ```bash
-BENCH_VENDOR=<vendor> BENCH_SCALES="xs small" bash scripts/run_all_benchmarks.sh
+BENCH_VENDOR=<vendor> BENCH_SCALES="medium large" bash scripts/run_all_benchmarks.sh
 ```
 
 For long-running jobs:
@@ -121,7 +137,7 @@ Useful environment overrides:
 | Variable | Meaning |
 |---|---|
 | `BENCH_VENDOR` | Provider passed to `examples/03_run_scale_benchmark.py`. |
-| `BENCH_SCALES` | Space-separated scale list such as `xs small`. |
+| `BENCH_SCALES` | Space-separated scale list such as `medium large`. |
 | `BENCH_WORKERS_<SCALE>` | Worker count override for one scale, for example `BENCH_WORKERS_LARGE=2`. |
 | `BENCH_CLEAN_RUNS=1` | Explicitly remove previous `.netopsbench/runs/` artifacts before the batch. By default, previous reports and traces are preserved. |
 

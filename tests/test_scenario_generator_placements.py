@@ -1,250 +1,114 @@
-"""Placement coverage for the default large-topology scenario campaign."""
+"""Catalog coverage is stable across scale, with auditable planned witnesses."""
 
-from __future__ import annotations
-
-from collections import Counter, defaultdict
-from pathlib import Path
+import json
+from collections import Counter
 
 import pytest
 import yaml
 
-from netopsbench.platform.scenario import generator as scenario_generator
+from netopsbench.models.profiles import supported_scales
+from netopsbench.platform.faults.catalog import FAULT_MECHANISMS, coverage_units
+from netopsbench.platform.scenario.generator import _CandidateIndex, generate, load_topology
+from netopsbench.platform.scenario.parser import parse_scenario_file
+from netopsbench.platform.scenario.validator import validate_scenario
 from netopsbench.platform.topology.generator import generate_topology
 
-EXPANDED_FAULTS = {
-    "bgp_neighbor_misconfig",
-    "blackhole_route",
-    "device_down",
-    "high_latency",
-    "link_down",
-    "link_flapping",
-    "mtu_mismatch",
-    "packet_corruption",
-    "packet_loss",
-}
-ACCESS_SCOPED_FAULTS = {
-    "acl_misconfig",
-    "route_policy_misconfig",
-    "static_route_misconfig",
-}
 
-
-def _load_generated(paths: list[Path]) -> list[dict]:
-    return [yaml.safe_load(path.read_text(encoding="utf-8")) for path in paths]
-
-
-def _generate_default(scale: str, root: Path, *, reverse_templates: bool = False):
-    topology_dir = root / f"topology-{scale}"
-    if not topology_dir.exists():
-        generate_topology(scale, str(topology_dir))
-    topo = scenario_generator.load_topology(scale, str(topology_dir))
-    spec = scenario_generator.load_yaml(scenario_generator.default_campaign_spec())
-    if reverse_templates:
-        spec["fault_templates"] = list(reversed(spec["fault_templates"]))
-    paths = scenario_generator.generate(spec, topo, root / "scenarios", seed=42)
-    return topo, _load_generated(paths)
-
-
-def _role_counts(rows: list[dict], roles: dict[str, str], fault_type: str) -> Counter:
-    return Counter(roles[row["episode"]["target_device"]] for row in rows if row["episode"]["fault_type"] == fault_type)
-
-
-def test_large_campaign_uses_complete_pingmesh_window(tmp_path):
-    _topology, rows = _generate_default("large", tmp_path)
-
-    assert len(rows) == 52
-    assert {row["episode"]["duration_seconds"] for row in rows} == {54}
-
-
-@pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k8", "fat-tree-k12"])
-def test_default_large_campaign_has_balanced_tier_placements(tmp_path, scale):
-    topo, rows = _generate_default(scale, tmp_path)
-    fault_counts = Counter(row["episode"]["fault_type"] for row in rows)
-
-    assert len(rows) == 70
-    assert len({row["scenario_id"] for row in rows}) == 70
-    assert all(fault_counts[fault] == 6 for fault in EXPANDED_FAULTS)
-    assert all(fault_counts[fault] == 4 for fault in ACCESS_SCOPED_FAULTS)
-    assert fault_counts["none"] == 4
-    assert {
-        row["episode"]["metadata"]["loss_pct"] for row in rows if row["episode"]["fault_type"] == "packet_loss"
-    } == {30}
-
-    indices_by_fault: dict[str, list[int]] = defaultdict(list)
-    for row in rows:
-        indices_by_fault[row["episode"]["fault_type"]].append(int(row["scenario_id"].rsplit("_", 1)[1]))
-    for fault_type, indices in indices_by_fault.items():
-        assert sorted(indices) == list(range(1, fault_counts[fault_type] + 1))
-
-    roles = {device.name: device.role.value for device in topo.manifest.devices}
-    if scale == "xlarge":
-        assert _role_counts(rows, roles, "link_down") == {"leaf": 4, "spine": 2}
-        assert _role_counts(rows, roles, "device_down") == {"leaf": 3, "spine": 3}
-        for fault in EXPANDED_FAULTS - {"device_down", "link_down"}:
-            assert _role_counts(rows, roles, fault) == {"leaf": 3, "spine": 3}
-    else:
-        assert _role_counts(rows, roles, "link_down") == {"edge": 3, "agg": 2, "core": 1}
-        for fault in {"device_down", "mtu_mismatch", "bgp_neighbor_misconfig", "blackhole_route"}:
-            assert _role_counts(rows, roles, fault) == {"edge": 2, "agg": 2, "core": 2}
-        for fault in {"high_latency", "packet_loss", "packet_corruption", "link_flapping"}:
-            assert _role_counts(rows, roles, fault) == {"edge": 2, "agg": 3, "core": 1}
-
-    by_template: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        by_template[row["metadata"]["generator"]["template"]].append(row)
-    for template_rows in by_template.values():
-        devices = [row["episode"].get("target_device") for row in template_rows]
-        devices = [device for device in devices if device is not None]
-        assert len(devices) == len(set(devices))
-
-        pods = {
-            int(next(device for device in topo.manifest.devices if device.name == name).metadata["pod"])
-            for name in devices
-            if roles[name] in {"edge", "agg"}
-        }
-        if len(devices) > 1 and all(roles[name] in {"edge", "agg"} for name in devices):
-            assert len(pods) == len(devices)
-
-
-def _normalize_interface(name: str) -> str:
-    if name.startswith("eth") and name[3:].isdigit():
-        return f"Ethernet{(int(name[3:]) - 1) * 4}"
-    return name
-
-
-def test_fat_tree_templates_select_the_requested_link_and_bgp_roles(tmp_path):
-    topo, rows = _generate_default("fat-tree-k8", tmp_path)
-    roles = {device.name: device.role.value for device in topo.manifest.devices}
-    peers: dict[tuple[str, str], str] = {}
-    for link in topo.manifest.links:
-        left, right = link.endpoints
-        peers[(left.device, _normalize_interface(left.interface))] = right.device
-        peers[(right.device, _normalize_interface(right.interface))] = left.device
-
-    expected_peer_role = {
-        "link_down_access": "client",
-        "link_down_leaf_fabric": "agg",
-        "link_down_agg_edge": "edge",
-        "link_down_agg_core": "core",
-        "link_down_core_agg": "agg",
-        "packet_loss_leaf": "agg",
-        "packet_loss_spine": "agg",
-        "packet_loss_agg_edge": "edge",
-        "packet_loss_agg_core": "core",
-    }
-    for row in rows:
-        template = row["metadata"]["generator"]["template"]
-        if template not in expected_peer_role:
-            continue
+@pytest.mark.parametrize("scale", supported_scales())
+def test_catalog_has_one_case_per_necessary_unit(tmp_path, scale):
+    root = tmp_path / "topology"
+    generate_topology(scale, str(root))
+    topo = load_topology(scale, str(root))
+    out = tmp_path / "cases"
+    paths = generate({"fault_catalog_version": 2}, topo, out, 42)
+    expected = 4 if scale == "xs" else 108 if topo.manifest.family == "fat-tree" else 64
+    assert len(paths) == expected
+    rows = [yaml.safe_load(p.read_text()) for p in paths]
+    matrix = json.loads((out / "coverage.json").read_text())
+    units = coverage_units(topo.manifest.family, validation=scale == "xs")
+    assert {r["unit"] for r in matrix["coverage_units"]} == {unit.id for unit in units}
+    assert len(matrix["coverage_units"]) == len(units)
+    assert matrix["negative_cases"] == (1 if scale == "xs" else 4)
+    if scale != "xs":
+        assert set(r["episode"]["fault_type"] for r in rows) == set(FAULT_MECHANISMS) | {"none"}
+    index = _CandidateIndex(topo, 42)
+    planned = set(index.pairs)
+    for row, path in zip(rows, paths, strict=True):
+        case = parse_scenario_file(path)
+        assert validate_scenario(case) == []
         episode = row["episode"]
-        peer = peers[(episode["target_device"], episode["target_interface"])]
-        assert roles[peer] == expected_peer_role[template]
-
-    bgp_by_template = {
-        row["metadata"]["generator"]["template"]: row
-        for row in rows
-        if row["episode"]["fault_type"] == "bgp_neighbor_misconfig"
-    }
-    for template, expected_role in (
-        ("bgp_neighbor_misconfig_agg_edge", "downlink"),
-        ("bgp_neighbor_misconfig_agg_core", "uplink"),
-    ):
-        episode = bgp_by_template[template]["episode"]
-        peer_ip = episode["metadata"]["peer_ip"]
-        neighbor = next(item for item in topo.bgp_neighbors[episode["target_device"]] if item["peer_ip"] == peer_ip)
-        assert neighbor["interface_role"] == expected_role
-
-
-def test_xlarge_link_down_templates_select_the_requested_peer_roles(tmp_path):
-    topo, rows = _generate_default("xlarge", tmp_path)
-    roles = {device.name: device.role.value for device in topo.manifest.devices}
-    peers: dict[tuple[str, str], str] = {}
-    for link in topo.manifest.links:
-        left, right = link.endpoints
-        peers[(left.device, _normalize_interface(left.interface))] = right.device
-        peers[(right.device, _normalize_interface(right.interface))] = left.device
-
-    expected_peer_role = {
-        "link_down_access": "client",
-        "link_down_leaf_fabric": "spine",
-        "link_down_spine_fabric": "leaf",
-        "packet_loss_leaf": "spine",
-        "packet_loss_spine": "leaf",
-    }
-    for row in rows:
-        template = row["metadata"]["generator"]["template"]
-        if template not in expected_peer_role:
-            continue
-        episode = row["episode"]
-        peer = peers[(episode["target_device"], episode["target_interface"])]
-        assert roles[peer] == expected_peer_role[template]
-
-
-def test_template_rng_is_stable_when_campaign_order_changes(tmp_path):
-    topology_root = tmp_path / "shared"
-    topo, forward = _generate_default("fat-tree-k8", topology_root)
-    del topo
-    _, reverse = _generate_default("fat-tree-k8", topology_root / "reverse", reverse_templates=True)
-
-    def signatures(rows):
-        grouped = defaultdict(list)
-        for row in rows:
-            episode = row["episode"]
-            grouped[row["metadata"]["generator"]["template"]].append(
-                (
-                    episode.get("target_device"),
-                    episode.get("target_interface"),
-                    episode.get("target_prefix"),
-                    episode.get("metadata", {}).get("peer_ip"),
-                    episode.get("metadata", {}).get("target_ip"),
-                )
-            )
-        return {name: sorted(values, key=str) for name, values in grouped.items()}
-
-    assert signatures(forward) == signatures(reverse)
-
-
-def test_link_down_without_interface_role_defaults_to_access_link(tmp_path):
-    topology_dir = tmp_path / "topology"
-    generate_topology("small", str(topology_dir))
-    topo = scenario_generator.load_topology("small", str(topology_dir))
-    spec = {
-        "defaults": {"count_per_fault": 1},
-        "fault_templates": [{"name": "default_access_link_down", "fault_type": "link_down", "device_role": "leaf"}],
-    }
-    rows = _load_generated(scenario_generator.generate(spec, topo, tmp_path / "scenarios", seed=7))
-    episode = rows[0]["episode"]
-
-    link = next(
-        link
-        for link in topo.manifest.links
-        if any(
-            endpoint.device == episode["target_device"]
-            and _normalize_interface(endpoint.interface) == episode["target_interface"]
-            for endpoint in link.endpoints
+        assert episode["duration_seconds"] >= topo.manifest.require_pingmesh_plan().settings.complete_window_seconds
+        assert episode["duration_seconds"] == max(
+            30, topo.manifest.require_pingmesh_plan().settings.complete_window_seconds
         )
-    )
-    peer = next(endpoint.device for endpoint in link.endpoints if endpoint.device != episode["target_device"])
-    roles = {device.name: device.role.value for device in topo.manifest.devices}
-    assert roles[peer] == "client"
+        assert episode["stabilization_time"] == 0
+        if episode["fault_type"] == "none":
+            continue
+        assert "misconfig_kind" not in episode.get("parameters", {})
+        assert "mtu" not in episode
+        p = episode["parameters"]
+        assert all((pair["src"], pair["dst"]) in planned for pair in p["affected_candidates"] + p["control_candidates"])
+        if episode["fault_type"] in {"link_flapping", "route_flapping"}:
+            assert (p["down_time"], p["up_time"]) == (10, 10)
+        if len(FAULT_MECHANISMS[episode["fault_type"]]) > 1:
+            assert p["mechanism"] in FAULT_MECHANISMS[episode["fault_type"]]
+        if episode["fault_type"] == "ecmp_misconfig":
+            assert all(
+                not index.contains(pair["src"], pair["dst"], episode["target_device"])
+                for pair in p["control_candidates"]
+            )
+    if topo.manifest.family == "fat-tree":
+        for role in ("edge", "agg"):
+            assert {r["pod"] for r in matrix["coverage_units"] if r["role"] == role} == set(
+                range(1, topo.manifest.facts.num_pods + 1)
+            )
+        if scale == "fat-tree-k18":
+            for role in ("edge", "agg"):
+                assert any(int(r["root"][len(role) :]) > 155 for r in matrix["coverage_units"] if r["role"] == role)
+            assert any(int(r["root"][4:]) > 60 for r in matrix["coverage_units"] if r["role"] == "core")
+    else:
+        assert not any(r["mechanism"] == "multipath_relax_disabled" for r in matrix["coverage_units"])
+    first = {p.name: p.read_bytes() for p in paths}
+    second = generate({"fault_catalog_version": 2}, topo, out, 42)
+    assert first == {p.name: p.read_bytes() for p in second}
 
 
-def test_static_route_template_remains_access_scoped(tmp_path):
-    topology_dir = tmp_path / "topology"
-    generate_topology("fat-tree-k8", str(topology_dir))
-    topo = scenario_generator.load_topology("fat-tree-k8", str(topology_dir))
-    spec = {
-        "defaults": {"count_per_fault": 1},
-        "fault_templates": [
-            {
-                "name": "static_route_must_remain_at_origin",
-                "fault_type": "static_route_misconfig",
-                "device_role": "agg",
-            }
-        ],
-    }
-    rows = _load_generated(scenario_generator.generate(spec, topo, tmp_path / "scenarios", seed=7))
-    target = rows[0]["episode"]["target_device"]
-    roles = {device.name: device.role.value for device in topo.manifest.devices}
+def test_catalog_totals_and_mechanisms():
+    assert len(FAULT_MECHANISMS) == 24
+    assert sum(map(len, FAULT_MECHANISMS.values())) == 27
+    assert len(coverage_units("clos")) == 60
+    assert len(coverage_units("fat-tree")) == 104
+    assert 3 * 64 + 3 * 108 == 516
+    assert Counter(u.fault_type for u in coverage_units("fat-tree"))["route_filter_misconfig"] == 9
 
-    assert roles[target] == "edge"
+
+@pytest.mark.parametrize("fault", ["packet_loss", "acl_source_misconfig", "acl_l4_port_misconfig"])
+def test_core_dataplane_effect_audits_use_all_matching_existing_pairs(tmp_path, fault):
+    root = tmp_path / "topology"
+    generate_topology("fat-tree-k8", str(root))
+    index = _CandidateIndex(load_topology("fat-tree-k8", str(root)), 42)
+    unit = next(u for u in coverage_units("fat-tree") if u.fault_type == fault and u.role == "core")
+    placement = index.place(unit)
+    source = placement.witnesses[0]["src"]
+    expected = set()
+    for src, dst in index.pairs:
+        forward = index.contains(src, dst, placement.device, placement.peer)
+        backward = index.contains(dst, src, placement.device, placement.peer)
+        if fault == "acl_source_misconfig":
+            matching = src == source and forward or dst == source and backward
+        elif fault == "acl_l4_port_misconfig":
+            matching = forward
+        else:
+            matching = forward or backward
+        if matching:
+            expected.add((src, dst))
+    actual = {(pair["src"], pair["dst"]) for pair in placement.witnesses}
+    assert actual == expected
+    assert len(actual) > (1 if fault == "acl_source_misconfig" else 8)
+
+
+def test_old_campaign_is_rejected(tmp_path):
+    root = tmp_path / "topology"
+    generate_topology("xs", str(root))
+    with pytest.raises(ValueError, match="Obsolete campaign"):
+        generate({"fault_templates": []}, load_topology("xs", str(root)), tmp_path / "cases", 1)

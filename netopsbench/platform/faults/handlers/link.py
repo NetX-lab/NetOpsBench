@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from typing import TYPE_CHECKING, Any
 
 from netopsbench.models.topology import DeviceRole
+from netopsbench.platform.utils.control import current_operation_control
+
+from ..services.periodic import PeriodicController
 
 if TYPE_CHECKING:
     from ..context import FaultRuntimeContext
@@ -48,11 +50,20 @@ class LinkHandler:
         result = self._sonic.config_cmd(device, ["interface", action, sonic_if])
         if result.returncode != 0:
             result = self._cmd.docker_exec(container, ["ip", "link", "set", linux_if, fallback_state])
-        state = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", linux_if])
-        flags = ""
-        if state.returncode == 0 and "<" in (state.stdout or "") and ">" in (state.stdout or ""):
-            flags = (state.stdout or "").split("<", 1)[1].split(">", 1)[0]
-        state_matches = state.returncode == 0 and bool(flags) and (("UP" in flags.split(",")) is enabled)
+        # SONiC updates ConfigDB before the dataplane applies admin_status.
+        # Verify convergence without submitting reads after the shared budget.
+        deadline = time.monotonic() + 3
+        state, state_matches = result, False
+        while (remaining := deadline - time.monotonic()) > 0:
+            state = self._cmd.docker_exec(container, ["ip", "-o", "link", "show", "dev", linux_if], timeout=remaining)
+            state_matches = time.monotonic() < deadline and self._admin_up(state) is enabled
+            if state_matches or result.returncode:
+                break
+            delay = min(0.1, deadline - time.monotonic())
+            if delay <= 0:
+                break
+            control = current_operation_control()
+            control.sleep(delay) if control else time.sleep(delay)
         success = result.returncode == 0 and state_matches
         return {
             "success": success,
@@ -62,6 +73,32 @@ class LinkHandler:
                 else (result.stderr or result.stdout or state.stderr or state.stdout or "").strip()
                 or f"{device}:{sonic_if} did not reach {'up' if enabled else 'down'} state"
             ),
+        }
+
+    @staticmethod
+    def _admin_up(result) -> bool | None:
+        output = result.stdout or ""
+        if result.returncode or "<" not in output or ">" not in output:
+            return None
+        flags = output.split("<", 1)[1].split(">", 1)[0]
+        return "UP" in flags.split(",") if flags else None
+
+    def _healthy_link_state(self, endpoints):
+        states = [
+            {
+                "device": endpoint[0],
+                "interface": endpoint[2],
+                "admin_up": self._admin_up(
+                    self._cmd.docker_exec(endpoint[1], ["ip", "-o", "link", "show", "dev", endpoint[3]])
+                ),
+            }
+            for endpoint in endpoints
+        ]
+        healthy = all(row["admin_up"] is True for row in states)
+        return {
+            "original_state": states,
+            "success": healthy,
+            "error": None if healthy else "Both link endpoints must be readable and admin up before injection",
         }
 
     def _endpoint(self, device: str, interface: str) -> tuple[str, str, str, str]:
@@ -236,6 +273,9 @@ class LinkHandler:
             Injection result with recovery info
         """
         endpoints = self._link_endpoints(device, interface)
+        initial_state = self._healthy_link_state(endpoints)
+        if not initial_state["success"]:
+            return {"type": "link_down", "device": device, "interface": interface, **initial_state}
         route_snapshots = {
             f"{endpoint[0]}:{endpoint[3]}": self._snapshot_client_routes(endpoint) for endpoint in endpoints
         }
@@ -257,6 +297,7 @@ class LinkHandler:
             "peer_interface": peer[2],
             "peer_linux_interface": peer[3],
             "route_snapshots": route_snapshots,
+            "original_state": initial_state["original_state"],
             "success": result["success"],
             "error": result["error"],
         }
@@ -292,9 +333,9 @@ class LinkHandler:
 
         if result["success"]:
             self._tracker.remove_faults(
-                lambda fault: fault["type"] == "link_down"
-                and fault["device"] == device
-                and fault["interface"] == sonic_if
+                lambda fault: (
+                    fault["type"] == "link_down" and fault["device"] == device and fault["interface"] == sonic_if
+                )
             )
 
         return {
@@ -302,6 +343,7 @@ class LinkHandler:
             "device": device,
             "interface": sonic_if,
             "recovered": result["success"],
+            "readback_verified": result["success"],
             "error": result["error"],
         }
 
@@ -309,19 +351,23 @@ class LinkHandler:
         self,
         device: str = "spine1",
         interface: str = "Ethernet0",
-        iterations: int = 10,
-        down_time: int = 2,
-        up_time: int = 3,
+        down_time: int | None = None,
+        up_time: int | None = None,
     ) -> dict[str, Any]:
         """Inject link flapping using Python orchestration instead of a shell helper."""
+        policy = self._ctx.experiment
+        down_time = policy.flapping_down_seconds if down_time is None else down_time
+        up_time = policy.flapping_up_seconds if up_time is None else up_time
         endpoints = self._link_endpoints(device, interface)
+        initial_state = self._healthy_link_state(endpoints)
+        if not initial_state["success"]:
+            return {"type": "link_flapping", "device": device, "interface": interface, **initial_state}
         route_snapshots = {
             f"{endpoint[0]}:{endpoint[3]}": self._snapshot_client_routes(endpoint) for endpoint in endpoints
         }
         target, peer = endpoints
         sonic_if = target[2]
         control_id = f"link-flap:{device}:{sonic_if}:{time.time_ns()}"
-        stop_event = threading.Event()
         initial = self._set_physical_link(
             endpoints,
             enabled=False,
@@ -342,33 +388,18 @@ class LinkHandler:
                 )
             return fault_info
 
-        def _run_flap_loop() -> None:
-            for index in range(max(int(iterations), 1)):
-                if stop_event.wait(max(float(down_time), 0.0)):
-                    break
-                self._set_physical_link(
-                    endpoints,
-                    enabled=True,
-                    route_snapshots=route_snapshots,
-                )
-                if stop_event.wait(max(float(up_time), 0.0)):
-                    break
-                if index + 1 < max(int(iterations), 1):
-                    self._set_physical_link(
-                        endpoints,
-                        enabled=False,
-                        route_snapshots=route_snapshots,
-                    )
-            self._set_physical_link(
-                endpoints,
-                enabled=True,
-                route_snapshots=route_snapshots,
-            )
-            self._tracker.stop_background(control_id, join_timeout=0)
+        def set_state(enabled):
+            state = self._set_physical_link(endpoints, enabled=enabled, route_snapshots=route_snapshots)
+            if not state["success"]:
+                raise RuntimeError(state["error"])
 
-        thread = threading.Thread(target=_run_flap_loop, name=f"{control_id}-worker", daemon=True)
-        self._tracker.register_background_control(control_id, stop_event=stop_event, thread=thread)
-        thread.start()
+        controller = PeriodicController(
+            lambda: set_state(False), lambda: set_state(True), down_time=down_time, up_time=up_time
+        )
+        self._tracker.register_background_control(
+            control_id, stop_event=controller.stop_event, thread=controller.thread, controller=controller
+        )
+        controller.thread.start()
 
         fault_info = {
             "type": "link_flapping",
@@ -379,11 +410,11 @@ class LinkHandler:
             "peer_interface": peer[2],
             "peer_linux_interface": peer[3],
             "route_snapshots": route_snapshots,
-            "iterations": iterations,
             "down_time": down_time,
             "up_time": up_time,
             "task_id": control_id,
             "orchestration": "python",
+            "original_state": initial_state["original_state"],
             "success": True,
         }
 
@@ -401,7 +432,15 @@ class LinkHandler:
         route_snapshots: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """Stop link flapping and verify that both physical endpoints recover."""
-        stopped = self._tracker.stop_background(task_id, join_timeout=5.0) if task_id else True
+        stopped = self._tracker.stop_background(task_id, join_timeout=65.0) if task_id else True
+        if not stopped:
+            return {
+                "type": "link_flapping",
+                "device": device,
+                "interface": interface,
+                "recovered": False,
+                "error": "Periodic controller still running",
+            }
         target, discovered_peer = self._link_endpoints(device, interface)
         peer = self._endpoint(peer_device, peer_interface) if peer_device and peer_interface else discovered_peer
         result = self._set_physical_link(
@@ -412,9 +451,9 @@ class LinkHandler:
         recovered = stopped and result["success"]
         if recovered:
             self._tracker.remove_faults(
-                lambda fault: fault["type"] == "link_flapping"
-                and fault["device"] == device
-                and fault["interface"] == target[2]
+                lambda fault: (
+                    fault["type"] == "link_flapping" and fault["device"] == device and fault["interface"] == target[2]
+                )
             )
         error = result["error"]
         if not stopped:
@@ -424,5 +463,6 @@ class LinkHandler:
             "device": device,
             "interface": target[2],
             "recovered": recovered,
+            "readback_verified": recovered,
             "error": error,
         }

@@ -18,6 +18,8 @@ const MAX_CONTROL_CONNECTIONS: usize = 32;
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct AgentStatus {
+    pub config_schema_version: u32,
+    pub plan_id: String,
     pub ready: bool,
     pub enabled: bool,
     pub heartbeat_unix_ns: u64,

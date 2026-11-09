@@ -32,7 +32,7 @@ def require_scenarios(repo: Path, relative_paths: str | list[str], *, prepare_hi
     if not missing:
         return scenarios
 
-    hint = prepare_hint or "Generate benchmark assets first with `netopsbench benchmark prepare --scales xs`."
+    hint = prepare_hint or "Generate benchmark assets first with `netopsbench benchmark prepare --scales medium`."
     if len(scenarios) == 1:
         raise FileNotFoundError(f"Scenario not found: {scenarios[0]}. {hint}")
     raise FileNotFoundError(f"Scenario files missing: {missing}. {hint}")
@@ -55,13 +55,24 @@ def discover_generated_scenarios(repo: Path, scale: str) -> list[Path]:
     return scenarios
 
 
-def build_wrapped_agent(bench: Any, agent_cls: Any, *, vendor: str | None = None) -> tuple[Any, Any]:
+def agent_class(backend: str):
+    if backend == "codex":
+        from examples.agents import CodexAgent
+
+        return CodexAgent
+    if backend == "deepagent":
+        from examples.agents import MinimalDeepAgent
+
+        return MinimalDeepAgent
+    raise ValueError(f"Unknown agent backend: {backend}")
+
+
+def build_wrapped_agent(
+    bench: Any, agent_cls: Any = None, *, vendor: str | None = None, backend: str = "deepagent"
+) -> tuple[Any, Any]:
     """Construct an example agent and wrap it when the SDK manager is available."""
-    try:
-        raw_agent = agent_cls(vendor=vendor) if vendor is not None else agent_cls()
-    except TypeError:
-        # Keep compatibility with tiny fake agents used by tests and docs.
-        raw_agent = agent_cls()
+    factory = agent_cls or agent_class(backend)
+    raw_agent = factory(vendor=vendor) if backend == "deepagent" and vendor is not None else factory()
 
     agents = getattr(bench, "agents", None)
     wrap = getattr(agents, "wrap", None)
@@ -101,6 +112,12 @@ def build_arg_parser(
     )
     if with_vendor:
         parser.add_argument(
+            "--agent",
+            choices=["deepagent", "codex"],
+            default="deepagent",
+            help="Diagnostic runtime: bundled DeepAgent or native isolated Codex CLI.",
+        )
+        parser.add_argument(
             "--vendor",
             default=DEFAULT_VENDOR,
             choices=VENDOR_CHOICES,
@@ -124,4 +141,5 @@ def build_arg_parser(
 def print_agent_banner(label: str, vendor: str, raw_agent: Any) -> None:
     """Print the standard ``vendor / model`` banner used by every example."""
     model = getattr(raw_agent, "model", "?")
+    vendor = "codex" if raw_agent.__class__.__name__ == "CodexAgent" else vendor
     print(f"  {label}: vendor={vendor}  model={model}")

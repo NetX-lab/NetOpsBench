@@ -20,8 +20,8 @@ def test_fastmcp_server_lazy_toolkit_initialization(monkeypatch):
     first = server.get_topology()
     second = server.get_topology()
 
-    assert first == {"ok": True}
-    assert second == {"ok": True}
+    assert first["ok"] is True and first["collected_at"]
+    assert second["ok"] is True and second["collected_at"]
     assert FakeToolkit.init_count == 1
 
 

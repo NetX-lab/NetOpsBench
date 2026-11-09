@@ -15,7 +15,7 @@ NetOpsBench depends on Containerlab and Linux networking primitives such as netw
 
 - Python 3.12+
 - Docker
-- Containerlab
+- Official Containerlab v0.77.0 (installed privately by the command below)
 - An API key for the selected LLM provider
 
 Install Docker:
@@ -26,34 +26,9 @@ sudo usermod -aG docker $USER   # re-login after this step
 docker run --rm hello-world
 ```
 
-Install Containerlab:
+NetOpsBench installs a checksum-verified official Containerlab release after Python installation. The system `containerlab` command can remain installed for other labs; SDK-created runtimes use the repository-owned binary.
 
-```bash
-bash -c "$(curl -sL https://get.containerlab.dev)"
-containerlab version
-```
-
-Enable non-interactive access for the privileged commands used by the benchmark scripts:
-
-```bash
-echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/docker, /usr/bin/containerlab, /usr/bin/rm" \
-  | sudo tee /etc/sudoers.d/netopsbench
-sudo chmod 440 /etc/sudoers.d/netopsbench
-sudo visudo -cf /etc/sudoers.d/netopsbench
-```
-
-Check the same shell session you will use for the run:
-
-```bash
-python3 --version
-docker run --rm hello-world
-containerlab version
-sudo -n docker ps
-sudo -n containerlab version
-sudo -n rm --version
-```
-
-If Docker still reports a socket permission error after `sudo usermod -aG docker $USER`, log out and back in, or start a new shell with `newgrp docker`. The `sudo -n` commands must not prompt for a password.
+If Docker reports a socket permission error after adding the Docker group, log out and back in, or start a new shell with `newgrp docker`.
 
 ## Install
 
@@ -64,6 +39,133 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[agent]"
 ```
+
+Prepare the runtime executable once:
+
+```bash
+python -m netopsbench.platform.runtime.build_tools
+docker build -f containers/client/Dockerfile -t netopsbench-client:pingmesh-v2 .
+```
+
+The installer verifies the official v0.77.0 release archive and executable SHA-256,
+then checks the reported version. It installs only `containerlab` under the
+package's `platform/runtime/_bin/`. It does not change `/usr/bin/containerlab`
+or the Docker daemon. Linux amd64 and arm64 are supported. Offline installation
+accepts `--archive /path/to/containerlab_0.77.0_linux_amd64.tar.gz`.
+`--output` and `NETOPSBENCH_RUNTIME_TOOLS` select another private tools directory;
+it must contain the same verified release and its installer manifest. Go and
+local Containerlab patches are not required.
+
+### Privileged runtime operations
+
+Containerlab requires root for deployment, destruction and node stop/start.
+The SDK invokes the private executable through `sudo -n`; host cleanup also
+uses privileged commands. Configure administrator-reviewed permissions for the
+trusted installation and its runtime directory before running unattended cases.
+Docker socket access alone does not authorize Containerlab networking operations.
+A root-run benchmark process may set `NETOPSBENCH_NO_SUDO=1` to omit nested sudo.
+
+Containerlab creates the Docker management bridge and uses Docker DNS. Node
+faults use official `containerlab stop/start`, which park and restore data links;
+raw Docker restart is not the benchmark's device recovery path. There is no
+NetOpsBench management-network or DNS daemon, or Docker configuration change.
+
+The official v0.77.0 Docker runtime itself selects `nat-unprotected` on newer
+Docker engines (see [upstream implementation](https://github.com/srl-labs/containerlab/blob/v0.77.0/runtime/docker/docker.go#L294-L305)).
+Using upstream networking does not imply Docker’s default `nat` port filtering.
+NetOpsBench does not override this upstream network option.
+
+
+Runtime and campaign records include the actual Containerlab version and binary
+hash, plus the SONiC startup script hash. A different or unrecorded backend
+cannot resume a campaign: retain the historical artifacts and create a new one.
+Capacity samples must carry the same backend identity; measurements from the
+former custom backend cannot admit new deployments.
+
+Generated fabrics currently use BGP without BFD. A 30-second device-outage
+observation can end before the negotiated BGP hold timer expires; it measures
+that fault interval, not guaranteed post-convergence failover. Read the saved
+FIB and neighbor evidence alongside Pingmesh loss. A redundant link or peer
+fault may leave Pingmesh below its alert threshold while reducing paths.
+
+### Large-topology defaults
+
+The k12 profile selects 16 Containerlab workers and Pingmesh destination batches
+of 32. All scales use official deployment scheduling and sequential SONiC service
+startup. Full SONiC completion and runtime health gates remain enabled. Measure
+resource consumption on this backend before admitting larger deployments; old
+custom-backend capacity estimates do not establish K18 feasibility.
+
+Generate current assets with `netopsbench benchmark prepare --scales xlarge,fat-tree-k12,fat-tree-k18`. Healthy scenarios use the same baseline and diagnostic episode lifecycle as fault cases. Complete observation windows are 66 seconds for Xlarge and 42 seconds for K12/K18. Xlarge and K18 use two clients per rack with 50 PPS per client. K18 has 405 switches, 324 clients, and a `/22` management subnet. Pingmesh plans are generated once; client processes execute the fixed peer/port schedule. Coverage refers to topology candidate paths, not verified ECMP paths.
+
+This refactor requires topology/runtime schema v4, scale profiles v2 and client configuration v2. Recreate old runtimes and regenerate their topology/scenario assets; old formats are rejected. Client addresses now start at `192.168.1.0/24`, and Fat-tree ASNs are allocated consecutively by tier. The default local image is `netopsbench-client:pingmesh-v2`; `NETOPSBENCH_CLIENT_IMAGE` selects another image built from the current source.
+
+The acceptance entrypoint defaults to diagnosis mode with the DeepAgent
+DeepSeek preset. Native Codex runs only when explicitly selected with
+`--agents codex` or `--agents deepagent codex`. Use `--mode effects`
+for configuration, observation and recovery validation without constructing
+agents, requesting models or generating scores:
+
+```bash
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py --mode effects --scales xs
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py --mode effects \
+  --scales medium,large,fat-tree-k8,fat-tree-k12,xlarge,fat-tree-k18
+```
+
+Each scale uses one lab and the existing suite loop. Capacity gates require a
+20% memory margin; the 12 GiB emergency floor releases only campaign-owned
+resources. A failed/interrupted case restores the fault and preserves the lab.
+A failed recovery quarantines it. Successful requested cases, final health and
+saved reports precede teardown. External runtimes remain caller-owned.
+
+For a small real agent check, configure the DeepSeek preset and native Codex
+login, then select the XS authentication fault:
+
+```bash
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py --scales xs \
+  --agents deepagent codex --fault-types bgp_auth_mismatch \
+  --output .netopsbench/auth-diagnosis-v2
+```
+
+The two agents run sequentially with restored health and fresh observation
+windows. Diagnosis mode remains the default; running it over all formal scales
+makes real model requests for the complete selected corpus.
+
+Acceptance artifacts include `acceptance.json`, generated cases/coverage
+matrices, raw route and probe effect evidence, recovery checks, resource samples,
+ingestion timing and independent agent traces. To resume, use the same output,
+mode, requested case set and agent configuration with `--resume-runtime <path>`.
+Profile, catalog version, case IDs/content, plan, image and configuration must
+match before model requests or resource changes. Completed valid cases skip
+even with a zero score; incomplete/invalid attempts can run again. Quarantined
+owned resources require explicit `--rebuild-runtime`; archived campaigns and
+scores are never automatically migrated.
+Capacity estimates are updated with the measured peaks from each completed scale. K18 requires a representative switch sample with at least 18 data ports and adequate available host memory. To continue K18 with an existing peak sample, run:
+
+```bash
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py \
+  --mode effects --scales fat-tree-k18 \
+  --capacity-sample /absolute/path/to/xlarge-effects/capacity-sample.json \
+  --output .netopsbench/fault-catalog-v2/k18-effects
+```
+
+For an explicitly monitored experiment, `--allow-tight-capacity` waives the
+20% memory margin. The report retains the failed margin check and the override;
+the measured peak estimate plus 12 GiB of available headroom, disk capacity, and
+representative switch samples are still required.
+
+Agent execution failures are distinct from valid `inconclusive` conclusions.
+After verified recovery, acceptance records an agent failure and continues with
+the next case. Finished agent failures are reported separately and skipped on
+resume; successful `inconclusive` conclusions retain their real score. In diagnosis
+mode, a failed effect audit also ends only that case when recovery verifies a
+complete healthy window. It remains invalid and unscored, is skipped on resume,
+and does not interrupt the remaining diagnoses. Effects-only acceptance retains
+its stricter stop-on-invalid policy. A valid completed diagnosis whose subsequent recovery failed also
+keeps its score and trace. Continuing requires the quarantined lab to be
+explicitly rebuilt and checked healthy; the completed diagnosis is skipped.
+
+Shared InfluxDB and Grafana containers are reused without automatic recreation during provisioning. Apply shared-service configuration upgrades explicitly when no active runtimes depend on them.
 
 ## Run one case
 
@@ -80,7 +182,8 @@ Supported provider presets:
 ```bash
 netopsbench benchmark prepare --scales xs
 export OPENAI_API_KEY=...
-PYTHONPATH=. python examples/01_run_scenario.py --vendor openai
+PYTHONPATH=. python examples/01_run_scenario.py --vendor openai \
+  --scenario scenarios/generated/xs/generated_link_down_xs_001.yaml
 ```
 
 The run provisions an XS topology, starts observability, injects one generated fault, calls the reference agent, scores the returned diagnosis, and writes a `BenchmarkReport`.
@@ -93,3 +196,5 @@ The run provisions an XS topology, starts observability, injects one generated f
 - Implement your own agent with [Custom Troubleshooting Agents](/docs/build-your-agent/custom-agents).
 - Run larger evaluations with [Running Benchmarks](/docs/run-benchmarks/run-scenario-vs-suite).
 - Use [Operations](/docs/debug-operate/observability) only when a runtime, Grafana dashboard, or cleanup path needs inspection.
+
+Acceptance resume requires the same selected scenario IDs and contents, profile, Pingmesh plan, client image and agent configuration. Valid zero-score diagnoses and verified recovered case failures are finished cases; interrupted attempts remain eligible for resume. A campaign that finishes with agent failures records `completed_with_agent_failures`; one with invalid effects records `completed_with_case_failures`. Both release their owned lab after final health validation. Setup, incomplete recovery validation, and effects-only invalid cases still stop acceptance. Quarantined owned labs require `--rebuild-runtime`; external labs are never rebuilt or released by acceptance. SIGINT/SIGTERM request cancellation, recovery and an atomic checkpoint. Memory monitoring starts before deployment and protects the existing 12 GiB available-memory floor. Health checks share one elapsed-time deadline across all probes and retries.

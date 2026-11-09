@@ -23,7 +23,7 @@ def coerce_topology_manifest(topology: TopologyInput) -> TopologyManifest:
     if isinstance(topology, TopologyManifest):
         return topology
     if not isinstance(topology, dict):
-        raise TypeError("Topology must be a TopologyManifest or schema-v3 dictionary")
+        raise TypeError("Topology must be a TopologyManifest or schema-v4 dictionary")
     schema_version = topology.get("schema_version")
     if schema_version != SCHEMA_VERSION:
         rendered = "missing" if schema_version is None else repr(schema_version)
@@ -32,7 +32,13 @@ def coerce_topology_manifest(topology: TopologyInput) -> TopologyManifest:
             "Regenerate topology.json with the current topology generator."
         )
     try:
-        return TopologyManifest.model_validate(topology)
+        manifest = TopologyManifest.model_validate(topology)
+        plan = manifest.require_pingmesh_plan()
+        from netopsbench.platform.pingmesh.planner import plan_fingerprint
+
+        if plan.settings.plan_id != plan_fingerprint(manifest, plan):
+            raise ValueError("Stale Pingmesh plan fingerprint; regenerate topology.json")
+        return manifest
     except ValidationError as exc:
         raise ValueError(f"Invalid topology schema_version {SCHEMA_VERSION!r} manifest: {exc}") from exc
 

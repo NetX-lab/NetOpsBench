@@ -55,8 +55,8 @@ class _DefaultEvaluatorAdapter:
         scored_results = []
         for index, diagnosis in enumerate(diagnosis_results):
             result = self._scorer.evaluate(
-                agent_output=_diagnosis_to_agent_output(diagnosis),
-                ground_truth=_build_ground_truth(scenario, index),
+                agent_output=AgentOutput.from_diagnosis(diagnosis),
+                ground_truth=_build_ground_truth(scenario),
                 testcase_id=f"{scenario.id}:{index}",
             )
             result.details["difficulty"] = scenario.metadata.get("difficulty", "unknown")
@@ -97,7 +97,7 @@ class _WrappedPublicEvaluator:
                     metadata={
                         "scenario": scenario.to_dict(),
                         "episode_index": index,
-                        "ground_truth": _build_ground_truth(scenario, index),
+                        "ground_truth": _build_ground_truth(scenario),
                     },
                     tools=None,
                 )
@@ -122,7 +122,7 @@ class _WrappedPublicEvaluator:
             scenario_report = self.evaluate_scenario(
                 scenario=scenario, diagnosis_results=[diagnosis], evaluator=evaluator
             )
-            results.extend(_extract_report_results(scenario_report))
+            results.extend(dict(item) for item in scenario_report.detailed_results)
         return _report_from_result_items(
             identifier=f"suite:{len(scenarios)}", evaluator_name=evaluator, results=results
         )
@@ -157,10 +157,9 @@ class EvaluatorManager:
         self, *, scenario: ScenarioSpec, diagnosis_results: builtins.list[DiagnosisResult], evaluator: str = "default"
     ) -> BenchmarkReport:
         adapter = self.get(evaluator)
-        report = adapter.evaluate_scenario(
+        return adapter.evaluate_scenario(
             scenario=scenario, diagnosis_results=list(diagnosis_results), evaluator=evaluator
         )
-        return _coerce_report(report, identifier=f"scenario:{scenario.id}", evaluator_name=evaluator)
 
     def evaluate_suite(
         self,
@@ -172,8 +171,7 @@ class EvaluatorManager:
         scenario_list = list(scenarios)
         diagnosis_list = list(diagnosis_results)
         adapter = self.get(evaluator)
-        report = adapter.evaluate_suite(scenarios=scenario_list, diagnosis_results=diagnosis_list, evaluator=evaluator)
-        return _coerce_report(report, identifier=f"suite:{len(scenario_list)}", evaluator_name=evaluator)
+        return adapter.evaluate_suite(scenarios=scenario_list, diagnosis_results=diagnosis_list, evaluator=evaluator)
 
 
 def create_fault_type_judge_evaluator_adapter(
@@ -220,10 +218,6 @@ def _report_from_result_items(
     )
 
 
-def _extract_report_results(report: BenchmarkReport) -> list[dict[str, Any]]:
-    return [dict(item) for item in report.detailed_results]
-
-
 def _report_from_payload(*, identifier: str, payload: Mapping[str, Any]) -> BenchmarkReport:
     raw = dict(payload)
     summary = raw.pop("summary", {})
@@ -236,29 +230,7 @@ def _report_from_payload(*, identifier: str, payload: Mapping[str, Any]) -> Benc
     )
 
 
-def _diagnosis_to_agent_output(diagnosis: DiagnosisResult) -> AgentOutput:
-    findings = dict(diagnosis.findings or {})
-    metadata = dict(diagnosis.metadata or {})
-    location = findings.get("location") if isinstance(findings.get("location"), dict) else {}
-    if not location:
-        location = {
-            key: findings[key] for key in ("device", "interface") if key in findings and findings[key] is not None
-        }
-    return AgentOutput(
-        verdict=diagnosis.verdict,
-        fault_type=findings.get("fault_type") or metadata.get("fault_type"),
-        location=location,
-        evidence=list(findings.get("evidence") or metadata.get("evidence") or []),
-        confidence=float(diagnosis.confidence or 0.0),
-        reasoning=diagnosis.reasoning,
-        tool_calls=list(metadata.get("tool_calls") or findings.get("tool_calls") or []),
-        time_taken_seconds=float(metadata.get("time_taken_seconds", 0.0) or 0.0),
-        metadata=metadata,
-    )
-
-
-def _build_ground_truth(scenario: ScenarioSpec, index: int) -> dict[str, Any]:
-    del index
+def _build_ground_truth(scenario: ScenarioSpec) -> dict[str, Any]:
     episode: dict[str, Any] = scenario.episode.model_dump(mode="json")
     fault_type = episode.get("fault_type") or scenario.metadata.get("expected_diagnosis")
     location = {}

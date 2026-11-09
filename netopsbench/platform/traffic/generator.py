@@ -11,7 +11,6 @@ from netopsbench.platform.topology.topology_utils import coerce_topology_manifes
 from .estimator import estimate_client_pps as _estimate_client_pps
 from .estimator import estimate_flow_pps as _estimate_flow_pps
 from .estimator import estimate_switch_pps as _estimate_switch_pps
-from .estimator import infer_topology_link_mtu
 from .planner import build_candidate_flow as _build_candidate_flow
 from .planner import generate_traffic_config_from_topology as plan_standard_traffic
 from .settings import TrafficSettings
@@ -36,7 +35,7 @@ def _max_pps_per_client(scale: str, switch_pps_limit: int | None, registry: Scal
     base = get_scale_profile(scale, registry).traffic_max_pps_per_client
     if switch_pps_limit is None:
         return base
-    return max(1, int(round(base * switch_pps_limit / BASE_SWITCH_PPS_LIMIT)))
+    return min(base, max(1, int(round(base * switch_pps_limit / BASE_SWITCH_PPS_LIMIT))))
 
 
 def _standard_bandwidths(max_pps_per_client: int) -> dict[str, str]:
@@ -70,11 +69,12 @@ def generate_traffic_config_from_topology(
     if profile_type != "standard":
         raise ValueError(f"Only the standard traffic profile is supported, got: {profile_type}")
     get_scale_profile(scale, scale_registry)
-    projected = coerce_topology_manifest(topology).to_agent_topology()
+    manifest = coerce_topology_manifest(topology)
+    projected = manifest.to_agent_topology()
     settings = settings or TrafficSettings()
     max_pps_per_client = _max_pps_per_client(scale, settings.switch_pps_limit, scale_registry)
     bandwidths = _standard_bandwidths(max_pps_per_client)
-    link_mtu_bytes = infer_topology_link_mtu(projected, DEFAULT_LINK_MTU_BYTES)
+    link_mtu_bytes = manifest.defaults.link_mtu
 
     build_flow = partial(
         _build_candidate_flow,

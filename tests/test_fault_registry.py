@@ -87,10 +87,3 @@ def test_fault_spec_validate_episode_supports_prefix_and_required_parameters():
 def test_fault_registry_shim_module_is_removed():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("netopsbench.platform.faults_registry")
-
-
-def test_fault_execution_helpers_are_available_under_faults_subsystem():
-    from netopsbench.platform.faults.scenario_execution import inject_fault, recover_fault
-
-    assert callable(inject_fault)
-    assert callable(recover_fault)

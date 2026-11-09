@@ -24,7 +24,7 @@ _SONIC_PID1_COMMAND = "-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\""
 
 @pytest.mark.parametrize(
     "scale",
-    ["xs", "small", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"],
+    ["xs", "medium", "medium", "large", "xlarge", "fat-tree-k8", "fat-tree-k12"],
 )
 def test_every_builtin_scale_uses_terminable_sonic_pid1(tmp_path, scale):
     result = generate_topology(scale, str(tmp_path / scale))
@@ -37,17 +37,17 @@ def test_every_builtin_scale_uses_terminable_sonic_pid1(tmp_path, scale):
     ("scale", "roles", "clients", "links"),
     [
         ("xs", {"spine": 2, "leaf": 2}, 2, 6),
-        ("xlarge", {"spine": 16, "leaf": 128}, 128, 2176),
+        ("xlarge", {"spine": 16, "leaf": 128}, 256, 2304),
         ("fat-tree-k8", {"core": 16, "agg": 32, "edge": 32}, 128, 384),
         ("fat-tree-k12", {"core": 36, "agg": 72, "edge": 72}, 144, 1008),
     ],
 )
-def test_renderer_persists_only_canonical_schema_v3_devices(tmp_path, scale, roles, clients, links):
+def test_renderer_persists_only_canonical_schema_v4_devices(tmp_path, scale, roles, clients, links):
     result = generate_topology(scale, str(tmp_path / scale))
     persisted = json.loads(Path(result["metadata_file"]).read_text(encoding="utf-8"))
     manifest = TopologyManifest.model_validate(persisted)
 
-    assert persisted["schema_version"] == "3"
+    assert persisted["schema_version"] == "4"
     assert isinstance(persisted["devices"], list)
     assert len(manifest.links) == links
     assert all(link.mtu == 9232 for link in manifest.links)
@@ -66,7 +66,7 @@ def test_renderer_persists_only_canonical_schema_v3_devices(tmp_path, scale, rol
 
 def test_renderer_atomically_removes_stale_device_artifacts(tmp_path):
     output = tmp_path / "topology"
-    generate_topology("small", str(output))
+    generate_topology("medium", str(output))
     assert (output / "configs" / "sonic" / "leaf4").is_dir()
 
     generate_topology("xs", str(output))
@@ -90,7 +90,7 @@ def test_clos_builder_returns_complete_fabric_plan_without_writing(tmp_path):
     assert spine1.configdb_interface_cidrs["Ethernet0"] == ("10.1.1.1/30",)
     assert spine1.bgp_neighbors[0].peer_ip == "10.1.1.2"
     assert leaf1.required_ports == 3
-    assert leaf1.bgp_networks == ("192.168.101.0/30",)
+    assert leaf1.bgp_networks == ("192.168.1.0/30",)
     assert plan.manifest.links[0].endpoints[0].interface == "eth1"
 
 
@@ -101,24 +101,24 @@ def test_rendered_clos_artifacts_keep_preseed_and_addressing_contract(tmp_path):
     nodes = rendered["topology"]["nodes"]
     links = rendered["topology"]["links"]
 
-    assert len(nodes) == 16 + 128 + 128
-    assert len(links) == (16 * 128) + 128
+    assert len(nodes) == 16 + 128 + 256
+    assert len(links) == (16 * 128) + 256
     assert manifest.routing.ecmp_hash_policy_by_role == {DeviceRole.SPINE: 1, DeviceRole.LEAF: 1}
     assert nodes["spine16"]["mgmt-ipv4"] == "172.20.20.26"
     assert nodes["leaf128"]["mgmt-ipv4"] == "172.20.20.154"
     assert nodes["client128"]["mgmt-ipv4"] == "172.20.21.26"
     assert links[0] == {"endpoints": ["spine1:eth1", "leaf1:eth1"], "mtu": 9232}
     assert links[2047] == {"endpoints": ["spine16:eth128", "leaf128:eth16"], "mtu": 9232}
-    assert links[-1] == {"endpoints": ["leaf128:eth17", "client128:eth1"], "mtu": 9232}
+    assert links[-1] == {"endpoints": ["leaf128:eth18", "client256:eth1"], "mtu": 9232}
 
     assert (tmp_path / "configs" / "sonic" / "start.sh").is_file()
     assert (tmp_path / "configs" / "client-agent" / "client-agent.json").is_file()
     spine = json.loads((tmp_path / "configs" / "sonic" / "spine16" / "config_db.json").read_text())
     leaf = json.loads((tmp_path / "configs" / "sonic" / "leaf128" / "config_db.json").read_text())
     assert len([name for name in spine["PORT"]]) == 128
-    assert len([name for name in leaf["PORT"]]) == 17
+    assert len([name for name in leaf["PORT"]]) == 18
     assert "Ethernet508|10.16.128.1/30" in spine["INTERFACE"]
-    assert "Ethernet64|192.168.228.1/30" in leaf["INTERFACE"]
+    assert "Ethernet64|192.168.128.1/30" in leaf["INTERFACE"]
 
 
 @pytest.mark.parametrize(
@@ -179,9 +179,9 @@ def test_topology_helpers_require_v3_and_manifest_owns_role_queries(tmp_path):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     (legacy / "topology.json").write_text(json.dumps({"name": "legacy", "devices": {}}), encoding="utf-8")
-    with pytest.raises(ValueError, match="schema_version.*3"):
+    with pytest.raises(ValueError, match="schema_version.*4"):
         load_topology_manifest(legacy)
-    with pytest.raises(ValueError, match="schema_version.*3"):
+    with pytest.raises(ValueError, match="schema_version.*4"):
         coerce_topology_manifest({"name": "legacy", "devices": {}})
 
 

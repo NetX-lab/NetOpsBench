@@ -21,7 +21,7 @@ def _coerce_value(value: Any) -> Any:
         return text
 
 
-def parse_bgp_summary(text: str) -> list[dict[str, Any]]:
+def parse_bgp_summary(text: str, *, strict: bool = False) -> list[dict[str, Any]]:
     """Return normalized neighbor rows from ``show ip bgp summary`` output."""
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
     header_index = next(
@@ -29,6 +29,8 @@ def parse_bgp_summary(text: str) -> list[dict[str, Any]]:
         None,
     )
     if header_index is None:
+        if strict:
+            raise ValueError("BGP summary header is unavailable")
         return []
 
     headers = lines[header_index].split()

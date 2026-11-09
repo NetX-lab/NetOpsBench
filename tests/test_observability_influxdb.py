@@ -183,3 +183,113 @@ def test_delete_bucket_does_not_delete_when_exact_name_is_absent(monkeypatch):
 
     assert influxdb.delete_bucket("http://influxdb:8086", "token", "managed") is False
     assert all(method != "DELETE" for _, method in calls)
+
+
+def test_core_reuses_existing_shared_services_without_recreating_them(monkeypatch):
+    calls = []
+    monkeypatch.setattr(lifecycle, "safe_run", lambda command, **kwargs: calls.append(command))
+    monkeypatch.setattr(lifecycle, "wait_for_influxdb_ready", lambda *_args: None)
+    lifecycle.ensure_observability_core()
+    assert "--no-recreate" in calls[0]
+
+
+def test_flux_query_concurrency_is_bounded_and_failure_releases_slot(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    import requests
+
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = peak = calls = 0
+
+    def post(*args, **kwargs):
+        nonlocal active, peak, calls
+        with lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+            if active == 4:
+                entered.set()
+        try:
+            assert release.wait(5)
+            if kwargs["data"] == "failure":
+                raise requests.Timeout("test timeout")
+            return SimpleNamespace(text="fresh data", raise_for_status=lambda: None)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(influxdb.requests, "post", post)
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = [
+            pool.submit(influxdb.query_flux, "http://test", "token", "org", "failure" if i == 0 else "ok")
+            for i in range(12)
+        ]
+        try:
+            assert entered.wait(5)
+            with lock:
+                assert calls == 4
+        finally:
+            release.set()
+        results = [f.result(timeout=5) for f in futures]
+    assert peak == 4
+    assert results[0].status == "error"
+    assert all(r.status == "ok" and r.text == "fresh data" for r in results[1:])
+    assert influxdb.query_flux("http://test", "token", "org", "ok").status == "ok"
+
+
+def test_flux_slot_wait_obeys_shared_deadline(monkeypatch):
+    import threading
+    import time
+
+    slots = threading.BoundedSemaphore(1)
+    slots.acquire()
+    monkeypatch.setattr(influxdb, "_QUERY_SLOTS", slots)
+    monkeypatch.setattr(influxdb.requests, "post", lambda *a, **kw: pytest.fail("expired query started"))
+    before = time.monotonic()
+    result = influxdb.query_flux("http://unused", "token", "org", "query", timeout=30, deadline=before + 0.02)
+    assert result.status == "error" and "deadline exceeded" in result.error
+    assert time.monotonic() - before < 0.5
+    slots.release()
+
+
+def test_flux_shared_deadline_interrupts_a_slow_streaming_response():
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from netopsbench.platform.observability import influxdb
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.02)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01))
+    thread.start()
+    try:
+        started = time.monotonic()
+        result = influxdb.query_flux(
+            f"http://127.0.0.1:{server.server_port}", "token", "org", "query", deadline=started + 0.08
+        )
+        assert result.status == "error" and "deadline exceeded" in result.error
+        assert time.monotonic() - started < 0.5
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

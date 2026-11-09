@@ -1,4 +1,4 @@
-"""Tests for the public example DeepAgent implementation."""
+"""Tests for the public example diagnostic agent implementations."""
 
 import asyncio
 import json
@@ -8,6 +8,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
+
+import pytest
+
+
+@pytest.mark.parametrize("fenced", [True, False])
+def test_bundled_agents_receive_the_actual_output_type_contract(fenced):
+    from examples.agents.diagnosis import build_user_prompt
+
+    context = SimpleNamespace(metadata={"canonical_observation": {"case_id": "anonymous"}})
+    prompt = build_user_prompt(context, fenced_output=fenced)
+    schema = json.loads(prompt.split("DIAGNOSIS_OUTPUT_SCHEMA: ", 1)[1])
+    assert schema["properties"]["evidence"]["type"] == "array"
+    assert schema["properties"]["evidence"]["items"]["type"] == "string"
+    assert schema["properties"]["verdict"]["enum"] == ["fault_detected", "network_healthy", "inconclusive"]
+
 
 # Stub third-party agent deps so the module can be imported without them.
 for _mod in [
@@ -193,21 +208,13 @@ def test_minimal_deepagent_reads_minimax_api_key_from_environment(monkeypatch):
 
 
 def test_minimal_deepagent_openai_defaults_and_openai_key(monkeypatch):
+    monkeypatch.setenv("OPENAI" + "_BASE_URL", "https://example.invalid/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-shell-key")
 
     agent = MinimalDeepAgent(vendor="openai")
 
     assert agent.api_key == "openai-shell-key"
     assert agent.model == "gpt-5.5"
-    assert agent.base_url == "https://api.openai.com/v1"
-
-
-def test_minimal_deepagent_openai_uses_official_base_url(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-shell-key")
-    monkeypatch.setenv("OPENAI" + "_BASE_URL", "https://example.invalid/v1")
-
-    agent = MinimalDeepAgent(vendor="openai")
-
     assert agent.base_url == "https://api.openai.com/v1"
 
 
@@ -230,10 +237,6 @@ def test_openai_provider_uses_standard_openai_kwargs():
     assert kwargs["temperature"] == 0.1
 
 
-def test_minimal_deepagent_canonical_module_path():
-    assert MinimalDeepAgent.__module__ == "examples.agents.minimal_deepagent.agent"
-
-
 def test_minimal_deepagent_supports_kimi_vendor(monkeypatch):
     monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
 
@@ -245,12 +248,6 @@ def test_minimal_deepagent_supports_kimi_vendor(monkeypatch):
     assert agent.model == "kimi-k2.6"
     assert agent.base_url == "https://api.moonshot.cn/v1"
     assert agent.api_key == "kimi-test-key"
-
-
-def test_minimal_deepagent_does_not_expose_legacy_process_method():
-    agent = MinimalDeepAgent(api_key="test-key")
-
-    assert not hasattr(agent, "process")
 
 
 def test_minimal_deepagent_closes_exit_stack_within_each_diagnose_call(tmp_path, monkeypatch):
@@ -525,7 +522,7 @@ class _FakeBench:
 
 
 class _FakeAgent:
-    def __init__(self):
+    def __init__(self, *, vendor="minimax"):
         self.closed = False
 
     async def aclose(self):
@@ -534,11 +531,11 @@ class _FakeAgent:
 
 def _prepare_basic_repo(tmp_path):
     repo = tmp_path / "repo"
-    scenario_root = repo / "scenarios" / "generated" / "xs"
+    scenario_root = repo / "scenarios" / "generated" / "medium"
     scenario_root.mkdir(parents=True)
-    (scenario_root / "generated_link_down_xs_001.yaml").write_text("scenario: link_down\n", encoding="utf-8")
-    (scenario_root / "generated_packet_loss_xs_001.yaml").write_text("scenario: packet_loss\n", encoding="utf-8")
-    (scenario_root / "generated_high_latency_xs_001.yaml").write_text("scenario: high_latency\n", encoding="utf-8")
+    (scenario_root / "generated_link_down_medium_001.yaml").write_text("scenario: link_down\n", encoding="utf-8")
+    (scenario_root / "generated_packet_loss_medium_001.yaml").write_text("scenario: packet_loss\n", encoding="utf-8")
+    (scenario_root / "generated_high_latency_medium_001.yaml").write_text("scenario: high_latency\n", encoding="utf-8")
     # Also create custom fault scenario for 03_custom_faults
     fault_dir = repo / "examples" / "faults" / "custom_fault_pack"
     fault_dir.mkdir(parents=True)
@@ -546,48 +543,35 @@ def _prepare_basic_repo(tmp_path):
     return repo
 
 
-def test_01_run_scenario_main(tmp_path):
+@pytest.mark.parametrize(
+    "scale,override,expected", [("xs", None, 3), ("medium", None, 2), ("fat-tree-k12", None, 1), ("fat-tree-k12", 2, 2)]
+)
+def test_scale_benchmark_default_workers_respect_topology_size(tmp_path, monkeypatch, scale, override, expected):
     import importlib
-
-    mod = importlib.import_module("examples.01_run_scenario")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-
-
-def test_02_run_suite_main(tmp_path):
-    import importlib
-
-    mod = importlib.import_module("examples.02_run_suite")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-
-
-def test_03_run_scale_benchmark_main(tmp_path):
-    import importlib
+    from types import SimpleNamespace
 
     mod = importlib.import_module("examples.03_run_scale_benchmark")
-    repo = _prepare_basic_repo(tmp_path)
+    captured = {}
+    monkeypatch.setattr(mod, "discover_generated_scenarios", lambda *args: [])
+    monkeypatch.setattr(mod, "build_wrapped_agent", lambda *args, **kwargs: (object(), object()))
+    monkeypatch.setattr(mod, "print_agent_banner", lambda *args: None)
+    monkeypatch.setattr(mod, "wait_and_print_run", lambda *args, **kwargs: 0)
 
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
+    def run_suite(**kwargs):
+        captured.update(kwargs)
 
-    assert result == 0
+    class Bench:
+        def __init__(self, **kwargs):
+            self.sessions = SimpleNamespace(run_suite=run_suite)
 
+        def __enter__(self):
+            return self
 
-def test_04_custom_faults_main(tmp_path):
-    import importlib
+        def __exit__(self, *args):
+            pass
 
-    mod = importlib.import_module("examples.04_custom_faults")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
+    assert mod.main(repo_root=tmp_path, scale=scale, workers=override, bench_cls=Bench) == 0
+    assert captured["workers"] == expected
 
 
 def test_05_manual_runtime_main(tmp_path, capsys):
@@ -604,7 +588,7 @@ def test_05_manual_runtime_main(tmp_path, capsys):
     assert "PYTHONPATH=. netopsbench runtime teardown manual-" in output
 
 
-def test_example_common_builds_wrapped_agent_with_vendor_fallback():
+def test_example_common_does_not_mask_agent_constructor_errors():
     from examples._common import build_wrapped_agent
 
     class _NoVendorAgent:
@@ -613,15 +597,11 @@ def test_example_common_builds_wrapped_agent_with_vendor_fallback():
 
     bench = _FakeBench(workspace=".")
 
-    raw, wrapped = build_wrapped_agent(bench, _NoVendorAgent, vendor="minimax")
-
-    assert isinstance(raw, _NoVendorAgent)
-    assert wrapped is raw
+    with pytest.raises(TypeError, match="vendor"):
+        build_wrapped_agent(bench, _NoVendorAgent, vendor="minimax")
 
 
 def test_example_common_require_scenarios_accepts_single_path_and_raises_actionable_error(tmp_path):
-    import pytest
-
     from examples._common import require_scenarios
 
     with pytest.raises(FileNotFoundError) as exc_info:
@@ -631,8 +611,6 @@ def test_example_common_require_scenarios_accepts_single_path_and_raises_actiona
 
 
 def test_example_common_require_scenarios_reports_combined_missing_files(tmp_path):
-    import pytest
-
     from examples._common import require_scenarios
 
     (tmp_path / "present.yaml").write_text("scenario: present\n", encoding="utf-8")
@@ -746,7 +724,7 @@ class MinimalDeepAgent:
 fake_sdk = types.ModuleType('netopsbench.sdk')
 fake_sdk.NetOpsBench = NetOpsBench
 fake_sdk.RunFailedError = RuntimeError
-fake_sdk.supported_scales = lambda: ('xs', 'small', 'medium', 'large', 'xlarge', 'fat-tree-k8', 'fat-tree-k12')
+fake_sdk.supported_scales = lambda: ('xs', 'medium', 'large', 'xlarge', 'fat-tree-k8', 'fat-tree-k12', 'fat-tree-k18')
 sys.modules['netopsbench.sdk'] = fake_sdk
 
 fake_examples_agents = types.ModuleType('examples.agents')
@@ -870,3 +848,11 @@ def test_minimal_deepagent_uses_sdk_default_mcp_server_config(monkeypatch):
     asyncio.run(agent.diagnose(context))
 
     assert captured_config["args"] == ["-m", "netopsbench.platform.toolkit.fastmcp_server"]
+
+
+@pytest.mark.parametrize("example", ["01_run_scenario", "02_run_suite", "03_run_scale_benchmark", "04_custom_faults"])
+def test_example_main(tmp_path, example):
+    import importlib
+
+    module = importlib.import_module(f"examples.{example}")
+    assert module.main(repo_root=_prepare_basic_repo(tmp_path), bench_cls=_FakeBench, agent_cls=_FakeAgent) == 0

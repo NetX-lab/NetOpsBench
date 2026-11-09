@@ -1,4 +1,8 @@
 {
   "title": "Agent Development",
-  "pages": ["custom-agents", "python-api-guide"]
+  "pages": [
+    "custom-agents",
+    "python-api-guide",
+    "diagnostic-tools"
+  ]
 }

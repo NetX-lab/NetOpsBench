@@ -90,27 +90,33 @@ def check_observability(
     active_interfaces: Sequence[str] | None = None,
     min_active_coverage_ratio: float = 0.5,
     require_pingmesh: bool = True,
+    checks: set[str] | None = None,
+    plan_id: str = "",
 ) -> list[str]:
     """Run Pingmesh, interface, and syslog path checks."""
+    selected = checks if checks is not None else {"pingmesh", "bgp", "interfaces", "syslog"}
+    if selected - {"pingmesh", "bgp", "interfaces", "syslog"}:
+        raise ValueError("Unknown observability check")
     errors: list[str] = []
     active = [item for item in active_interfaces or [] if item]
     topology_filter = _topology_filter(topology_id)
 
-    if require_pingmesh:
+    if require_pingmesh and "pingmesh" in selected:
         pingmesh_query = (
             f'from(bucket: "{bucket}")\n'
             f"  |> range(start: -10m)\n"
             f'  |> filter(fn: (r) => r._measurement == "pingmesh")\n'
             f"{topology_filter}"
-            f'  |> filter(fn: (r) => r._field == "rtt_p99")\n'
-            f"  |> last()\n"
-            f"  |> group()\n"
-            f"  |> limit(n: 1)\n"
+            + (f'  |> filter(fn: (r) => r.plan_id == "{plan_id}")\n' if plan_id else "")
+            + '  |> filter(fn: (r) => r._field == "rtt_p99")\n'
+            "  |> last()\n"
+            "  |> group()\n"
+            "  |> limit(n: 1)\n"
         )
         if count_data_rows(query_runner(pingmesh_query)) <= 0:
             errors.append("no recent pingmesh samples found in InfluxDB")
 
-    if bgp_device:
+    if bgp_device and "bgp" in selected:
         bgp_query = (
             f'from(bucket: "{bucket}")\n'
             f"  |> range(start: -10m)\n"
@@ -125,39 +131,40 @@ def check_observability(
         if count_data_rows(query_runner(bgp_query)) <= 0:
             errors.append(f"no recent bgp neighbor samples found for {bgp_device} in InfluxDB")
 
-    interface_identity_query = (
-        f'from(bucket: "{bucket}")\n'
-        f"  |> range(start: -10m)\n"
-        f'  |> filter(fn: (r) => r._measurement == "interfaces")\n'
-        f"{topology_filter}"
-        f'  |> filter(fn: (r) => r.source == "{obs_device}")\n'
-        f"{_interface_counter_field_filter()}"
-        f'  |> group(columns: ["name", "path", "_field"])\n'
-        f"  |> last()\n"
-        f'  |> keep(columns: ["_time", "_field", "_value", "name", "path"])\n'
-    )
-    interface_rows = query_runner(interface_identity_query)
-    if count_data_rows(interface_rows) <= 0:
-        errors.append(f"no recent interface samples found for {obs_device} in InfluxDB")
-    else:
-        observed_interfaces = extract_interface_names(interface_rows)
-        if active:
-            observed_active = [name for name in active if name in observed_interfaces]
-            coverage = len(observed_active) / len(active)
-            if not observed_active:
-                errors.append(
-                    f"no recent interface samples found for active interfaces on {obs_device}; "
-                    f"active={preview(active)} observed={preview(observed_interfaces)}"
-                )
-            elif coverage < min_active_coverage_ratio:
-                missing_active = [name for name in active if name not in observed_interfaces]
-                errors.append(
-                    f"active interface observability coverage too low on {obs_device}: "
-                    f"{len(observed_active)}/{len(active)} observed; "
-                    f"missing={preview(missing_active)} observed={preview(observed_interfaces)}"
-                )
+    if "interfaces" in selected:
+        interface_identity_query = (
+            f'from(bucket: "{bucket}")\n'
+            f"  |> range(start: -10m)\n"
+            f'  |> filter(fn: (r) => r._measurement == "interfaces")\n'
+            f"{topology_filter}"
+            f'  |> filter(fn: (r) => r.source == "{obs_device}")\n'
+            f"{_interface_counter_field_filter()}"
+            f'  |> group(columns: ["name", "path", "_field"])\n'
+            f"  |> last()\n"
+            f'  |> keep(columns: ["_time", "_field", "_value", "name", "path"])\n'
+        )
+        interface_rows = query_runner(interface_identity_query)
+        if count_data_rows(interface_rows) <= 0:
+            errors.append(f"no recent interface samples found for {obs_device} in InfluxDB")
+        else:
+            observed_interfaces = extract_interface_names(interface_rows)
+            if active:
+                observed_active = [name for name in active if name in observed_interfaces]
+                coverage = len(observed_active) / len(active)
+                if not observed_active:
+                    errors.append(
+                        f"no recent interface samples found for active interfaces on {obs_device}; "
+                        f"active={preview(active)} observed={preview(observed_interfaces)}"
+                    )
+                elif coverage < min_active_coverage_ratio:
+                    missing_active = [name for name in active if name not in observed_interfaces]
+                    errors.append(
+                        f"active interface observability coverage too low on {obs_device}: "
+                        f"{len(observed_active)}/{len(active)} observed; "
+                        f"missing={preview(missing_active)} observed={preview(observed_interfaces)}"
+                    )
 
-    if syslog_marker:
+    if syslog_marker and "syslog" in selected:
         syslog_query = (
             'import "strings"\n'
             f'from(bucket: "{bucket}")\n'

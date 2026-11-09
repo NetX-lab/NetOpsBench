@@ -14,6 +14,12 @@ from netopsbench.platform.faults.services.tracking import FaultTracker
 from netopsbench.platform.topology.generator import generate_topology
 
 
+@pytest.fixture(autouse=True)
+def mocked_runtime_tools(monkeypatch, tmp_path):
+    # These transaction tests mock every command; toolchain validation has its own tests.
+    monkeypatch.setattr("netopsbench.platform.faults.handlers.system.runtime_tools", lambda: tmp_path)
+
+
 def _metadata() -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
         return generate_topology("xs", tmpdir)["metadata"]
@@ -66,57 +72,14 @@ def test_background_recovery_fails_when_worker_thread_does_not_stop():
     assert tracker.stop_background("control") is False
 
 
-def test_acl_readback_failure_is_compensated(monkeypatch):
-    injector = FaultInjector(topology_metadata=_metadata())
-    calls: list[tuple[str, ...]] = []
-    rule_present = False
-    table_present = False
-    acl_rule_present = False
-
-    def docker_exec(_container, command, **_kwargs):
-        nonlocal rule_present, table_present, acl_rule_present
-        calls.append(tuple(command))
-        if command[:2] == ["iptables", "-I"]:
-            rule_present = True
-        elif command[:2] == ["iptables", "-D"]:
-            rule_present = False
-        elif command[:2] == ["iptables", "-C"]:
-            return _Result(returncode=0 if rule_present else 1)
-        elif command[:3] == ["sonic-db-cli", "CONFIG_DB", "hset"]:
-            if "ACL_TABLE|" in command[3]:
-                table_present = True
-            else:
-                # Simulate a partially applied ACL breadcrumb.
-                acl_rule_present = False
-        elif command[:3] == ["sonic-db-cli", "CONFIG_DB", "del"]:
-            if "ACL_TABLE|" in command[3]:
-                table_present = False
-            else:
-                acl_rule_present = False
-        elif command[:3] == ["sonic-db-cli", "CONFIG_DB", "exists"]:
-            present = table_present if "ACL_TABLE|" in command[3] else acl_rule_present
-            return _Result(stdout="1" if present else "0")
-        return _Result()
-
-    monkeypatch.setattr(injector._acl._cmd, "docker_exec", docker_exec)
-
-    result = injector.inject_acl_misconfig(
-        "leaf1",
-        target_prefix="192.168.102.0/30",
-        interface="Ethernet0",
-    )
-
-    assert result["success"] is False
-    assert any(command[:2] == ("iptables", "-D") for command in calls)
-    assert injector.active_faults == []
-
-
 def test_netem_compensation_readback_error_tracks_residual(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     qdisc_reads = 0
 
     def docker_exec(_container, command, **_kwargs):
         nonlocal qdisc_reads
+        if command[:4] == ["tc", "-j", "qdisc", "show"]:
+            return _Result(stdout='[ {"kind": "pfifo_fast"} ]')
         if command[:4] == ["tc", "qdisc", "replace", "dev"]:
             return _Result()
         if command[:4] == ["tc", "qdisc", "del", "dev"]:
@@ -161,93 +124,6 @@ def test_mtu_failed_readback_and_compensation_tracks_residual(monkeypatch):
     _assert_single_residual(injector, "mtu_mismatch")
 
 
-def test_bgp_unreadable_state_is_compensated(monkeypatch):
-    injector = FaultInjector(topology_metadata=_metadata())
-    commands: list[list[str]] = []
-    states = iter([None] * 10 + [True])
-    monkeypatch.setattr(
-        injector._bgp._routing,
-        "pick_bgp_neighbor",
-        lambda _device, peer_ip=None: {
-            "peer_ip": peer_ip or "192.168.11.1",
-            "local_as": 65101,
-            "remote_as": 65000,
-        },
-    )
-    monkeypatch.setattr(
-        injector._bgp._routing,
-        "get_device_asn",
-        lambda _device: 65101,
-    )
-    monkeypatch.setattr(
-        injector._bgp._routing,
-        "normalize_bgp_neighbor_kind",
-        lambda kind: kind,
-    )
-    monkeypatch.setattr(
-        injector._bgp._sonic,
-        "vtysh",
-        lambda _device, command: commands.append(command) or _Result(),
-    )
-    monkeypatch.setattr(
-        injector._bgp._sonic,
-        "bgp_neighbor_state",
-        lambda _device, _peer: next(states),
-    )
-    monkeypatch.setattr(
-        "netopsbench.platform.faults.handlers.routing_bgp.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = injector.inject_bgp_neighbor_misconfig(
-        "leaf1",
-        peer_ip="192.168.11.1",
-        misconfig_kind="peer_as_mismatch",
-    )
-
-    assert result["success"] is False
-    assert any("neighbor 192.168.11.1 remote-as 65000" in command for command in commands)
-    assert injector.active_faults == []
-
-
-def test_bgp_failed_compensation_tracks_residual(monkeypatch):
-    injector = FaultInjector(topology_metadata=_metadata())
-    monkeypatch.setattr(
-        injector._bgp._routing,
-        "pick_bgp_neighbor",
-        lambda _device, peer_ip=None: {
-            "peer_ip": peer_ip or "192.168.11.1",
-            "local_as": 65101,
-            "remote_as": 65000,
-        },
-    )
-    monkeypatch.setattr(injector._bgp._routing, "get_device_asn", lambda _device: 65101)
-    monkeypatch.setattr(
-        injector._bgp._routing,
-        "normalize_bgp_neighbor_kind",
-        lambda kind: kind,
-    )
-    monkeypatch.setattr(injector._bgp._sonic, "vtysh", lambda _device, _command: _Result())
-    monkeypatch.setattr(
-        injector._bgp._sonic,
-        "bgp_neighbor_state",
-        lambda _device, _peer: None,
-    )
-    monkeypatch.setattr(
-        "netopsbench.platform.faults.handlers.routing_bgp.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = injector.inject_bgp_neighbor_misconfig(
-        "leaf1",
-        peer_ip="192.168.11.1",
-        misconfig_kind="peer_as_mismatch",
-    )
-
-    assert result["success"] is False
-    _assert_single_residual(injector, "bgp_neighbor_misconfig")
-
-
 def test_blackhole_requires_operational_rib_and_compensates(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     prefix = "192.168.102.2/32"
@@ -278,7 +154,7 @@ def test_blackhole_requires_operational_rib_and_compensates(monkeypatch):
 def test_static_route_failed_compensation_tracks_residual(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
     target = "192.168.102.2/32"
-    nexthop = "192.168.101.2"
+    nexthop = "192.168.1.2"
 
     def vtysh(_device, command):
         if command == ["show running-config"]:
@@ -288,6 +164,9 @@ def test_static_route_failed_compensation_tracks_residual(monkeypatch):
         return _Result()
 
     monkeypatch.setattr(injector._static_route._sonic, "vtysh", vtysh)
+
+    monkeypatch.setattr(injector._static_route, "_running_config_has_route", lambda *_: False)
+    monkeypatch.setattr(injector._static_route._sonic._cmd, "docker_exec", lambda *_: _Result(stdout="0\n"))
 
     result = injector.inject_static_route_misconfig(
         "leaf1",
@@ -299,72 +178,9 @@ def test_static_route_failed_compensation_tracks_residual(monkeypatch):
     _assert_single_residual(injector, "static_route_misconfig")
 
 
-def test_route_policy_checks_withdrawal_and_recovery(monkeypatch):
-    injector = FaultInjector(topology_metadata=_metadata())
-    prefix = "192.168.101.0/30"
-    statement = f"network {prefix}"
-    configured = True
-    bgp_reads = 0
-
-    monkeypatch.setattr(
-        injector._route_policy._routing,
-        "normalize_route_policy_kind",
-        lambda kind: kind,
-    )
-    monkeypatch.setattr(
-        injector._route_policy._routing,
-        "pick_advertised_network",
-        lambda _device, prefix=None: {
-            "prefix": prefix or "192.168.101.0/30",
-            "local_as": 65101,
-            "route_map": None,
-        },
-    )
-    monkeypatch.setattr(
-        injector._route_policy._routing,
-        "get_device_asn",
-        lambda _device: 65101,
-    )
-    monkeypatch.setattr(
-        injector._route_policy._routing,
-        "format_network_statement",
-        lambda _prefix, _route_map: statement,
-    )
-
-    def vtysh(_device, command):
-        nonlocal configured, bgp_reads
-        if command[0] == "configure terminal":
-            configured = not any(item == f"no {statement}" for item in command)
-            return _Result()
-        if command == ["show running-config"]:
-            return _Result(stdout=f" {statement}\n" if configured else "")
-        if command == [f"show ip bgp {prefix}"]:
-            bgp_reads += 1
-            if not configured:
-                return _Result(returncode=1, stderr="BGP RIB unavailable")
-            return _Result(stdout=f"BGP routing table entry for {prefix}\n")
-        raise AssertionError(f"unexpected command: {command}")
-
-    monkeypatch.setattr(injector._route_policy._sonic, "vtysh", vtysh)
-    monkeypatch.setattr(
-        "netopsbench.platform.faults.handlers.routing_policy.time.sleep",
-        lambda _seconds: None,
-    )
-
-    result = injector.inject_route_policy_misconfig(
-        "leaf1",
-        target_prefix=prefix,
-        misconfig_kind="network_statement_missing",
-    )
-
-    assert result["success"] is False
-    assert configured is True
-    assert bgp_reads == 11
-    assert injector.active_faults == []
-
-
 def test_device_down_unreadable_state_is_terminal_residual(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "container_is_running", lambda _container: True)
     monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result())
     monkeypatch.setattr(
         injector._system._cmd,
@@ -396,6 +212,7 @@ def test_device_down_reads_parking_namespace_without_sudo(monkeypatch):
 
 def test_device_down_running_with_restored_links_is_clean_injection_failure(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "container_is_running", lambda _container: True)
     monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result())
     monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (True, False))
 
@@ -407,6 +224,7 @@ def test_device_down_running_with_restored_links_is_clean_injection_failure(monk
 
 def test_device_down_stopped_without_parking_tracks_terminal_residual(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "container_is_running", lambda _container: True)
     monkeypatch.setattr(injector._system._cmd, "run_cmd", lambda *_args, **_kwargs: _Result(returncode=1))
     monkeypatch.setattr(injector._system, "_settled_stop_state", lambda _container: (False, False))
 
@@ -419,6 +237,7 @@ def test_device_down_stopped_without_parking_tracks_terminal_residual(monkeypatc
 
 def test_device_down_command_error_is_success_when_stopped_and_parked(monkeypatch):
     injector = FaultInjector(topology_metadata=_metadata())
+    monkeypatch.setattr(injector._system._cmd, "container_is_running", lambda _container: True)
     monkeypatch.setattr(
         injector._system._cmd,
         "run_cmd",

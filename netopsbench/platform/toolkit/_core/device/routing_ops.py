@@ -2,25 +2,77 @@
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
+from datetime import UTC, datetime
 
 from netopsbench.logging_utils import get_logger
 from netopsbench.platform.observability.bgp_parser import parse_bgp_summary
 from netopsbench.platform.topology.topology_utils import is_network_device_name
 
-from ..common import ToolResult, truncate_text_lines
+from ..common import PublicArgumentError, ToolResult, truncate_text_lines
 from .route_parsers import parse_route_table
 
 logger = get_logger(__name__)
 
 
 class RoutingOpsMixin:
+    def get_device_status(self, device: str) -> ToolResult:
+        """Read container, accessibility and supported service state without diagnosis labels."""
+        import time
+
+        from netopsbench.platform.utils.control import OperationControl
+        from netopsbench.platform.utils.proc import docker_prefix, safe_run
+
+        try:
+            container = self._resolve_container(device)
+            from ..control import current_tool_control
+
+            parent = current_tool_control()
+            deadline = time.monotonic() + 30
+            control = OperationControl(deadline=min(deadline, parent.deadline) if parent else deadline)
+            result = safe_run(
+                [*docker_prefix(), "docker", "inspect", "--format", "{{json .State}}", container],
+                timeout=control.remaining(15),
+                control=control,
+            )
+            if result.returncode:
+                return ToolResult(success=False, data=None, error=result.stderr or "Cannot inspect node")
+            state = json.loads(result.stdout)
+            data = {
+                "device": device,
+                "running": bool(state.get("Running")),
+                "runtime_state": state.get("Status"),
+                "accessible": False,
+                "services": {},
+                "collected_at": datetime.now(UTC).isoformat(),
+            }
+            if data["running"]:
+                probe = self._docker_exec(container, ["true"], timeout=control.remaining(5))
+                data["accessible"] = probe.returncode == 0
+                if is_network_device_name(device) and data["accessible"]:
+                    services = self._docker_exec(
+                        container, ["supervisorctl", "status", "bgpd", "zebra"], timeout=control.remaining(10)
+                    )
+                    for line in services.stdout.splitlines():
+                        fields = line.split()
+                        if len(fields) >= 2 and fields[0] in {"bgpd", "zebra"}:
+                            data["services"][fields[0]] = fields[1]
+                    if not data["services"]:
+                        data["service_collection_error"] = services.stderr or "Service states unavailable"
+            return ToolResult(success=True, data=data)
+        except Exception as exc:
+            return ToolResult(success=False, data=None, error=str(exc))
+
     def get_bgp_neighbors(self, device: str, format: str = "structured") -> ToolResult:
         try:
-            self._validate_device_name(device)
             safe_format = (format or "raw").lower()
+            if safe_format == "json":
+                safe_format = "structured"
             if safe_format not in {"raw", "structured", "both"}:
-                return ToolResult(success=False, data=None, error=f"Invalid format: {format}")
+                return ToolResult(success=False, data=None, error=PublicArgumentError.BGP_FORMAT)
+            self._validate_device_name(device)
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} does not run BGP")
             container = self._resolve_container(device)
@@ -48,14 +100,42 @@ class RoutingOpsMixin:
         except Exception as e:
             return ToolResult(success=False, data=None, error=str(e))
 
-    def get_bgp_neighbor(self, device: str, peer: str) -> ToolResult:
+    def get_bgp_neighbor(self, device: str, peer: str, view: str = "detail", prefix: str | None = None) -> ToolResult:
         """Return live detail for one BGP session on one device."""
+        if view in {"advertised-routes", "advertised"}:
+            view = "advertised_routes"
+        if view not in {"detail", "advertised_routes"}:
+            return ToolResult(success=False, data=None, error=PublicArgumentError.BGP_VIEW)
         try:
             self._validate_device_name(device)
             safe_peer = self._validate_ip_address(peer, "peer")
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} does not run BGP")
             container = self._resolve_container(device)
+            if view == "advertised_routes":
+                safe_prefix = self._validate_prefix(prefix) if prefix else None
+                result = self._docker_exec(
+                    container,
+                    ["vtysh", "-c", f"show bgp ipv4 unicast neighbors {safe_peer} advertised-routes json"],
+                    timeout=30,
+                )
+                if result.returncode:
+                    return ToolResult(success=False, data=None, error=result.stderr)
+                advertised = json.loads(result.stdout)
+                routes = advertised.get("advertisedRoutes", {})
+                if safe_prefix:
+                    routes = {key: value for key, value in routes.items() if key == safe_prefix}
+                return ToolResult(
+                    success=True,
+                    data={
+                        "device": device,
+                        "peer": safe_peer,
+                        "prefix": safe_prefix,
+                        "view": view,
+                        "advertised_routes": routes,
+                        "collected_at": datetime.now(UTC).isoformat(),
+                    },
+                )
             detail_result = self._docker_exec(
                 container,
                 ["vtysh", "-c", f"show ip bgp neighbors {safe_peer}"],
@@ -155,6 +235,7 @@ class RoutingOpsMixin:
         format: str = "structured",
         max_routes: int = 100,
         max_lines: int = 500,
+        view: str = "frr",
     ) -> ToolResult:
         try:
             self._validate_device_name(device)
@@ -164,6 +245,32 @@ class RoutingOpsMixin:
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} is not a router")
             container = self._resolve_container(device)
+            if view not in {"frr", "kernel"}:
+                raise ValueError("view must be frr or kernel")
+            if view == "kernel":
+                safe_prefix = self._validate_prefix(prefix) if prefix else None
+                command = ["ip", "-j", "-4", "route", "show"]
+                if safe_prefix:
+                    command += ["exact", safe_prefix]
+                result = self._docker_exec(container, command, timeout=30)
+                if result.returncode:
+                    return ToolResult(success=False, data=None, error=result.stderr)
+                rows = json.loads(result.stdout)
+                limit = max(1, min(int(max_routes), 1000))
+                structured = {
+                    "device": device,
+                    "prefix": safe_prefix,
+                    "view": view,
+                    "routes": rows[:limit],
+                    "total_routes": len(rows),
+                    "truncated": len(rows) > limit,
+                    "collected_at": datetime.now(UTC).isoformat(),
+                }
+                if safe_format == "raw":
+                    structured = {"device": device, "prefix": safe_prefix, "view": view, "route_table": result.stdout}
+                elif safe_format == "both":
+                    structured = {"device": device, "raw": {"route_table": result.stdout}, "structured": structured}
+                return ToolResult(success=True, data=structured)
             if prefix:
                 safe_prefix = self._validate_prefix(prefix)
                 sr_command = f"show ip route {safe_prefix}"
@@ -204,17 +311,14 @@ class RoutingOpsMixin:
             if not is_network_device_name(device):
                 return ToolResult(success=False, data=None, error=f"Device {device} does not support running-config")
             container = self._resolve_container(device)
-            if section:
-                import re
-
-                safe_section = re.sub(r"[^a-zA-Z0-9 _-]", "", section)
-                cmd = f"show running-config | section {safe_section}"
-            else:
-                cmd = "show running-config"
-            result = self._docker_exec(container, ["vtysh", "-c", cmd], timeout=30)
+            result = self._docker_exec(container, ["vtysh", "-c", "show running-config"], timeout=30)
             if result.returncode != 0:
                 return ToolResult(success=False, data=None, error=result.stderr)
-            config_text, config_meta = truncate_text_lines(result.stdout, max_lines)
+            text = result.stdout
+            if section:
+                blocks = re.split(r"(?m)^!\s*$", text)
+                text = "\n!\n".join(block.strip("\n") for block in blocks if section.lower() in block.lower())
+            config_text, config_meta = truncate_text_lines(text, max_lines)
             return ToolResult(
                 success=True,
                 data={
@@ -310,6 +414,16 @@ class RoutingOpsMixin:
                 "sonic_acl_line_count": sonic_meta["total_lines"],
                 "iptables_line_count": iptables_meta["total_lines"],
                 "truncated": sonic_meta["truncated"] or iptables_meta["truncated"],
+                "collected_at": datetime.now(UTC).isoformat(),
+                "collection_errors": [
+                    {"source": source, "error": result.stderr or "Command failed"}
+                    for source, result in (
+                        ("acl_tables", acl_table_result),
+                        ("acl_rules", acl_rule_result),
+                        ("iptables", ipt_result),
+                    )
+                    if result.returncode
+                ],
             }
             if safe_view in {"summary", "frr", "all"}:
                 data["sonic_acl_config"] = sonic_acl_output
@@ -317,7 +431,8 @@ class RoutingOpsMixin:
             if safe_view in {"summary", "iptables", "all"}:
                 data["iptables_forward_rules"] = iptables_rules
                 data["iptables_truncated"] = iptables_meta["truncated"]
-            return ToolResult(success=True, data=data)
+            available = len(data["collection_errors"]) < 3
+            return ToolResult(success=available, data=data, error=None if available else "ACL state unavailable")
         except subprocess.TimeoutExpired:
             return ToolResult(success=False, data=None, error="Command timed out")
         except Exception as e:

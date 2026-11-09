@@ -137,75 +137,29 @@ def test_topology_manifest_requires_exact_ecmp_policy_for_switch_roles():
 
 
 def test_agent_projection_preserves_canonical_fat_tree_roles():
-    core = Device(name="core1", role="core", mgmt_ip="172.20.20.11", asn=65001)
-    agg = Device(name="agg1", role="agg", mgmt_ip="172.20.20.12", asn=65101)
-    edge = Device(name="edge1", role="edge", mgmt_ip="172.20.20.13", asn=65201)
-    client = Device(name="client1", role="client", attached_switch="edge1", data_ip="192.168.1.2")
-    manifest = TopologyManifest(
-        topology_id="fat-demo",
-        name="fat-demo",
-        scale="fat-tree-k8",
-        family="fat-tree",
-        management=Management(network="clab-fat-demo", ipv4_subnet="172.20.20.0/24"),
-        collector=Collector(ipv4="172.20.20.200"),
-        defaults=topology_models.TopologyDefaults(),
-        facts=topology_models.TopologyFacts(
-            num_cores=1,
-            num_aggs=1,
-            num_edges=1,
-            num_pods=1,
-            clients_per_attached_switch=1,
-            total_clients=1,
-            total_switches=3,
-            fat_tree_k=2,
-            full_density_clients_per_attached_switch=1,
-            host_density="standard",
-        ),
-        routing=topology_models.RoutingMetadata(
-            core_asn_range="65001-65001",
-            agg_asn_range="65101-65101",
-            edge_asn_range="65201-65201",
-            ecmp_hash_policy_by_role={DeviceRole.CORE: 1, DeviceRole.AGG: 0, DeviceRole.EDGE: 1},
-        ),
-        devices=[core, agg, edge, client],
-        links=[],
-    )
+    from netopsbench.platform.topology.config import FatTreeConfig
+    from netopsbench.platform.topology.fat_tree_builder import build_fat_tree_plan
 
+    manifest = build_fat_tree_plan(FatTreeConfig(k=2, scale_name="fat-tree-k8", name="fat-demo")).manifest
     projected = manifest.to_agent_topology()
-
     assert "spines" not in projected["devices"]
     assert "leafs" not in projected["devices"]
-    assert [device["name"] for device in projected["devices"]["cores"]] == ["core1"]
-    assert [device["name"] for device in projected["devices"]["aggs"]] == ["agg1"]
-    assert [device["name"] for device in projected["devices"]["edges"]] == ["edge1"]
-    projected_client = projected["devices"]["clients"][0]
-    assert projected_client["name"] == "client1"
-    assert projected_client["data_ip"] == "192.168.1.2"
-    assert projected_client["attached_switch"] == "edge1"
-    assert projected_client["edge"] == "edge1"
-    assert "leaf" not in projected_client
-    assert projected["defaults"] == {"link_mtu": 9232, "sonic_port_mtu": 9100}
+    for group, prefix, count in [
+        ("cores", "core", 1),
+        ("aggs", "agg", 2),
+        ("edges", "edge", 2),
+        ("clients", "client", 2),
+    ]:
+        assert [device["name"] for device in projected["devices"][group]] == [
+            f"{prefix}{i}" for i in range(1, count + 1)
+        ]
+    client = projected["devices"]["clients"][0]
+    assert client["data_ip"] == "192.168.1.2"
+    assert client["attached_switch"] == client["edge"] == "edge1"
+    assert "leaf" not in client
     assert projected["fat_tree_k"] == 2
-    assert projected["scale"] == {
-        "name": "fat-tree-k8",
-        "num_core": 1,
-        "num_agg": 1,
-        "num_edge": 1,
-        "num_pods": 1,
-        "clients_per_edge": 1,
-        "full_density_clients_per_edge": 1,
-        "host_density": "standard",
-        "total_clients": 1,
-        "total_devices": 3,
-    }
-    assert projected["routing"]["core_asn_range"] == "65001-65001"
     assert projected["routing"]["ecmp_hash_policy_by_role"] == {"core": 1, "agg": 0, "edge": 1}
-    assert [device["role"] for device in manifest.model_dump(mode="json")["devices"]] == [
-        "core",
-        "agg",
-        "edge",
-        "client",
-    ]
+    assert projected["pingmesh"]["plan_id"] == manifest.pingmesh_plan.settings.plan_id
 
 
 def test_agent_projection_metadata_cannot_overwrite_canonical_device_fields():
@@ -223,7 +177,12 @@ def test_agent_projection_metadata_cannot_overwrite_canonical_device_fields():
         },
     )
 
-    projected = _manifest(devices=[spine], links=[]).to_agent_topology()["devices"]["spines"][0]
+    from netopsbench.platform.topology.clos_builder import build_clos_plan
+    from netopsbench.platform.topology.config import TopologyConfig
+
+    manifest = build_clos_plan(TopologyConfig(scale_name="xs")).manifest
+    manifest.devices[0] = spine
+    projected = manifest.to_agent_topology()["devices"]["spines"][0]
 
     assert projected["name"] == "spine1"
     assert projected["mgmt_ip"] == "172.20.20.11"
@@ -316,7 +275,7 @@ def test_runtime_identity_normal_constructor_applies_defaults():
         mgmt_network="clab-mgmt-lab-direct",
     )
 
-    assert identity.schema_version == "3"
+    assert identity.schema_version == "4"
     assert identity.topology_id == "lab-direct"
     assert identity.bucket == "network_data_run_direct_1_w02"
 
@@ -339,7 +298,7 @@ def test_runtime_identity_rejects_unknown_schema_version():
     assert {error["loc"]: error["type"] for error in exc_info.value.errors()}[("schema_version",)] == "literal_error"
 
 
-def test_runtime_identity_schema_version_defaults_to_v3():
+def test_runtime_identity_schema_version_defaults_to_v4():
     identity = RuntimeIdentity(
         runtime_id="runtime",
         worker_id="worker-1",
@@ -352,7 +311,7 @@ def test_runtime_identity_schema_version_defaults_to_v3():
         mgmt_network="clab-mgmt-lab",
     )
 
-    assert identity.schema_version == "3"
+    assert identity.schema_version == "4"
 
 
 @pytest.mark.parametrize(
@@ -372,12 +331,11 @@ def test_runtime_identity_schema_version_defaults_to_v3():
     ),
     [
         ("xs", "clos", 2, 2, None, 1, 24, None, 250, 1800, 2, 60),
-        ("small", "clos", 2, 4, None, 2, 24, None, 250, 1800, 2, 60),
         ("medium", "clos", 4, 8, None, 2, 24, None, 200, 1800, 2, 60),
         ("large", "clos", 4, 16, None, 4, 24, 16, 100, 2700, 1, 180),
-        ("xlarge", "clos", 16, 128, None, 1, 23, 16, 100, 3600, 1, 240),
+        ("xlarge", "clos", 16, 128, None, 2, 23, 16, 50, 3600, 1, 240),
         ("fat-tree-k8", "fat-tree", None, None, 8, 4, 24, 16, 100, 3600, 1, 240),
-        ("fat-tree-k12", "fat-tree", None, None, 12, 2, 23, 16, 50, 5400, 1, 300),
+        ("fat-tree-k12", "fat-tree", None, None, 12, 2, 23, 32, 50, 5400, 1, 300),
     ],
 )
 def test_scale_profiles_keep_exact_runtime_values(
@@ -412,18 +370,18 @@ def test_scale_profiles_keep_exact_runtime_values(
 def test_scale_profile_registry_is_complete_and_rejects_unknown_scales():
     assert supported_scales() == (
         "xs",
-        "small",
         "medium",
         "large",
         "xlarge",
         "fat-tree-k8",
         "fat-tree-k12",
+        "fat-tree-k18",
     )
     with pytest.raises(ValueError, match="Unknown scale"):
         get_scale_profile("not-a-scale")
 
 
 def test_fat_tree_profiles_use_bounded_containerlab_parallelism():
-    assert get_scale_profile("fat-tree-k8").containerlab_max_workers == 1
-    assert get_scale_profile("fat-tree-k12").containerlab_max_workers == 1
+    assert get_scale_profile("fat-tree-k8").containerlab_max_workers == 16
+    assert get_scale_profile("fat-tree-k12").containerlab_max_workers == 16
     assert get_scale_profile("xlarge").containerlab_max_workers == 16

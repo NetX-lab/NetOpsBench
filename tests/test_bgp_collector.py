@@ -35,6 +35,38 @@ def _write_topology(
         Device(name="spine1", role=DeviceRole.SPINE),
         Device(name="leaf1", role=DeviceRole.LEAF),
     ]
+    switches = [device for device in devices if device.role is not DeviceRole.CLIENT]
+    clients = [device for device in devices if device.role is DeviceRole.CLIENT]
+    while len(clients) < 2:
+        index = len(clients) + 1
+        client = Device(
+            name=f"client{index}", role=DeviceRole.CLIENT, attached_switch=switches[-1 if index == 1 else 0].name
+        )
+        devices.append(client)
+        clients.append(client)
+    from netopsbench.models.topology import Link, LinkEndpoint
+    from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
+
+    links = [
+        Link(
+            kind="fabric",
+            endpoints=(
+                LinkEndpoint(device=a.name, interface=f"eth{i}"),
+                LinkEndpoint(device=b.name, interface=f"eth{i}"),
+            ),
+        )
+        for i, (a, b) in enumerate(zip(switches, switches[1:], strict=False), start=1)
+    ]
+    links.extend(
+        Link(
+            kind="access",
+            endpoints=(
+                LinkEndpoint(device=client.attached_switch, interface=f"eth{10+i}"),
+                LinkEndpoint(device=client.name, interface="eth1"),
+            ),
+        )
+        for i, client in enumerate(clients)
+    )
     manifest = TopologyManifest(
         topology_id=name,
         name=name,
@@ -61,8 +93,9 @@ def _write_topology(
             ecmp_hash_policy_by_role={device.role: 1 for device in devices if device.role is not DeviceRole.CLIENT}
         ),
         devices=devices,
-        links=[],
+        links=links,
     )
+    manifest.pingmesh_plan = compile_pingmesh_plan(manifest)
     path.write_text(manifest.model_dump_json(), encoding="utf-8")
 
 

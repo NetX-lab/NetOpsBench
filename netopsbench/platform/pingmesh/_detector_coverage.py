@@ -1,123 +1,147 @@
-"""Coverage quality audit for bounded Pingmesh destination rotation."""
+"""Audit observations against the exact immutable offline probe plan."""
 
 from __future__ import annotations
 
 from collections import Counter
-from math import ceil
 
 
 class DetectorCoverageMixin:
-    """Audit schedule coverage without consulting fault targets."""
-
-    _pingmesh_clients: list[str]
-    _pingmesh_policy: dict
+    def _compile_coverage_expectations(self) -> None:
+        self._expected_combinations = set()
+        self._expected_frames = {}
+        self._expected_destinations = set()
+        for client in self._pingmesh_plan.clients:
+            for cycle, frame in enumerate(client.frames):
+                names = {client.targets[index] for index in frame.target_indices}
+                self._expected_frames[client.name, cycle] = (
+                    frame.destination_batch_index,
+                    frame.port_batch_index,
+                    names,
+                )
+                self._expected_combinations.update((client.name, name, frame.port_batch_index) for name in names)
+                if names:
+                    self._expected_destinations.add(frame.destination_batch_index)
 
     def summarize_coverage(self, rows: list[dict]) -> dict:
-        client_count = len(self._pingmesh_clients)
-        policy = self._pingmesh_policy
-        required_policy_fields = {
-            "destination_batch_size",
-            "rtt_port_pool_size",
-            "rtt_ports_per_cycle",
-            "coverage_epoch_cycles",
-        }
-        missing_policy_fields = sorted(required_policy_fields - set(policy))
-        if missing_policy_fields:
-            return {
-                "status": "error",
-                "coverage_status": "error",
-                "error": "Pingmesh coverage policy is missing fields: " + ", ".join(missing_policy_fields),
-            }
-        destination_count = max(0, client_count - 1)
-        destination_batch_size = policy["destination_batch_size"] or max(1, destination_count)
-        port_pool_size = int(policy["rtt_port_pool_size"])
-        ports_per_cycle = int(policy["rtt_ports_per_cycle"])
-        expected_destination_batches = max(1, ceil(destination_count / destination_batch_size))
-        expected_port_batches = max(1, ceil(port_pool_size / ports_per_cycle))
-        expected_cycles = int(policy["coverage_epoch_cycles"])
-        if expected_cycles != expected_destination_batches * expected_port_batches:
-            return {
-                "status": "error",
-                "coverage_status": "error",
-                "error": "Pingmesh coverage policy is missing or stale; regenerate the topology",
-            }
-
-        cycle_rows = [row for row in rows if row.get("probe_cycle") is not None]
-        cycles = {int(row["probe_cycle"]) for row in cycle_rows}
-        destination_batches = {
-            int(row["destination_batch_index"]) for row in rows if row.get("destination_batch_index") is not None
-        }
-        port_batches = {int(row["port_batch_index"]) for row in rows if row.get("port_batch_index") is not None}
-        sources = {row.get("src_name") for row in cycle_rows if row.get("src_name")}
-        cycles_by_source: dict[str, set[int]] = {}
-        for row in cycle_rows:
-            source = row.get("src_name")
-            if source:
-                cycles_by_source.setdefault(source, set()).add(int(row["probe_cycle"]))
-        pair_counts = Counter(
-            (row.get("src_name"), row.get("dst_name"))
-            for row in cycle_rows
-            if row.get("src_name") and row.get("dst_name")
-        )
-        pair_port_counts = Counter(
-            (row.get("src_name"), row.get("dst_name"), int(row["port_batch_index"]))
-            for row in cycle_rows
-            if row.get("src_name") and row.get("dst_name") and row.get("port_batch_index") is not None
-        )
-        observed_cycle_span = max(cycles) - min(cycles) + 1 if cycles else 0
-        source_cycle_spans = [
-            max(source_cycles) - min(source_cycles) + 1 for source_cycles in cycles_by_source.values() if source_cycles
-        ]
-        min_source_cycle_span = min(source_cycle_spans, default=0)
-        missing_destination_batches = sorted(set(range(expected_destination_batches)) - destination_batches)
-        missing_port_batches = sorted(set(range(expected_port_batches)) - port_batches)
-        missing_sources = max(0, client_count - len(sources))
-        regular_loss_by_socket_batch = _regular_loss_by_socket_batch(cycle_rows)
-        invalid_socket_rows = sum(
-            1
-            for row in cycle_rows
+        plan = self._pingmesh_plan
+        settings = plan.settings
+        expected = self._expected_combinations
+        valid = []
+        invalid_rows = []
+        invalid_tasks = set()
+        invalid_socket_rows = unexpected_rows = 0
+        incomplete_record_rows = 0
+        unexpected_records = []
+        for row in rows:
+            if any(
+                row.get(key) in (None, "")
+                for key in (
+                    "plan_id",
+                    "src_name",
+                    "dst_name",
+                    "probe_cycle",
+                    "destination_batch_index",
+                    "port_batch_index",
+                    "rtt_ports_active",
+                    "rtt_ports_total",
+                    "local_probe_errors",
+                )
+            ):
+                incomplete_record_rows += 1
+            cycle = _field_int(row, "probe_cycle")
+            source, destination = row.get("src_name"), row.get("dst_name")
+            frame = (
+                self._expected_frames.get((source, cycle % settings.coverage_epoch_cycles))
+                if cycle is not None and cycle >= 0
+                else None
+            )
+            if (
+                row.get("plan_id") != settings.plan_id
+                or frame is None
+                or _field_int(row, "destination_batch_index") != frame[0]
+                or _field_int(row, "port_batch_index") != frame[1]
+                or destination not in frame[2]
+            ):
+                unexpected_rows += 1
+                if len(unexpected_records) < 20:
+                    unexpected_records.append(
+                        {
+                            key: row.get(key)
+                            for key in (
+                                "_time",
+                                "src_name",
+                                "dst_name",
+                                "plan_id",
+                                "probe_cycle",
+                                "destination_batch_index",
+                                "port_batch_index",
+                            )
+                        }
+                    )
+                continue
             if not _has_valid_socket_batch(
                 row,
-                port_pool_size=port_pool_size,
-                ports_per_cycle=ports_per_cycle,
-                port_batch_count=expected_port_batches,
-                regular_loss_by_socket_batch=regular_loss_by_socket_batch,
-            )
-        )
-        expected_pairs = client_count * destination_count
-        expected_pair_port_combinations = expected_pairs * expected_port_batches
-        complete = bool(
-            not missing_destination_batches
-            and not missing_port_batches
-            and missing_sources == 0
-            and len(pair_counts) == expected_pairs
-            and len(pair_port_counts) == expected_pair_port_combinations
-            and invalid_socket_rows == 0
-        )
-
+                source_ports=settings.source_ports,
+                port_batches=settings.port_batches,
+            ):
+                invalid_socket_rows += 1
+                invalid_tasks.add((source, destination, frame[1]))
+                invalid_rows.append(
+                    {
+                        "src": source,
+                        "dst": destination,
+                        "port_batch_index": frame[1],
+                        "probe_cycle": cycle,
+                        "time": str(row.get("_time") or row.get("time") or ""),
+                        "local_probe_errors": _field_int(row, "local_probe_errors"),
+                        "socket_batch_valid": _has_expected_socket_batch(
+                            row, source_ports=settings.source_ports, port_batches=settings.port_batches
+                        ),
+                    }
+                )
+                continue
+            valid.append(row)
+        combinations = Counter((row["src_name"], row["dst_name"], int(row["port_batch_index"])) for row in valid)
+        pairs = Counter((row["src_name"], row["dst_name"]) for row in valid)
+        missing = expected - combinations.keys()
+        sources = {row["src_name"] for row in valid}
+        cycles_by_source = {}
+        for row in valid:
+            cycles_by_source.setdefault(row["src_name"], set()).add(int(row["probe_cycle"]))
+        cycles = {int(row["probe_cycle"]) for row in valid}
+        ports = {int(row["port_batch_index"]) for row in valid}
+        destinations = {int(row["destination_batch_index"]) for row in valid}
+        complete = not missing and not unexpected_rows and not invalid_socket_rows
         return {
             "status": "ok",
+            "plan_id": settings.plan_id,
             "coverage_status": "complete" if complete else "incomplete",
-            "expected_epoch_cycles": expected_cycles,
-            "observed_cycle_span": observed_cycle_span,
-            "min_source_cycle_span": min_source_cycle_span,
-            "source_clients_observed": len(sources),
-            "expected_source_clients": client_count,
-            "destination_pairs_observed": len(pair_counts),
-            "expected_destination_pairs": expected_pairs,
-            "pair_port_combinations_observed": len(pair_port_counts),
-            "expected_pair_port_combinations": expected_pair_port_combinations,
-            "missing_pair_port_combinations": max(
-                0,
-                expected_pair_port_combinations - len(pair_port_counts),
+            "expected_epoch_cycles": settings.coverage_epoch_cycles,
+            "observed_cycle_span": max(cycles) - min(cycles) + 1 if cycles else 0,
+            "min_source_cycle_span": min(
+                (max(values) - min(values) + 1 for values in cycles_by_source.values()), default=0
             ),
-            "min_samples_per_pair": min(pair_counts.values(), default=0),
-            "port_batches_observed": sorted(port_batches),
-            "destination_batches_observed": sorted(destination_batches),
-            "missing_port_batches": missing_port_batches,
-            "missing_destination_batches": missing_destination_batches,
-            "missing_source_clients": missing_sources,
+            "source_clients_observed": len(sources),
+            "expected_source_clients": len(plan.clients),
+            "destination_pairs_observed": len(pairs),
+            "expected_destination_pairs": plan.directed_pair_count,
+            "pair_port_combinations_observed": len(combinations),
+            "expected_pair_port_combinations": len(expected),
+            "missing_pair_port_combinations": len(missing),
+            "missing_tasks": sorted(missing),
+            "invalid_tasks": sorted(invalid_tasks),
+            "invalid_rows": invalid_rows,
+            "observable_pairs": sorted(pairs),
+            "min_samples_per_pair": min(pairs.values(), default=0),
+            "port_batches_observed": sorted(ports),
+            "destination_batches_observed": sorted(destinations),
+            "missing_port_batches": sorted(set(range(len(settings.port_batches))) - ports),
+            "missing_destination_batches": sorted(self._expected_destinations - destinations),
+            "missing_source_clients": len(plan.clients) - len(sources),
             "invalid_socket_rows": invalid_socket_rows,
+            "unexpected_rows": unexpected_rows,
+            "incomplete_record_rows": incomplete_record_rows,
+            "unexpected_records": unexpected_records,
         }
 
 
@@ -128,28 +152,18 @@ def _field_int(row: dict, field: str) -> int | None:
         return None
 
 
-def _has_valid_socket_batch(
-    row: dict,
-    *,
-    port_pool_size: int,
-    ports_per_cycle: int,
-    port_batch_count: int,
-    regular_loss_by_socket_batch: dict[tuple[str, str, int], int],
-) -> bool:
-    port_batch_index = _field_int(row, "port_batch_index")
-    if port_batch_index is None or not 0 <= port_batch_index < port_batch_count:
+def _has_valid_socket_batch(row, *, source_ports, port_batches) -> bool:
+    return _has_expected_socket_batch(row, source_ports=source_ports, port_batches=port_batches) and (
+        _field_int(row, "local_probe_errors") == 0
+    )
+
+
+def _has_expected_socket_batch(row, *, source_ports, port_batches) -> bool:
+    port_batch = _field_int(row, "port_batch_index")
+    if port_batch is None or not 0 <= port_batch < len(port_batches):
         return False
-    expected_active = min(ports_per_cycle, port_pool_size - port_batch_index * ports_per_cycle)
-    return (
-        _field_int(row, "rtt_ports_total") == port_pool_size
-        and _field_int(row, "rtt_ports_active") == expected_active
-        and (
-            _field_int(row, "local_probe_errors") == 0
-            or is_explained_df_send_error(
-                row,
-                regular_loss_by_socket_batch=regular_loss_by_socket_batch,
-            )
-        )
+    return _field_int(row, "rtt_ports_total") == len(source_ports) and _field_int(row, "rtt_ports_active") == len(
+        port_batches[port_batch]
     )
 
 

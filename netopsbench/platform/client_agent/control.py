@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from typing import Any
 
 from .contract import CONTROL_PROTOCOL_VERSION
@@ -32,11 +33,20 @@ def request_agent(
         ).encode()
         + b"\n"
     )
+    deadline = time.monotonic() + timeout
+
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError("native client-agent control deadline exceeded")
+        return seconds
+
     with socket.create_connection((host, port), timeout=timeout) as connection:
+        connection.settimeout(remaining())
         connection.sendall(request)
-        connection.settimeout(timeout)
         response = bytearray()
         while b"\n" not in response:
+            connection.settimeout(remaining())
             chunk = connection.recv(min(4096, MAX_CONTROL_RESPONSE_BYTES + 1 - len(response)))
             if not chunk:
                 break

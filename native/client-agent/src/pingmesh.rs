@@ -7,8 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use blake2::Blake2sVar;
-use blake2::digest::{Update, VariableOutput};
 use nix::errno::Errno;
 use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrIn, recvmsg};
 use nix::sys::time::TimeValLike;
@@ -19,11 +17,10 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep, sleep_until, timeout};
 
-use crate::config::{Client, ClientAgentConfig, PINGMESH_CONTROL_PORT};
+use crate::config::{Client, ClientAgentConfig, ClientProbePlan, PINGMESH_CONTROL_PORT, ProbeKind};
 use crate::control::{self, AgentStatus, ResponseEnvelope};
 
 const UDP_DESTINATION_PORT: u16 = 33434;
-const RTT_SOURCE_PORT_BASE: u16 = 33000;
 const PROBE_MAGIC: u32 = 0x4e4f_4250;
 const PROBE_VERSION: u8 = 2;
 const HEADER_SIZE: usize = 24;
@@ -46,12 +43,6 @@ const DF_DISCOVERY_MODE: libc::c_int = libc::IP_PMTUDISC_PROBE;
 struct Target {
     client: Client,
     path_type: &'static str,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProbeKind {
-    Rtt,
-    Df,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,15 +99,17 @@ struct IngestConfig {
 pub async fn run(path: &Path) -> Result<()> {
     let config = ClientAgentConfig::load(path)?;
     let local = config.local_client()?;
+    let plan = config.load_client_plan(path, &local)?;
     let status = Arc::new(Mutex::new(AgentStatus::default()));
     let responder = create_udp_socket(local.data_ip, UDP_DESTINATION_PORT, true, true)
         .context("create Pingmesh responder")?;
-    let probe_sockets =
-        create_probe_sockets(local.data_ip, config.pingmesh_policy.rtt_port_pool_size)?;
+    let probe_sockets = create_probe_sockets(local.data_ip, &config.pingmesh_plan.source_ports)?;
     let ingest = IngestConfig::from_environment()?;
     let (metrics_tx, metrics_rx) = mpsc::channel(METRICS_QUEUE_CAPACITY);
     {
         let mut current = status.lock().await;
+        current.plan_id = config.pingmesh_plan.plan_id.clone();
+        current.config_schema_version = config.schema_version;
         current.ready = true;
         current.active_listeners = 1;
         current.expected_listeners = 1;
@@ -145,6 +138,7 @@ pub async fn run(path: &Path) -> Result<()> {
         config,
         local,
         probe_sockets,
+        plan,
         metrics_tx,
         Arc::clone(&status),
     );
@@ -161,12 +155,9 @@ pub async fn run(path: &Path) -> Result<()> {
     }
 }
 
-fn create_probe_sockets(data_ip: Ipv4Addr, count: usize) -> Result<Vec<ProbeSocket>> {
-    let mut sockets = Vec::with_capacity(count);
-    for offset in 0..count {
-        let source_port = RTT_SOURCE_PORT_BASE
-            .checked_add(u16::try_from(offset).context("source-port pool is too large")?)
-            .context("source-port pool overflow")?;
+fn create_probe_sockets(data_ip: Ipv4Addr, ports: &[u16]) -> Result<Vec<ProbeSocket>> {
+    let mut sockets = Vec::with_capacity(ports.len());
+    for &source_port in ports {
         let socket = create_udp_socket(data_ip, source_port, true, false)
             .with_context(|| format!("bind Pingmesh source port {source_port}"))?;
         set_df(socket.get_ref())?;
@@ -276,26 +267,52 @@ async fn probe_loop(
     config: ClientAgentConfig,
     local: Client,
     sockets: Vec<ProbeSocket>,
+    plan: ClientProbePlan,
     metrics_tx: mpsc::Sender<String>,
     status: Arc<Mutex<AgentStatus>>,
 ) -> Result<()> {
-    let targets = build_targets(&config, &local);
-    let policy = config.pingmesh_policy.clone();
-    let destination_batch_size = policy
-        .destination_batch_size
-        .unwrap_or(targets.len())
-        .clamp(1, targets.len());
-    let destination_phase = config
-        .clients
+    let settings = &config.pingmesh_plan;
+    let targets = plan
+        .targets
         .iter()
-        .position(|client| client.name == local.name)
-        .unwrap_or(0);
-    let host_seed = stable_host_seed(&local.name);
-    let port_phase = host_seed as usize % policy.port_batch_count;
-    let startup_jitter = (host_seed % 10_000) as f64 / 10_000.0 * policy.cycle_interval_seconds;
-    sleep(Duration::from_secs_f64(startup_jitter)).await;
-
-    let cycle_duration = Duration::from_secs_f64(policy.cycle_interval_seconds);
+        .map(|name| {
+            let client = config
+                .clients
+                .iter()
+                .find(|client| &client.name == name)
+                .expect("validated target")
+                .clone();
+            let path_type = if client.rack == local.rack {
+                "same_rack"
+            } else {
+                "cross_rack"
+            };
+            Target { client, path_type }
+        })
+        .collect::<Vec<_>>();
+    let socket_batches = settings
+        .port_batches
+        .iter()
+        .map(|indices| {
+            indices
+                .iter()
+                .map(|&index| &sockets[index])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let frames = plan
+        .frames
+        .iter()
+        .map(|frame| {
+            frame
+                .target_indices
+                .iter()
+                .map(|&index| targets[index].clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    sleep(Duration::from_millis(plan.startup_delay_ms)).await;
+    let cycle_duration = Duration::from_secs(settings.cycle_interval_seconds);
     let probe_duration = probe_work_duration(cycle_duration);
     let mut cadence = interval_at(Instant::now(), cycle_duration);
     cadence.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -305,38 +322,38 @@ async fn probe_loop(
     loop {
         cadence.tick().await;
         let cycle_started = Instant::now();
-        let (destination_batch, port_batch) = probe_batch_indices(
-            cycle,
-            policy.destination_batch_count,
-            policy.port_batch_count,
-            port_phase,
-        );
-        let active_targets = rotating_destination_batch(
-            &targets,
-            destination_batch_size,
-            destination_batch,
-            destination_phase,
-        );
-        let port_start = port_batch * policy.rtt_ports_per_cycle;
-        let port_end = (port_start + policy.rtt_ports_per_cycle).min(sockets.len());
-        let active_sockets = &sockets[port_start..port_end];
-        let results = run_probe_cycle(
-            &active_targets,
-            active_sockets,
-            policy.df_payload_size,
-            probe_duration,
-            host_seed.wrapping_add(cycle.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
-            &mut sequence,
-        )
-        .await?;
+        let frame_index = cycle as usize % plan.frames.len();
+        let frame = &plan.frames[frame_index];
+        let active_targets = &frames[frame_index];
+        let active_sockets = &socket_batches[frame.port_batch_index];
+        let results = if active_targets.is_empty() {
+            Vec::new()
+        } else {
+            run_probe_cycle(
+                active_targets,
+                active_sockets,
+                settings.df_payload_size,
+                probe_duration,
+                &frame.probes,
+                &mut sequence,
+            )
+            .await?
+        };
 
         for (target, mut result) in active_targets.iter().zip(results) {
             result.probe_cycle = cycle;
-            result.destination_batch_index = destination_batch;
-            result.port_batch_index = port_batch;
+            result.destination_batch_index = frame.destination_batch_index;
+            result.port_batch_index = frame.port_batch_index;
             result.rtt_ports_total = sockets.len();
             let timestamp = realtime_ns();
-            for line in metric_lines(&config.topology_id, &local, target, &result, timestamp) {
+            for line in metric_lines(
+                &config.topology_id,
+                &settings.plan_id,
+                &local,
+                target,
+                &result,
+                timestamp,
+            ) {
                 if metrics_tx.try_send(line).is_err() {
                     let mut current = status.lock().await;
                     current.ready = false;
@@ -363,18 +380,17 @@ fn probe_work_duration(cycle_duration: Duration) -> Duration {
 
 async fn run_probe_cycle(
     targets: &[Target],
-    sockets: &[ProbeSocket],
+    sockets: &[&ProbeSocket],
     df_payload_size: usize,
     duration: Duration,
-    schedule_phase: u64,
+    send_queue: &[(ProbeKind, usize, usize)],
     sequence: &mut u64,
 ) -> Result<Vec<ProbeResult>> {
     let mut rtt_stats = vec![ProbeStats::default(); targets.len()];
     let mut df_stats = vec![ProbeStats::default(); targets.len()];
+    let mut receive_buffer = vec![0_u8; 65_535];
     drain_sockets(sockets)?;
     let mut pending: HashMap<u64, Pending> = HashMap::new();
-    let mut send_queue = build_probe_schedule(targets.len(), sockets.len());
-    rotate_probe_schedule(&mut send_queue, schedule_phase);
 
     let started = Instant::now();
     let deadline = started + duration;
@@ -385,7 +401,7 @@ async fn run_probe_cycle(
         Duration::ZERO
     };
 
-    for (index, (kind, target_index, socket_index)) in send_queue.into_iter().enumerate() {
+    for (index, (kind, target_index, socket_index)) in send_queue.iter().copied().enumerate() {
         sleep_until(started + spacing.mul_f64(index as f64)).await;
         send_probe(
             kind,
@@ -399,14 +415,39 @@ async fn run_probe_cycle(
             &mut rtt_stats,
             &mut df_stats,
         )?;
+        drain_replies(
+            sockets,
+            &mut pending,
+            &mut rtt_stats,
+            &mut df_stats,
+            &mut receive_buffer,
+        )?;
     }
 
-    drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+    drain_replies(
+        sockets,
+        &mut pending,
+        &mut rtt_stats,
+        &mut df_stats,
+        &mut receive_buffer,
+    )?;
     sleep(REPLY_DRAIN_INTERVAL).await;
-    drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+    drain_replies(
+        sockets,
+        &mut pending,
+        &mut rtt_stats,
+        &mut df_stats,
+        &mut receive_buffer,
+    )?;
     let unanswered_df = unanswered_df_targets(&pending);
-    for (target_index, socket_index) in unanswered_df {
-        for _ in 0..DF_CONFIRMATION_PROBES {
+    // Keep all sixteen confirmations, but space retry rounds and receive
+    // between them. A burst of jumbo replies can otherwise fill the local
+    // receive queue and turn transient loss into a false network MTU signal.
+    for _ in 0..DF_CONFIRMATION_PROBES {
+        if unanswered_df.is_empty() {
+            break;
+        }
+        for &(target_index, socket_index) in &unanswered_df {
             send_probe(
                 ProbeKind::Df,
                 target_index,
@@ -420,32 +461,36 @@ async fn run_probe_cycle(
                 &mut df_stats,
             )?;
         }
+        sleep(REPLY_DRAIN_INTERVAL).await;
+        drain_replies(
+            sockets,
+            &mut pending,
+            &mut rtt_stats,
+            &mut df_stats,
+            &mut receive_buffer,
+        )?;
     }
     while Instant::now() < deadline && !pending.is_empty() {
-        drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+        drain_replies(
+            sockets,
+            &mut pending,
+            &mut rtt_stats,
+            &mut df_stats,
+            &mut receive_buffer,
+        )?;
         sleep(REPLY_DRAIN_INTERVAL).await;
     }
-    drain_replies(sockets, &mut pending, &mut rtt_stats, &mut df_stats)?;
+    drain_replies(
+        sockets,
+        &mut pending,
+        &mut rtt_stats,
+        &mut df_stats,
+        &mut receive_buffer,
+    )?;
 
     Ok((0..targets.len())
         .map(|index| build_result(&rtt_stats[index], &df_stats[index], sockets.len()))
         .collect())
-}
-
-fn build_probe_schedule(
-    target_count: usize,
-    socket_count: usize,
-) -> Vec<(ProbeKind, usize, usize)> {
-    let mut schedule = Vec::new();
-    for target_index in 0..target_count {
-        for socket_index in 0..socket_count {
-            schedule.push((ProbeKind::Rtt, target_index, socket_index));
-        }
-        if socket_count > 0 {
-            schedule.push((ProbeKind::Df, target_index, target_index % socket_count));
-        }
-    }
-    schedule
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -454,7 +499,7 @@ fn send_probe(
     target_index: usize,
     socket_index: usize,
     targets: &[Target],
-    sockets: &[ProbeSocket],
+    sockets: &[&ProbeSocket],
     df_payload_size: usize,
     sequence: &mut u64,
     pending: &mut HashMap<u64, Pending>,
@@ -520,12 +565,6 @@ fn send_probe(
     Ok(())
 }
 
-fn rotate_probe_schedule<T>(queue: &mut [T], phase: u64) {
-    if !queue.is_empty() {
-        queue.rotate_left((phase as usize) % queue.len());
-    }
-}
-
 fn unanswered_df_targets(pending: &HashMap<u64, Pending>) -> Vec<(usize, usize)> {
     pending
         .values()
@@ -534,7 +573,7 @@ fn unanswered_df_targets(pending: &HashMap<u64, Pending>) -> Vec<(usize, usize)>
         .collect()
 }
 
-fn drain_sockets(sockets: &[ProbeSocket]) -> Result<()> {
+fn drain_sockets(sockets: &[&ProbeSocket]) -> Result<()> {
     let mut buffer = vec![0_u8; 65_535];
     for socket in sockets {
         loop {
@@ -549,15 +588,15 @@ fn drain_sockets(sockets: &[ProbeSocket]) -> Result<()> {
 }
 
 fn drain_replies(
-    sockets: &[ProbeSocket],
+    sockets: &[&ProbeSocket],
     pending: &mut HashMap<u64, Pending>,
     rtt_stats: &mut [ProbeStats],
     df_stats: &mut [ProbeStats],
+    buffer: &mut [u8],
 ) -> Result<()> {
-    let mut buffer = vec![0_u8; 65_535];
     for socket in sockets {
         loop {
-            let packet = match recv_timestamped(socket.socket.get_ref(), &mut buffer) {
+            let packet = match recv_timestamped(socket.socket.get_ref(), buffer) {
                 Ok(packet) => packet,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => return Err(error).context("receive Pingmesh reply"),
@@ -698,73 +737,6 @@ fn realtime_ns() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn build_targets(config: &ClientAgentConfig, local: &Client) -> Vec<Target> {
-    let local_index = config
-        .clients
-        .iter()
-        .position(|client| client.name == local.name)
-        .expect("validated local client");
-    (1..config.clients.len())
-        .map(|offset| {
-            let client = config.clients[(local_index + offset) % config.clients.len()].clone();
-            let path_type = if client.rack == local.rack {
-                "same_rack"
-            } else {
-                "cross_rack"
-            };
-            Target { client, path_type }
-        })
-        .collect()
-}
-
-fn rotating_destination_batch(
-    targets: &[Target],
-    batch_size: usize,
-    batch_index: usize,
-    phase_offset: usize,
-) -> Vec<Target> {
-    if targets.is_empty() {
-        return Vec::new();
-    }
-    let size = batch_size.clamp(1, targets.len());
-    let batch_count = targets.len().div_ceil(size);
-    let phase = phase_offset % targets.len();
-    let ordered = targets[phase..]
-        .iter()
-        .chain(targets[..phase].iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    ordered
-        .into_iter()
-        .skip(batch_index % batch_count)
-        .step_by(batch_count)
-        .collect()
-}
-
-fn probe_batch_indices(
-    cycle: u64,
-    destination_batch_count: usize,
-    port_batch_count: usize,
-    port_phase: usize,
-) -> (usize, usize) {
-    let destination_count = destination_batch_count.max(1);
-    let port_count = port_batch_count.max(1);
-    let epoch_cycle = cycle as usize % (destination_count * port_count);
-    let destination_batch = epoch_cycle % destination_count;
-    let port_round = epoch_cycle / destination_count;
-    (destination_batch, (port_round + port_phase) % port_count)
-}
-
-fn stable_host_seed(hostname: &str) -> u64 {
-    let mut hasher = Blake2sVar::new(8).expect("BLAKE2s supports an eight-byte digest");
-    hasher.update(hostname.as_bytes());
-    let mut digest = [0_u8; 8];
-    hasher
-        .finalize_variable(&mut digest)
-        .expect("digest buffer has the configured size");
-    u64::from_be_bytes(digest)
-}
-
 fn build_result(rtt: &ProbeStats, df: &ProbeStats, active_ports: usize) -> ProbeResult {
     let rtt_sent = valid_sent(rtt);
     let df_sent = valid_sent(df);
@@ -822,13 +794,14 @@ fn percentile(values: &[f64], quantile: f64) -> f64 {
 
 fn metric_lines(
     topology_id: &str,
+    plan_id: &str,
     source: &Client,
     target: &Target,
     result: &ProbeResult,
     timestamp: u64,
 ) -> Vec<String> {
     let tags = format!(
-        "src_ip={},dst_ip={},src_name={},dst_name={},src_leaf={},dst_leaf={},path_type={},topology_id={}",
+        "src_ip={},dst_ip={},src_name={},dst_name={},src_leaf={},dst_leaf={},path_type={},topology_id={},plan_id={}",
         escape_tag(&source.data_ip.to_string()),
         escape_tag(&target.client.data_ip.to_string()),
         escape_tag(&source.name),
@@ -837,6 +810,7 @@ fn metric_lines(
         escape_tag(&target.client.leaf),
         target.path_type,
         escape_tag(topology_id),
+        escape_tag(plan_id),
     );
     let fields = format!(
         "rtt_min={},rtt_avg={},rtt_max={},rtt_p90={},rtt_p99={},packets_sent={}i,packets_lost={}i,packet_loss={},rtt_ports_active={}i,rtt_ports_total={}i,probe_cycle={}i,destination_batch_index={}i,port_batch_index={}i,df_packets_sent={}i,df_packets_lost={}i,df_mtu_drops={}i,local_probe_errors={}i",
@@ -1021,47 +995,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_schedule_rotation_is_deterministic_and_source_specific() {
-        let original = vec![0, 1, 2, 3, 4];
-        let mut first = original.clone();
-        let mut repeated = original.clone();
-        let mut other = original;
-
-        rotate_probe_schedule(&mut first, 2);
-        rotate_probe_schedule(&mut repeated, 2);
-        rotate_probe_schedule(&mut other, 3);
-
-        assert_eq!(first, repeated);
-        assert_ne!(first, other);
-        assert_eq!(first, vec![2, 3, 4, 0, 1]);
-    }
-
-    #[test]
-    fn probe_schedule_starts_with_one_df_sample_per_path() {
-        let schedule = build_probe_schedule(2, 4);
-
-        for target_index in 0..2 {
-            assert_eq!(
-                schedule
-                    .iter()
-                    .filter(|(kind, target, _socket)| {
-                        *kind == ProbeKind::Df && *target == target_index
-                    })
-                    .count(),
-                1,
-            );
-        }
-        assert_eq!(1 + DF_CONFIRMATION_PROBES, 16);
-        assert_eq!(
-            schedule
-                .iter()
-                .filter(|(kind, _target, _socket)| *kind == ProbeKind::Rtt)
-                .count(),
-            8,
-        );
-    }
-
-    #[test]
     fn confirmation_targets_only_unanswered_df_probes() {
         let pending = HashMap::from([
             (
@@ -1086,6 +1019,76 @@ mod tests {
 
         assert_eq!(unanswered_df_targets(&pending), vec![(4, 2)]);
         assert!(unanswered_df_targets(&HashMap::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn confirmation_recovers_initial_df_loss_without_flooding_reply_sockets() {
+        let results = run_df_confirmation_fixture(false).await;
+        assert!(results.iter().all(|result| result.packets_lost == 0));
+        assert!(results.iter().all(|result| result.df_packets_sent == 16));
+        assert!(results.iter().all(|result| result.df_packets_lost < 16));
+    }
+
+    #[tokio::test]
+    async fn confirmation_preserves_real_df_blackholes() {
+        let results = run_df_confirmation_fixture(true).await;
+        assert!(results.iter().all(|result| result.packets_lost == 0));
+        assert!(results.iter().all(|result| result.df_packets_sent == 16));
+        assert!(results.iter().all(|result| result.df_packets_lost == 16));
+    }
+
+    async fn run_df_confirmation_fixture(drop_all_df: bool) -> Vec<ProbeResult> {
+        let mut responders = Vec::new();
+        let mut targets = Vec::new();
+        for number in 1..=32_u8 {
+            let data_ip = Ipv4Addr::new(127, 0, if drop_all_df { 2 } else { 1 }, number);
+            let socket = tokio::net::UdpSocket::bind((data_ip, UDP_DESTINATION_PORT))
+                .await
+                .unwrap();
+            responders.push(tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 65_535];
+                let mut initial_df_dropped = false;
+                loop {
+                    let (bytes, peer) = socket.recv_from(&mut buffer).await.unwrap();
+                    if bytes > RTT_PAYLOAD_BYTES && (drop_all_df || !initial_df_dropped) {
+                        initial_df_dropped = true;
+                        continue;
+                    }
+                    socket.send_to(&buffer[..bytes], peer).await.unwrap();
+                }
+            }));
+            targets.push(Target {
+                client: Client {
+                    name: format!("client{number}"),
+                    data_ip,
+                    management_ip: Ipv4Addr::LOCALHOST,
+                    leaf: format!("leaf{number}"),
+                    rack: format!("rack{number}"),
+                },
+                path_type: "cross_rack",
+            });
+        }
+        let owned_sockets = create_probe_sockets(Ipv4Addr::LOCALHOST, &[0; 4]).unwrap();
+        let sockets = owned_sockets.iter().collect::<Vec<_>>();
+        let mut probes = Vec::new();
+        for target in 0..targets.len() {
+            probes.extend((0..sockets.len()).map(|socket| (ProbeKind::Rtt, target, socket)));
+            probes.push((ProbeKind::Df, target, target % sockets.len()));
+        }
+        let results = run_probe_cycle(
+            &targets,
+            &sockets,
+            9_000,
+            Duration::from_millis(650),
+            &probes,
+            &mut 0,
+        )
+        .await
+        .unwrap();
+        for responder in responders {
+            responder.abort();
+        }
+        results
     }
 
     #[test]
@@ -1158,52 +1161,6 @@ mod tests {
     }
 
     #[test]
-    fn host_seed_is_stable_for_the_same_client() {
-        assert_eq!(stable_host_seed("client-17"), 13_881_939_690_399_091_852);
-    }
-
-    #[test]
-    fn destination_and_port_rotation_is_deterministic() {
-        let clients = (0..8)
-            .map(|index| Client {
-                name: format!("client{index}"),
-                data_ip: Ipv4Addr::new(192, 0, 2, index + 1),
-                management_ip: Ipv4Addr::new(172, 20, 0, index + 1),
-                rack: format!("rack{}", index / 2),
-                leaf: format!("leaf{}", index / 2),
-            })
-            .collect::<Vec<_>>();
-        let targets = clients[1..]
-            .iter()
-            .cloned()
-            .map(|client| Target {
-                client,
-                path_type: "cross_rack",
-            })
-            .collect::<Vec<_>>();
-        let batches = (0..3)
-            .map(|batch| {
-                rotating_destination_batch(&targets, 3, batch, 2)
-                    .into_iter()
-                    .map(|target| target.client.name)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            batches,
-            vec![
-                vec!["client3", "client6", "client2"],
-                vec!["client4", "client7"],
-                vec!["client5", "client1"],
-            ]
-        );
-        assert_eq!(probe_batch_indices(0, 3, 4, 2), (0, 2));
-        assert_eq!(probe_batch_indices(3, 3, 4, 2), (0, 3));
-        assert_eq!(probe_batch_indices(12, 3, 4, 2), (0, 2));
-    }
-
-    #[test]
     fn probe_work_uses_the_topology_cycle_instead_of_a_fixed_cap() {
         assert_eq!(
             probe_work_duration(Duration::from_secs(1)),
@@ -1272,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn line_protocol_snapshot_remains_compatible() {
+    fn line_protocol_includes_plan_identity() {
         let source = Client {
             name: "client1".into(),
             data_ip: "192.0.2.1".parse().unwrap(),
@@ -1310,12 +1267,12 @@ mod tests {
             local_probe_errors: 0,
         };
 
-        let lines = metric_lines("topology=1", &source, &target, &result, 123);
+        let lines = metric_lines("topology=1", "plan1", &source, &target, &result, 123);
 
         assert_eq!(lines.len(), 1);
         assert_eq!(
             lines[0],
-            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,df_packets_sent=1i,df_packets_lost=0i,df_mtu_drops=0i,local_probe_errors=0i 123"
+            "pingmesh,src_ip=192.0.2.1,dst_ip=192.0.2.2,src_name=client1,dst_name=client2,src_leaf=leaf1,dst_leaf=leaf2,path_type=cross_rack,topology_id=topology\\=1,plan_id=plan1 rtt_min=1,rtt_avg=2,rtt_max=3,rtt_p90=2.5,rtt_p99=2.9,packets_sent=4i,packets_lost=1i,packet_loss=25,rtt_ports_active=4i,rtt_ports_total=16i,probe_cycle=7i,destination_batch_index=1i,port_batch_index=2i,df_packets_sent=1i,df_packets_lost=0i,df_mtu_drops=0i,local_probe_errors=0i 123"
         );
     }
 }

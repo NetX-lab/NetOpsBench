@@ -197,6 +197,18 @@ def build_bgp_transition_line(
     return f"bgp_session_events,{','.join(tags)} {','.join(fields)} {timestamp_ns}"
 
 
+def build_prefix_count_line(device, neighbor, previous, current, timestamp_ns, topology_id):
+    tags = [
+        f"source={_escape_tag(device)}",
+        f"neighbor_address={_escape_tag(neighbor)}",
+        f"topology_id={_escape_tag(topology_id)}",
+    ]
+    return (
+        f"bgp_prefix_events,{','.join(tags)} prefixes_before={int(previous['prefixes_received'])}i,"
+        f"prefixes_after={int(current['prefixes_received'])}i {timestamp_ns}"
+    )
+
+
 class BgpTransitionTracker:
     """Maintain one collector process' latest BGP states and emit transitions."""
 
@@ -239,6 +251,15 @@ class BgpTransitionTracker:
                             timestamp_ns,
                             topology_id,
                         )
+                    )
+                if (
+                    previous
+                    and previous.get("prefixes_received") is not None
+                    and current.get("prefixes_received") is not None
+                    and previous["prefixes_received"] != current["prefixes_received"]
+                ):
+                    lines.append(
+                        build_prefix_count_line(device, neighbor, previous, current, timestamp_ns, topology_id)
                     )
                 self._previous[key] = current
 
@@ -291,9 +312,9 @@ def _collect_device_bgp(
         if result.returncode != 0:
             error_type = "command_failed"
         else:
-            rows = parse_bgp_summary(result.stdout)
-            if result.stdout.strip() and "Neighbor" not in result.stdout and not rows:
-                error_type = "parser_failed"
+            rows = parse_bgp_summary(result.stdout, strict=True)
+    except ValueError:
+        error_type = "parser_failed"
     except subprocess.TimeoutExpired:
         error_type = "timeout"
     except Exception:

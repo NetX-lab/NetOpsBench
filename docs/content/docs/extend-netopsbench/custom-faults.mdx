@@ -9,20 +9,57 @@ Fault extension changes the benchmark fault surface. Most agent work should use 
 
 Scenario YAML references faults by `fault_type`.
 
-| Fault type | Category | Requires interface | Notes |
-|---|---|:---:|---|
-| `link_down` | Link | yes | Brings both physical endpoints of the selected link down. |
-| `link_flapping` | Link | no | Repeatedly toggles both endpoints of a link. Parameters: `iterations`, `down_time`, `up_time`. |
-| `mtu_mismatch` | Impairment | yes | Changes interface MTU to break path MTU. |
-| `packet_loss` | Impairment | no | Adds tc-based loss on the target device. |
-| `packet_corruption` | Impairment | no | Adds tc-based corruption. |
-| `high_latency` | Impairment | no | Adds tc-based delay. Parameter: `latency_ms`. |
-| `bgp_neighbor_misconfig` | Routing (BGP) | no | Misconfigures a BGP neighbor. |
-| `static_route_misconfig` | Routing (Static) | no | Installs an incorrect static route. Alias: `static_route_misconfiguration`. |
-| `blackhole_route` | Routing (Static) | no | Installs a route pointing to a null next-hop. Requires `target_prefix`. |
-| `route_policy_misconfig` | Routing (Policy) | no | Misconfigures a prefix list or route-map. |
-| `device_down` | System | no | Stops the target SONiC container, making its management, control, and data planes unavailable until recovery restarts it. |
-| `acl_misconfig` | ACL | no | Adds an ACL that blocks expected traffic. Alias: `acl_misconfiguration`. |
+The [benchmark methodology](/docs/run-benchmarks/methodology) lists all 24
+canonical labels, their 27 mechanisms, coverage units and corpus sizes.
+`bgp_neighbor_misconfig`, `route_policy_misconfig` and `acl_misconfig` are
+retired. Regenerate scenarios; no old-format converter is supplied.
+
+Interface faults include links, interface addressing, netem, MTU and all ACL
+variants. Each applies to one explicit data interface. ACLs record interface,
+direction, match fields and counters; L4 uses UDP destination port 33434 by
+default and ICMP as a protocol control. Software packet corruption is not a
+physical CRC fault.
+
+Merged publication, filtering and ECMP labels require an explicit mechanism
+inside `episode.parameters`. BGP neighbor faults require `peer_ip`; prefix
+filters require `peer_ip` or `peer_ips`; loops require `next_hop`. Injected
+configuration belongs in `episode.parameters`, rather than scenario metadata.
+Built-in handlers read injection values only from `parameters`, including MTU;
+metadata does not supply fallback injection settings.
+Loops and route flapping also require `target_interface` for their fabric
+neighbor. A loop next hop must be a configured, established neighbor before
+the temporary static route is applied.
+
+BGP update-source faults reference an absent source interface. A wrong source
+IP alone can still permit a passive FRR session, so validity requires the actual
+neighbor to leave Established while other configuration remains intact.
+
+```yaml
+metadata:
+  fault_catalog_version: 2
+episode:
+  episode_id: diagnosis
+  fault_type: route_filter_misconfig
+  target_device: leaf3
+  target_prefix: 192.168.2.0/30
+  duration_seconds: 30
+  parameters:
+    mechanism: import_filter
+    peer_ips: [10.1.3.1, 10.2.3.1, 10.3.3.1, 10.4.3.1]
+```
+
+Use neighbors from the generated manifest/configuration for the selected device.
+A complete import withdrawal covers every valid source; a path reduction covers
+only some sources. Independent policies preserve unrelated prefixes and the
+original `RM-ALLOW` attachment. The wrong static next hop must be another client
+on the root leaf/edge with IP forwarding disabled. Loop validity requires an
+observed forwarding cycle or TTL exhaustion.
+
+Link and route flapping share a cancellable controller, with profile-configured phases
+(default 10 seconds faulted and 10 seconds healthy), continuing until recovery.
+They use the same 30/42/66-second scale window as all other benchmark cases. Netem refuses an existing nondefault qdisc it cannot safely
+restore. Recovery restores owned state and compensates partial writes; failure
+quarantines the runtime and preserves evidence.
 
 Common scenario fields:
 

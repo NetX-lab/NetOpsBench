@@ -37,10 +37,10 @@ added the repository root to Python's import path.
 
 ## Quick start
 
-First generate the XS benchmark assets from the repo root:
+First generate the medium benchmark assets from the repo root:
 
 ```bash
-netopsbench benchmark prepare --scales xs
+netopsbench benchmark prepare --scales medium
 ```
 
 ```python
@@ -50,7 +50,7 @@ from netopsbench.sdk import NetOpsBench, RunFailedError
 with NetOpsBench(workspace=".") as bench:
     agent = bench.agents.wrap(MinimalDeepAgent())
     run = bench.sessions.run_scenario(
-        scenario="scenarios/generated/xs/generated_link_down_xs_001.yaml",
+        scenario="scenarios/generated/medium/generated_link_down_medium_001.yaml",
         agent=agent,
     )
     try:

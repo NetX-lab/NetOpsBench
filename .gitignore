@@ -56,3 +56,6 @@ docs/.env.local
 docs/_legacy/
 .playwright-mcp/
 CLAUDE*
+
+# Locally built, reproducible runtime binaries
+netopsbench/platform/runtime/_bin/

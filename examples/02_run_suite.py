@@ -21,7 +21,6 @@ from examples._common import (
     resolve_repo_root,
     wait_and_print_run,
 )
-from examples.agents import MinimalDeepAgent
 from netopsbench.sdk import NetOpsBench
 
 
@@ -30,23 +29,24 @@ def main(
     *,
     vendor: str = "minimax",
     bench_cls=NetOpsBench,
-    agent_cls=MinimalDeepAgent,
+    agent_cls=None,
+    backend: str = "deepagent",
 ) -> int:
     repo = resolve_repo_root(repo_root)
     scenarios = require_scenarios(
         repo,
         [
-            "scenarios/generated/xs/generated_link_down_xs_001.yaml",
-            "scenarios/generated/xs/generated_packet_loss_xs_001.yaml",
-            "scenarios/generated/xs/generated_high_latency_xs_001.yaml",
+            "scenarios/generated/medium/generated_link_down_medium_001.yaml",
+            "scenarios/generated/medium/generated_packet_loss_medium_001.yaml",
+            "scenarios/generated/medium/generated_high_latency_medium_001.yaml",
         ],
         prepare_hint=(
-            "Generate benchmark assets first with " "`netopsbench benchmark prepare --scales xs` from the repo root."
+            "Generate benchmark assets first with `netopsbench benchmark prepare --scales medium` from the repo root."
         ),
     )
 
     with bench_cls(workspace=str(repo)) as bench:
-        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor)
+        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor, backend=backend)
 
         print("02 — Run suite")
         print_agent_banner("agent", vendor, raw_agent)
@@ -55,7 +55,7 @@ def main(
             run = bench.sessions.run_suite(
                 scenarios=scenarios,
                 agent=agent,
-                scale="xs",
+                scale="medium",
                 workers=3,
             )
             return wait_and_print_run(run, raise_on_failure=True)
@@ -66,4 +66,4 @@ def main(
 
 if __name__ == "__main__":
     args = build_arg_parser("Run a suite of scenarios").parse_args()
-    raise SystemExit(main(repo_root=args.repo_root, vendor=args.vendor))
+    raise SystemExit(main(repo_root=args.repo_root, vendor=args.vendor, backend=args.agent))

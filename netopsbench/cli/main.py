@@ -10,6 +10,7 @@ from pathlib import Path
 
 from netopsbench.cli.trace import add_trace_subparser, cmd_trace
 from netopsbench.logging_utils import configure_logging
+from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.platform.scenario import generator as scenario_generator
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.sdk import NetOpsBench
@@ -50,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_list.add_argument("path", nargs="?", default="scenarios", help="Scenario file or directory")
     scenario_validate = scenario_sub.add_parser("validate", help="Validate one scenario YAML")
     scenario_validate.add_argument("file", help="Scenario YAML file")
+    scenario_migrate = scenario_sub.add_parser("migrate", help="Copy scenarios to recovery policy v3")
+    scenario_migrate.add_argument("source", type=Path)
+    scenario_migrate.add_argument("--out", type=Path, required=True)
     scenario_generate = scenario_sub.add_parser("generate", help="Generate scenario YAML for one scale")
     scenario_generate.add_argument("--scale", required=True, help="Topology scale")
     scenario_generate.add_argument("--spec", help="Scenario generation spec file (default: packaged campaign)")
@@ -80,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_prepare.add_argument(
         "--scales",
         default=None,
-        help="Comma-separated scale list (default: all resolved profiles)",
+        help="Comma-separated scale list (default: benchmark profiles; XS is explicit validation)",
     )
     benchmark_prepare.add_argument("--spec", help="Scenario generation spec file (default: packaged campaign)")
     benchmark_prepare.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation")
@@ -179,6 +183,7 @@ def _generate_scenarios(
     topology_dir: Path | None = None,
     out: Path | None = None,
     seed: int = 42,
+    scale_registry: ScaleRegistry | None = None,
 ) -> int:
     spec_path = Path(spec)
     topo_dir = Path(topology_dir) if topology_dir is not None else _default_topology_output_dir(workspace, scale)
@@ -188,7 +193,7 @@ def _generate_scenarios(
     removed = scenario_generator.cleanup_existing_outputs(out_dir)
     if removed:
         print(f"removed existing scenarios: {removed}")
-    generated = scenario_generator.generate(loaded_spec, topology, out_dir, seed)
+    generated = scenario_generator.generate(loaded_spec, topology, out_dir, seed, scale_registry=scale_registry)
     print(f"generated scenarios: scale={scale}")
     print(f"  spec: {spec_path}")
     print(f"  topology_dir: {topo_dir}")
@@ -226,6 +231,12 @@ def _cmd_scenario(bench: NetOpsBench, args: argparse.Namespace) -> int:
         for path in sorted(target.glob("*.y*ml")):
             print(path)
         return 0
+    if args.scenario_action == "migrate":
+        from netopsbench.platform.scenario.migration import migrate_recovery
+
+        output = migrate_recovery(bench.workspace / args.source, bench.workspace / args.out)
+        print(f"Migrated recovery campaign: {output}")
+        return 0
     if args.scenario_action == "validate":
         raw_file = Path(args.file)
         scenario_file = raw_file if raw_file.is_absolute() else (bench.workspace / raw_file)
@@ -241,7 +252,13 @@ def _cmd_scenario(bench: NetOpsBench, args: argparse.Namespace) -> int:
         topology_dir = Path(args.topology_dir) if args.topology_dir else None
         out = Path(args.out) if args.out else None
         return _generate_scenarios(
-            bench.workspace, scale=args.scale, spec=spec, topology_dir=topology_dir, out=out, seed=args.seed
+            bench.workspace,
+            scale=args.scale,
+            spec=spec,
+            topology_dir=topology_dir,
+            out=out,
+            seed=args.seed,
+            scale_registry=bench.scales.registry,
         )
     raise AssertionError(f"unhandled scenario action: {args.scenario_action}")
 
@@ -294,7 +311,8 @@ def _cmd_result(bench: NetOpsBench, args: argparse.Namespace) -> int:
 
 def _cmd_benchmark(bench: NetOpsBench, args: argparse.Namespace) -> int:
     if args.benchmark_action == "prepare":
-        scales = _parse_scales(args.scales, bench.scales.names())
+        selected = args.scales or ",".join(p.name for p in bench.scales.registry.values() if p.purpose == "benchmark")
+        scales = _parse_scales(selected, bench.scales.registry.names())
         spec = Path(args.spec) if args.spec else _default_scenario_spec()
         print("Preparing benchmark assets")
         print(f"  workspace: {bench.workspace}")
@@ -305,7 +323,13 @@ def _cmd_benchmark(bench: NetOpsBench, args: argparse.Namespace) -> int:
             scenario_dir = _default_scenario_output_dir(bench.workspace, scale)
             _generate_topology(bench, scale=scale, output_dir=topo_dir)
             _generate_scenarios(
-                bench.workspace, scale=scale, spec=spec, topology_dir=topo_dir, out=scenario_dir, seed=args.seed
+                bench.workspace,
+                scale=scale,
+                spec=spec,
+                topology_dir=topo_dir,
+                out=scenario_dir,
+                seed=args.seed,
+                scale_registry=bench.scales.registry,
             )
         print("Benchmark assets ready")
         return 0

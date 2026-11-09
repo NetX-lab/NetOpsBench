@@ -1,0 +1,16 @@
+{
+  "provider": "upstream",
+  "version": "0.77.0",
+  "releases": {
+    "amd64": {
+      "archive_url": "https://github.com/srl-labs/containerlab/releases/download/v0.77.0/containerlab_0.77.0_linux_amd64.tar.gz",
+      "archive_sha256": "072a9ead3da57594fe138d4d0174b9b1c50ecb12252f49a5558c56040dbace07",
+      "binary_sha256": "bb9508eb2f107f7d45142dffb8a21ecbad49187b3ff140c5c69a2013c78d6587"
+    },
+    "arm64": {
+      "archive_url": "https://github.com/srl-labs/containerlab/releases/download/v0.77.0/containerlab_0.77.0_linux_arm64.tar.gz",
+      "archive_sha256": "3aaaa1cb9faffcadbc8e553ac968081a2b4208e3b2d012c441944c6cd63a579a",
+      "binary_sha256": "34d1c3e2cdc27f199bb92246517ab8ffd7cce8de8bd491a2847c0206e03841ab"
+    }
+  }
+}

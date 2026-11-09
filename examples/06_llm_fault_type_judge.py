@@ -3,7 +3,7 @@
 
 Same structure as ``01_run_scenario.py`` but enables the LLM judge so that
 free-form agent answers like ``"BGP peer AS mismatch"`` are semantically
-matched to the canonical ``bgp_neighbor_misconfig`` taxonomy instead of
+matched to the canonical ``bgp_as_mismatch`` taxonomy instead of
 failing a deterministic string compare.
 
 The judge is activated entirely via environment variables — no code change
@@ -31,13 +31,12 @@ from examples._common import (
     resolve_repo_root,
     wait_and_print_run,
 )
-from examples.agents import MinimalDeepAgent
 from netopsbench.sdk import NetOpsBench
 
 # BGP neighbor misconfig is the scenario where the LLM judge adds the most value:
 # agents often describe the fault as "BGP peer AS mismatch" or "BGP session down"
-# which don't match the canonical "bgp_neighbor_misconfig" deterministically.
-_SCENARIO_REL = "scenarios/generated/xs/generated_bgp_neighbor_misconfig_xs_001.yaml"
+# which don't match the canonical "bgp_as_mismatch" deterministically.
+_SCENARIO_REL = "scenarios/generated/medium/generated_bgp_as_mismatch_medium_001.yaml"
 
 
 def main(
@@ -45,14 +44,15 @@ def main(
     *,
     vendor: str = "minimax",
     bench_cls=NetOpsBench,
-    agent_cls=MinimalDeepAgent,
+    agent_cls=None,
+    backend: str = "deepagent",
 ) -> int:
     repo = resolve_repo_root(repo_root)
     scenario = require_scenarios(
         repo,
         _SCENARIO_REL,
         prepare_hint=(
-            "Generate benchmark assets first with " "`netopsbench benchmark prepare --scales xs` from the repo root."
+            "Generate benchmark assets first with `netopsbench benchmark prepare --scales medium` from the repo root."
         ),
     )[0]
 
@@ -64,7 +64,7 @@ def main(
     print(f"  llm judge : {'enabled  (model=' + judge_model + ')' if judge_enabled else 'disabled (deterministic)'}")
 
     with bench_cls(workspace=str(repo)) as bench:
-        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor)
+        raw_agent, agent = build_wrapped_agent(bench, agent_cls, vendor=vendor, backend=backend)
         print_agent_banner("agent     ", vendor, raw_agent)
         try:
             run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
@@ -76,4 +76,4 @@ def main(
 
 if __name__ == "__main__":
     args = build_arg_parser("Run a BGP scenario with optional LLM-as-judge fault type evaluation").parse_args()
-    raise SystemExit(main(repo_root=args.repo_root, vendor=args.vendor))
+    raise SystemExit(main(repo_root=args.repo_root, vendor=args.vendor, backend=args.agent))

@@ -103,26 +103,15 @@ def build_atif_payload(trace: dict[str, Any]) -> dict[str, Any]:
 
 def _normalise_steps(steps: list[Any], *, model_metadata: dict[str, Any]) -> list[dict[str, Any]]:
     normalised: list[dict[str, Any]] = []
-    saw_runtime_event = False
-    seen_copied_context: set[str] = set()
     for index, item in enumerate(steps, 1):
         step = dict(item) if isinstance(item, dict) else {"content": str(item)}
         step.setdefault("index", index)
         step["type"] = str(step.get("type") or step.get("role") or step.get("source") or "message")
-        if step.get("is_copied_context"):
-            fingerprint = _message_fingerprint(step)
-            if saw_runtime_event or fingerprint in seen_copied_context:
-                continue
-            seen_copied_context.add(fingerprint)
-            step.pop("is_copied_context", None)
-            step["is_initial_context"] = True
-        else:
-            saw_runtime_event = True
         if model_metadata and step["type"] == "llm":
             step.setdefault("model", model_metadata.get("model"))
             step.setdefault("provider", model_metadata.get("provider"))
         normalised.append(_jsonable(step))
-    return normalised
+    return _collapse_copied_context_steps(normalised)
 
 
 def _atif_steps(trace: dict[str, Any]) -> list[dict[str, Any]]:

@@ -18,6 +18,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    ValidateConfig {
+        #[arg(long)]
+        config: PathBuf,
+    },
     Pingmesh {
         #[arg(long)]
         config: PathBuf,
@@ -32,6 +36,13 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::ValidateConfig { config } => {
+            let shared = config::ClientAgentConfig::load(&config)?;
+            let local = shared.local_client()?;
+            shared.load_client_plan(&config, &local)?;
+            println!("{} {}", shared.schema_version, shared.pingmesh_plan.plan_id);
+            Ok(())
+        }
         Command::Pingmesh { config } => {
             logging::init("/var/log/netopsbench/pingmesh.log");
             log_command_result(pingmesh::run(&config).await)

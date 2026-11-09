@@ -10,7 +10,6 @@ from netopsbench.platform.traffic.controller import (
     TrafficController,
     TrafficFlow,
     _client_plans,
-    _parse_bandwidth_bps,
     _plan_digest,
 )
 
@@ -148,7 +147,9 @@ def test_compact_plan_preserves_existing_flow_contract():
         },
     ]
     assert _plan_digest(plans["client1"]) == _plan_digest(plans["client1"])
-    assert _parse_bandwidth_bps("1G") == 1_000_000_000
+    from netopsbench.platform.traffic.estimator import bandwidth_to_bps
+
+    assert int(bandwidth_to_bps("1G")) == 1_000_000_000
 
 
 def test_synthetic_1024_client_plan_has_4096_flows():
@@ -382,3 +383,14 @@ def test_setup_traffic_cleans_partial_matrix_and_fails_before_baseline(tmp_path,
     assert len(result["matrix_digest"]) == 64
     assert "flows" not in result
     assert "estimated_switch_pps" not in result["stats"]
+
+
+@pytest.mark.parametrize("text,expected", [("1G", 1e9), (" 2.5m ", 2.5e6), ("12.9", 12.9), ("0", 0)])
+def test_bandwidth_estimation_and_agent_plan_share_units(text, expected):
+    from netopsbench.platform.traffic.controller import TrafficFlow, _client_plans
+    from netopsbench.platform.traffic.estimator import bandwidth_to_bps
+
+    assert bandwidth_to_bps(text) == expected
+    flow = TrafficFlow(src="a", dst="b", dst_ip="192.0.2.2", bandwidth=text)
+    plans = _client_plans({"a": "192.0.2.1", "b": "192.0.2.2"}, [flow])
+    assert plans["a"]["flows"][0]["bandwidth_bps"] == int(expected)

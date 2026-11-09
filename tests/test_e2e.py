@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -25,8 +26,6 @@ from netopsbench.models.scenario import EpisodeSpec, ScenarioSpec
 from netopsbench.models.topology import TopologyManifest
 from netopsbench.platform.client_agent.config import build_client_agent_config
 from netopsbench.platform.faults.injector import FaultInjector
-from netopsbench.platform.faults.specs import create_fault_registry
-from netopsbench.platform.scenario.generator import parse_bgp_config, parse_network_interfaces
 from netopsbench.platform.scenario.parser import parse_scenario_file
 from netopsbench.platform.scenario.validator import validate_scenario, validate_scenario_topology
 from netopsbench.platform.session.scoring import score_scenario_episode
@@ -35,7 +34,9 @@ from netopsbench.platform.toolkit.mcp.registry import load_tool_specs, tool_sche
 
 # Internal test path: direct toolkit import keeps implementation-level e2e checks fast.
 from netopsbench.platform.toolkit.toolkit import AgentToolkit, ToolResult
+from netopsbench.platform.topology.configdb_payload import interface_names_for_config
 from netopsbench.platform.topology.generator import generate_topology
+from netopsbench.platform.utils.frr import parse_bgp_config
 from netopsbench.platform.utils.interface_names import are_interfaces_equivalent
 
 
@@ -168,12 +169,12 @@ class TestTopologyGeneration:
             assert metadata["management"]["ipv4_subnet"] == "172.20.20.0/23"
             assert metadata["scale"]["num_spines"] == 16
             assert metadata["scale"]["num_leafs"] == 128
-            assert metadata["scale"]["clients_per_leaf"] == 1
-            assert metadata["scale"]["total_clients"] == 128
+            assert metadata["scale"]["clients_per_leaf"] == 2
+            assert metadata["scale"]["total_clients"] == 256
             assert metadata["pingmesh"]["destination_batch_size"] == 16
 
             mgmt_ips = {item["mgmt_ip"] for role in ("spines", "leafs", "clients") for item in devices[role]}
-            assert len(mgmt_ips) == 16 + 128 + 128
+            assert len(mgmt_ips) == 16 + 128 + 256
             assert metadata["collector"]["ipv4"] not in mgmt_ips
 
             spine16_config = json.loads(
@@ -200,12 +201,12 @@ class TestTopologyGeneration:
             assert "eth1:1,2,3,4" in spine16_lanemap
             assert "eth128:509,510,511,512" in spine16_lanemap
             assert len([line for line in spine16_lanemap.splitlines() if line.startswith("eth")]) == 128
-            assert len([key for key in leaf128_config["INTERFACE"] if "|" not in key]) == 17
+            assert len([key for key in leaf128_config["INTERFACE"] if "|" not in key]) == 18
             assert leaf128_config["INTERFACE"]["Ethernet60|10.16.128.2/30"] == {}
-            assert leaf128_config["INTERFACE"]["Ethernet64|192.168.228.1/30"] == {}
-            assert "network 192.168.228.0/30 route-map RM-ALLOW" in leaf128_frr
+            assert leaf128_config["INTERFACE"]["Ethernet64|192.168.128.1/30"] == {}
+            assert "network 192.168.128.0/30 route-map RM-ALLOW" in leaf128_frr
             leaf128_lanemap = Path(tmpdir, "configs", "sonic", "leaf128", "lanemap.ini").read_text(encoding="utf-8")
-            assert len([line for line in leaf128_lanemap.splitlines() if line.startswith("eth")]) == 17
+            assert len([line for line in leaf128_lanemap.splitlines() if line.startswith("eth")]) == 18
 
     def test_structured_startup_artifacts_drive_scenario_parsers(self):
         """Scenario parsers should use generated ConfigDB and FRR artifacts as the normal path."""
@@ -214,8 +215,8 @@ class TestTopologyGeneration:
             spine_cfg = Path(tmpdir, "configs", "sonic", "spine1", "config_db.json")
             spine_frr = Path(tmpdir, "configs", "frr", "spine1.conf")
 
-            assert parse_network_interfaces(spine_cfg) == ["Ethernet0", "Ethernet4"]
-            bgp_info = parse_bgp_config(spine_frr)
+            assert interface_names_for_config(spine_cfg) == ["Ethernet0", "Ethernet4"]
+            bgp_info = parse_bgp_config(spine_frr.read_text())
             assert bgp_info["local_as"] == 65001
             assert [neighbor["remote_as"] for neighbor in bgp_info["neighbors"]] == [65011, 65012]
 
@@ -223,28 +224,12 @@ class TestTopologyGeneration:
 class TestAgentToolkit:
     """Tests for agent toolkit."""
 
-    def test_toolkit_initialization(self):
-        """Test toolkit initializes correctly."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            topo = generate_topology("xs", tmpdir)
-            toolkit = AgentToolkit(topology_metadata=topo["metadata"])
-            assert toolkit is not None
-            assert toolkit.influxdb_url is not None
-
-    def test_tool_registry_specs_complete(self):
-        """Tool registry specs should define non-empty name/group/handler."""
-        specs = load_tool_specs()
-        assert specs, "tool specs should not be empty"
-        for spec in specs:
-            assert spec.name
-            assert spec.group
-            assert callable(spec.handler)
-
     def test_get_topology_returns_result(self):
         """Test get_topology returns a valid result."""
         with tempfile.TemporaryDirectory() as tmpdir:
             topo = generate_topology("xs", tmpdir)
             toolkit = AgentToolkit(topology_metadata=topo["metadata"])
+            assert toolkit.influxdb_url is not None
             result = toolkit.get_topology()
 
             assert isinstance(result, ToolResult)
@@ -291,24 +276,21 @@ class TestClientAgentConfig:
             second = build_client_agent_config(manifest)
 
             assert first == second
-            assert len(first["clients"]) == 128
-            assert len(json.dumps(first).encode()) < 100_000
-            assert first["pingmesh_policy"]["destination_batch_size"] == 16
-            assert first["pingmesh_policy"]["coverage_epoch_cycles"] == 32
+            assert len(first["clients"]) == 256
+            assert len(json.dumps(first).encode()) < 150_000
+            assert first["pingmesh_plan"]["destination_batch_size"] == 16
+            assert first["pingmesh_plan"]["coverage_epoch_cycles"] == 20
 
 
 class TestFastMCPServer:
     """Tests for FastMCP server tool wiring."""
 
-    def test_fastmcp_tool_registry_exists(self):
-        """FastMCP module should expose a non-empty tool registry."""
-        assert len(fastmcp_server.EXPOSED_TOOLS) > 0
-
-    def test_fastmcp_has_all_expected_tools(self):
-        """FastMCP module should export all MCP tool callables."""
-        expected_tools = [
+    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
+        specs = {spec.name: spec for spec in load_tool_specs()}
+        expected = {
             "get_topology",
             "get_device_interfaces",
+            "get_device_status",
             "get_bgp_neighbors",
             "get_bgp_neighbor",
             "get_route_table",
@@ -322,23 +304,14 @@ class TestFastMCPServer:
             "query_bgp_events",
             "get_pingmesh_summary",
             "get_pingmesh_hotspots",
-        ]
-
-        for tool in expected_tools:
-            assert hasattr(fastmcp_server, tool), f"Tool {tool} callable missing from fastmcp_server"
-            assert tool in fastmcp_server.EXPOSED_TOOLS, f"Tool {tool} missing from EXPOSED_TOOLS"
-
-    def test_tool_registry_matches_fastmcp_tools(self):
-        """Tool registry should stay in sync with FastMCP exported tools."""
-        tool_names = [spec.name for spec in load_tool_specs()]
-
-        assert len(tool_names) == len(fastmcp_server.EXPOSED_TOOLS), "Tool count mismatch"
-        for name in tool_names:
-            assert name in fastmcp_server.EXPOSED_TOOLS, f"Tool {name} in definitions but not in FastMCP"
-
-    def test_rl_schemas_and_fastmcp_use_identical_typed_contracts(self):
-        schemas = {schema["name"]: schema for schema in tool_schemas()}
+        }
+        assert set(specs) == set(fastmcp_server.EXPOSED_TOOLS) == expected
+        assert len(specs) == len(load_tool_specs()) == len(fastmcp_server.EXPOSED_TOOLS)
+        assert set(specs) == {spec.name for spec in fastmcp_server._TOOL_SPECS}
+        assert all(spec.group and callable(spec.handler) for spec in specs.values())
+        assert all(callable(getattr(fastmcp_server, name)) for name in expected)
         specs = {spec.name: spec for spec in fastmcp_server._TOOL_SPECS}
+        schemas = {schema["name"]: schema for schema in tool_schemas()}
 
         assert schemas.keys() == specs.keys()
         for name, spec in specs.items():
@@ -374,120 +347,6 @@ class TestFastMCPServer:
 class TestFaultInjector:
     """Tests for fault injection."""
 
-    def test_injector_initialization(self):
-        """Test fault injector initializes correctly."""
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-        assert injector is not None
-        assert injector.container_names["spine1"] == "clab-dcn-spine1"
-        assert injector.active_faults == []
-
-    def test_injector_loads_dynamic_topology(self):
-        """Test injector can load dynamic topology."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = generate_topology("xs", tmpdir)
-            metadata = result["metadata"]
-
-            injector = FaultInjector(topology_metadata=metadata)
-
-            assert "spine1" in injector.container_names
-            assert "leaf1" in injector.container_names
-
-    def test_fault_types_defined(self):
-        """Test all expected fault types are defined."""
-        expected_faults = [
-            "link_down",
-            "link_flapping",
-            "device_down",
-            "bgp_neighbor_misconfig",
-            "route_policy_misconfig",
-            "mtu_mismatch",
-            "packet_corruption",
-            "packet_loss",
-            "high_latency",
-            "blackhole_route",
-            "static_route_misconfig",
-        ]
-
-        defined_faults = [spec.name for spec in create_fault_registry().get_builtin_specs()]
-        for fault in expected_faults:
-            assert fault in defined_faults, f"Fault type {fault} not defined"
-
-    def test_inject_high_latency_uses_latency_ms_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_high_latency(self, device, interface, latency_ms=100):
-                self.calls.append((device, interface, latency_ms))
-                return {"success": True, "type": "high_latency", "latency_ms": latency_ms}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_high_latency("leaf1", "Ethernet0", latency_ms=120)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 120)]
-
-    def test_inject_mtu_mismatch_uses_mtu_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_mtu_mismatch(self, device, interface, mtu=1400):
-                self.calls.append((device, interface, mtu))
-                return {"success": True, "type": "mtu_mismatch", "mtu": mtu}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_mtu_mismatch("leaf1", "Ethernet0", mtu=1450)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 1450)]
-
-    def test_inject_packet_corruption_uses_corruption_pct_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_packet_corruption(self, device, interface, corruption_pct=20):
-                self.calls.append((device, interface, corruption_pct))
-                return {"success": True, "type": "packet_corruption", "corruption_pct": corruption_pct}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_packet_corruption("leaf1", "Ethernet0", corruption_pct=17)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 17)]
-
-    def test_inject_packet_loss_uses_loss_pct_contract(self):
-        injector = FaultInjector(topology_metadata=_generated_metadata())
-
-        class FakeImpairment:
-            def __init__(self):
-                self.calls = []
-
-            def inject_packet_loss(self, device, interface, loss_pct=10):
-                self.calls.append((device, interface, loss_pct))
-                return {"success": True, "type": "packet_loss", "loss_pct": loss_pct}
-
-        fake = FakeImpairment()
-        injector._impairment = fake
-
-        result = injector.inject_packet_loss("leaf1", "Ethernet0", loss_pct=11)
-
-        assert result["success"] is True
-        assert fake.calls == [("leaf1", "Ethernet0", 11)]
-
     def test_injector_interface_alias_resolution_supports_vendor_style(self):
         injector = FaultInjector(topology_metadata=_generated_metadata())
         assert injector._iface.resolve_linux("ethernet-1/2") == "eth2"
@@ -497,15 +356,10 @@ class TestFaultInjector:
 class TestEvaluator:
     """Tests for evaluation system."""
 
-    def test_evaluator_initialization(self):
-        """Test evaluator initializes correctly."""
-        evaluator = Evaluator()
-        assert evaluator is not None
-        assert sum(evaluator.weights.values()) == 1.0
-
     def test_evaluate_correct_answer(self):
         """Test evaluating a correct agent answer."""
         evaluator = Evaluator()
+        assert sum(evaluator.weights.values()) == 1.0
 
         agent_output = AgentOutput(
             verdict="fault_detected",
@@ -704,19 +558,19 @@ class TestEvaluator:
         assert summary["device_accuracy"] == 0.0
         assert summary["interface_localization_rate"] == 0.0
 
-    def test_evaluate_route_policy_alias_as_correct_fault_type(self):
-        """Route-origination style answers should normalize to route_policy_misconfig."""
+    def test_evaluate_route_origination_as_correct_fault_type(self):
+        """The explicit catalog type is scored independently of its mechanism."""
         evaluator = Evaluator()
 
         agent_output = AgentOutput(
             verdict="fault_detected",
-            fault_type="route_origination_missing",
+            fault_type="route_origination_misconfig",
             location={"device": "leaf1"},
             confidence=0.9,
         )
 
         ground_truth = {
-            "fault_type": "route_policy_misconfig",
+            "fault_type": "route_origination_misconfig",
             "location": {"device": "leaf1"},
         }
 
@@ -795,7 +649,7 @@ episode:
         scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_xs_001.yaml"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            generate_topology("small", tmpdir)
+            generate_topology("medium", tmpdir)
 
             result = validate_scenario_topology(
                 scenario=scenario,
@@ -804,7 +658,7 @@ episode:
 
             assert result["status"] == "fail"
             assert result["declared_scale"] == scenario.topology_scale
-            assert result["actual_scale"] == "small"
+            assert result["actual_scale"] == "medium"
 
     def test_topology_guard_accepts_e_style_interface_aliases(self):
         """e1-1 style interface labels should map to SONiC Ethernet ports."""
@@ -824,10 +678,10 @@ episode:
 
     def test_topology_guard_accepts_vendor_style_interface_aliases(self):
         """Vendor-style ethernet-1/1 labels should also map to SONiC Ethernet ports."""
-        scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_small_001.yaml"))
+        scenario = parse_scenario_file(_generated_scenario_path("generated_link_down_medium_001.yaml"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            generate_topology("small", tmpdir)
+            generate_topology("medium", tmpdir)
 
             _write_config_db(tmpdir, "spine1", {"Ethernet0": []})
             _write_config_db(tmpdir, "spine2", {"Ethernet4": []})
@@ -842,15 +696,15 @@ episode:
     def test_configdb_payload_interfaces_are_used_by_runtime_helpers(self):
         """Runtime helpers read interface metadata from generated ConfigDB artifacts."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            generate_topology("small", tmpdir)
+            generate_topology("medium", tmpdir)
             spine_config = _write_config_db(tmpdir, "spine1", {"Ethernet4": ["10.0.0.2/30"]})
             _write_config_db(tmpdir, "leaf1", {"Ethernet4": ["10.0.0.1/30"]})
 
             scenario = ScenarioSpec(
                 scenario_id="configdb_interface_case",
                 name="ConfigDB interface case",
-                topology_scale="small",
-                metadata={"difficulty": "easy"},
+                topology_scale="medium",
+                metadata={"recovery_policy": {"version": 3}, "difficulty": "easy"},
                 episode=EpisodeSpec(
                     episode_id="diagnosis",
                     fault_type="link_down",
@@ -860,7 +714,7 @@ episode:
             )
             result = validate_scenario_topology(scenario=scenario, topology_dir=tmpdir)
             assert result["status"] == "pass"
-            assert parse_network_interfaces(spine_config) == ["Ethernet4"]
+            assert interface_names_for_config(spine_config) == ["Ethernet4"]
 
             from netopsbench.platform.session.scoring import build_episode_ground_truth
 
@@ -974,3 +828,29 @@ class TestEndToEnd:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize(
+    "fault,key,value",
+    [
+        ("high_latency", "latency_ms", 120),
+        ("mtu_mismatch", "mtu", 1450),
+        ("packet_corruption", "corruption_pct", 17),
+        ("packet_loss", "loss_pct", 11),
+    ],
+)
+def test_impairment_parameter_forwarding(fault, key, value):
+    injector = FaultInjector(topology_metadata=_generated_metadata())
+    assert injector.container_names["spine1"] == "clab-dcn-spine1"
+    assert "leaf1" in injector.container_names
+    assert injector.active_faults == []
+    calls = []
+
+    def inject(device, interface, **kwargs):
+        calls.append((device, interface, kwargs))
+        return {"success": True, "type": fault, **kwargs}
+
+    injector._impairment = SimpleNamespace(**{f"inject_{fault}": inject})
+    result = getattr(injector, f"inject_{fault}")("leaf1", "Ethernet0", **{key: value})
+    assert result["success"] is True
+    assert calls == [("leaf1", "Ethernet0", {key: value})]

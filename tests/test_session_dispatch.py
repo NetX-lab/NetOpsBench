@@ -27,6 +27,9 @@ class _FakeRunner:
             "episode": {},
         }
 
+    def final_calibration(self, scenario, **kwargs):
+        return {"success": True}
+
     def close(self):
         type(self).closed += 1
 
@@ -52,6 +55,7 @@ class _FakeEvaluator:
 
 def _scenario(scenario_id: str) -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id=scenario_id,
         name=scenario_id,
         description="test",
@@ -87,7 +91,89 @@ def test_worker_context_uses_lab_name_for_observability_topology_id(tmp_path):
     context = build_worker_execution_context(worker, Path(worker.topology_dir))
 
     assert context.topology_id == "lab-1"
-    assert "NETOPSBENCH_TOPOLOGY_ID" not in context.as_env()
+    assert context.topology_dir == worker.topology_dir
+    assert context.influxdb_bucket == worker.bucket
+
+
+@pytest.mark.parametrize(
+    ("domain", "phase", "cleanup", "valid", "cancelled", "cleanup_errors", "continues"),
+    [
+        ("agent", "diagnosis", True, True, False, [], True),
+        ("agent", "limits", True, True, False, [], True),
+        ("protocol", "diagnosis", True, True, False, [], True),
+        ("infrastructure", "observation", True, False, False, [], False),
+        ("agent", "diagnosis", False, True, False, [], False),
+        ("agent", "diagnosis", None, True, False, [], False),
+        ("agent", "diagnosis", True, True, True, [], False),
+        ("agent", "diagnosis", True, True, False, ["container cleanup failed"], False),
+        ("agent", "observation", True, True, False, [], False),
+    ],
+)
+def test_acceptance_continues_only_after_recovered_agent_failure(
+    tmp_path, monkeypatch, domain, phase, cleanup, valid, cancelled, cleanup_errors, continues
+):
+    import threading
+
+    import netopsbench.platform.session.dispatch as dispatch
+
+    cancel = threading.Event()
+    executed, checkpoints, built, closed, quarantined = [], [], [], [], []
+
+    class Runner:
+        evaluator = None
+
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            executed.append(scenario.id)
+            if scenario.id == "first":
+                if cancelled:
+                    cancel.set()
+                return {
+                    "success": False,
+                    "case_valid": valid,
+                    "cleanup": {} if cleanup is None else {"success": cleanup},
+                    "episode": {
+                        "execution": {"failure": {"domain": domain, "phase": phase}},
+                        "diagnosis": {"metadata": {"cleanup_errors": cleanup_errors}},
+                    },
+                }
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+        def final_calibration(self, scenario, **kwargs):
+            return {"success": True}
+
+        def close(self):
+            closed.append(True)
+
+    def build(*args, **kwargs):
+        built.append(True)
+        return Runner()
+
+    monkeypatch.setattr(dispatch, "_build_scenario_executor", build)
+    monkeypatch.setattr(dispatch, "build_worker_execution_context", lambda *a: SimpleNamespace(topology_dir=tmp_path))
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **kw: None)
+    runtime = SimpleNamespace(id="runtime", mark_quarantined=lambda *a: quarantined.append(a))
+    result = dispatch._run_worker(
+        runtime=runtime,
+        agent=None,
+        raw_dir=tmp_path,
+        trace_writer=None,
+        fault_registry=None,
+        minimum_baseline_seconds=None,
+        scale_registry=None,
+        worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
+        scenarios=[_scenario("first"), _scenario("second")],
+        control=dispatch.ExecutionControl(
+            on_case=lambda summary, *args: checkpoints.append(summary), stop_on_failure=True, cancel_event=cancel
+        ),
+    )
+    assert executed == (["first", "second"] if continues else ["first"])
+    assert len(built) == len(closed) == 1
+    assert len(checkpoints) == len(executed)
+    assert dispatch.is_recovered_case_failure(checkpoints[0]) is continues
+    assert bool(quarantined) is (cleanup is False)
+    assert result[2]["success"] is False
+    assert result[0] == []  # Failed agent execution must not create a score.
 
 
 def test_worker_context_uses_explicit_identity_topology_id(tmp_path):
@@ -97,6 +183,59 @@ def test_worker_context_uses_explicit_identity_topology_id(tmp_path):
     context = build_worker_execution_context(worker, Path(worker.topology_dir))
 
     assert context.topology_id == "runtime-observability-id"
+
+
+@pytest.mark.parametrize(
+    ("recovery_verified", "effects_only", "continues"),
+    [(True, False, True), (False, False, False), (True, True, False)],
+)
+def test_invalid_effect_continues_only_after_verified_health(
+    tmp_path, monkeypatch, recovery_verified, effects_only, continues
+):
+    import netopsbench.platform.session.dispatch as dispatch
+
+    class Runner(_FakeRunner):
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            if scenario.id == "invalid":
+                return {
+                    "success": False,
+                    "case_valid": False,
+                    "error": "Owned ACL rule has no verified hits",
+                    "episode": {"effect_audit": {"valid": False}},
+                    "cleanup": {
+                        "success": True,
+                        **({"validated_baseline": {"duration_seconds": 42}} if recovery_verified else {}),
+                    },
+                }
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+    runtime = RuntimePool(
+        id="runtime-1",
+        name="runtime-1",
+        scale="xs",
+        root_dir=tmp_path / "runtime",
+        workers=[_worker(tmp_path, 1)],
+        state="warm",
+    )
+    monkeypatch.setattr(dispatch, "ScenarioExecutor", Runner)
+    monkeypatch.setattr(dispatch, "_create_evaluator", _FakeEvaluator)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **kw: None)
+    monkeypatch.setattr(dispatch, "load_topology_metadata", lambda *a: None)
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    result = execute_on_runtime_pool(
+        runtime=runtime,
+        scenarios=[_scenario("invalid"), _scenario("next")],
+        agent=None,
+        raw_dir=tmp_path / "raw",
+        control=dispatch.ExecutionControl(stop_on_failure=True, effects_only=effects_only),
+    )
+    first = result.scenarios[0]
+    assert first["status"] == "invalid" and first["case_valid"] is False
+    assert dispatch.is_recovered_case_failure(first) is continues
+    assert result.workers[0]["executed_count"] == (2 if continues else 1)
+    assert result.scenarios[1]["status"] == ("completed" if continues else "skipped_execution_failure")
+    assert result.evaluations == []
+    assert runtime.state == "warm"
 
 
 def test_worker_context_rejects_topology_directory_mismatch(tmp_path):
@@ -127,7 +266,7 @@ def test_execute_on_runtime_pool_uses_per_worker_evaluators_and_session_raw_pers
     monkeypatch.setattr(dispatch, "ScenarioExecutor", _FakeRunner)
     monkeypatch.setattr(dispatch, "_create_evaluator", _FakeEvaluator)
     monkeypatch.setattr(dispatch, "score_scenario_episode", score_episode)
-    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args: lambda _payload: {})
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args, **_kwargs: lambda _payload: {})
     monkeypatch.setattr(
         dispatch,
         "build_worker_execution_context",
@@ -165,7 +304,7 @@ def test_execute_on_runtime_pool_rejects_scenario_scale_mismatch(tmp_path):
     runtime = RuntimePool(
         id="runtime-1",
         name="runtime-1",
-        scale="small",
+        scale="medium",
         root_dir=tmp_path / "runtime",
         workers=[_worker(tmp_path, 1)],
         state="warm",
@@ -240,7 +379,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
         "score_scenario_episode",
         lambda _scenario, _result, evaluator, **_kwargs: [SimpleNamespace(score=1.0, evaluator_id=evaluator.id)],
     )
-    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args: lambda _payload: {})
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args, **_kwargs: lambda _payload: {})
     monkeypatch.setattr(
         dispatch,
         "build_worker_execution_context",
@@ -285,6 +424,7 @@ def test_cleanup_failure_skips_only_that_workers_remaining_cases(tmp_path, monke
             "executed_count": 2,
             "skipped_count": 0,
             "success": True,
+            "final_calibration": {"success": True},
         },
     ]
     assert runtime.metadata["quarantined"] is True
@@ -319,7 +459,7 @@ def test_invalid_case_with_cleanup_failure_still_quarantines_runtime(tmp_path, m
     )
     monkeypatch.setattr(dispatch, "ScenarioExecutor", InvalidCleanupRunner)
     monkeypatch.setattr(dispatch, "_create_evaluator", _FakeEvaluator)
-    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args: lambda _payload: {})
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *_args, **_kwargs: lambda _payload: {})
     monkeypatch.setattr(
         dispatch,
         "build_worker_execution_context",
@@ -346,3 +486,52 @@ def test_invalid_case_with_cleanup_failure_still_quarantines_runtime(tmp_path, m
     assert result.evaluations == []
     assert runtime.state == "quarantined"
     assert runtime.metadata["quarantined_workers"] == ["worker-1"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_final_calibration_is_reported_and_failure_quarantines_without_rescoring(tmp_path, monkeypatch, failed):
+    import netopsbench.platform.session.dispatch as dispatch
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    calls, quarantined = [], []
+    score = object()
+
+    class Runner:
+        evaluator = object()
+
+        def run_scenario(self, scenario, diagnosis_callback=None):
+            return {"success": True, "case_valid": True, "cleanup": {"success": True}, "episode": {}}
+
+        def final_calibration(self, scenario, **kwargs):
+            calls.append("calibration")
+            if failed:
+                raise RuntimeError("late loss")
+            return {"success": True}
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(dispatch, "_build_scenario_executor", lambda *a, **k: Runner())
+    monkeypatch.setattr(dispatch, "build_worker_execution_context", lambda *a: SimpleNamespace(topology_dir=tmp_path))
+    monkeypatch.setattr(dispatch, "require_scenario_topology", lambda *a: None)
+    monkeypatch.setattr(dispatch, "build_runtime_diagnosis_callback", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "score_scenario_episode", lambda *a, **k: calls.append("score") or [score])
+    case = _scenario("one")
+    case.metadata["recovery_policy"] = RecoveryPolicy().model_dump()
+    evaluations, summaries, worker = dispatch._run_worker(
+        runtime=SimpleNamespace(id="runtime", mark_quarantined=lambda *a: quarantined.append(a)),
+        agent=None,
+        raw_dir=tmp_path,
+        trace_writer=None,
+        fault_registry=None,
+        minimum_baseline_seconds=None,
+        scale_registry=None,
+        worker=SimpleNamespace(worker_id="worker-1", lab_name="lab", topology_dir=tmp_path),
+        scenarios=[case],
+    )
+    assert evaluations == [score]
+    assert calls == ["score", "calibration", "close"]
+    assert worker["success"] is (not failed)
+    assert bool(quarantined) is failed
+    assert summaries[0]["status"] == "completed"
+    assert (tmp_path / "worker-1" / "final_calibration.json").exists()

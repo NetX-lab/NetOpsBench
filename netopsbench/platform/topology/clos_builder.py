@@ -18,6 +18,7 @@ from netopsbench.models.topology import (
 from .config import TopologyConfig
 from .plan import BGPNeighborPlan, DevicePlan, FabricPlan
 from .planning import (
+    ClientAddressing,
     ManagementAddressing,
     build_render_settings,
     client_commands,
@@ -29,19 +30,18 @@ from .planning import (
 def _validate_config(config: TopologyConfig) -> None:
     if not 1 <= config.num_spines <= 255:
         raise ValueError(f"num_spines must fit in one IPv4 octet (1-255), got {config.num_spines}")
-    if not 1 <= config.num_leafs <= 155:
-        raise ValueError(
-            "num_leafs must fit the client subnet scheme 192.168.(100+leaf).0/24 " f"(1-155), got {config.num_leafs}"
-        )
-    if not 1 <= config.clients_per_leaf <= 64:
-        raise ValueError(
-            "clients_per_leaf must fit the per-leaf /30 allocation (1-64), " f"got {config.clients_per_leaf}"
-        )
+    ClientAddressing(config.num_leafs, config.clients_per_leaf)
+    leaf_end = config.leaf_asn_start + config.num_leafs - 1
+    if not (64512 <= config.spine_asn <= 65534 and 64512 <= config.leaf_asn_start <= leaf_end <= 65534):
+        raise ValueError("CLOS ASNs exceed the private 16-bit pool")
+    if config.leaf_asn_start <= config.spine_asn <= leaf_end:
+        raise ValueError("CLOS spine and leaf ASN allocations overlap")
 
 
 def build_clos_plan(config: TopologyConfig) -> FabricPlan:
     """Return a complete CLOS plan without writing any artifacts."""
     _validate_config(config)
+    client_addressing = ClientAddressing(config.num_leafs, config.clients_per_leaf)
     spine_mgmt_offset = 10
     leaf_mgmt_offset = spine_mgmt_offset + config.num_spines
     client_mgmt_offset = leaf_mgmt_offset + config.num_leafs
@@ -98,14 +98,13 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
         leaf_name = f"leaf{leaf_idx}"
         router_id = f"10.0.1.{leaf_idx}"
         leaf_asn = config.leaf_asn_start + leaf_idx - 1
-        subnet_octet = 100 + leaf_idx
         leaf = Device(
             name=leaf_name,
             role=DeviceRole.LEAF,
             mgmt_ip=addressing.host_ip(leaf_mgmt_offset + leaf_idx),
             asn=leaf_asn,
             router_id=router_id,
-            metadata={"client_subnet": f"192.168.{subnet_octet}.0/24"},
+            metadata={"client_subnet": str(client_addressing.rack_subnet(leaf_idx))},
         )
         interfaces = {
             sonic_port_name(spine_idx): (f"10.{spine_idx}.{leaf_idx}.2/30",)
@@ -117,11 +116,9 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
         )
         networks: list[str] = []
         for client_position in range(1, config.clients_per_leaf + 1):
-            subnet_base = (client_position - 1) * 4
-            interfaces[sonic_port_name(config.num_spines + client_position)] = (
-                f"192.168.{subnet_octet}.{subnet_base + 1}/30",
-            )
-            networks.append(f"192.168.{subnet_octet}.{subnet_base}/30")
+            subnet, gateway, client_ip = client_addressing.access(leaf_idx, client_position)
+            interfaces[sonic_port_name(config.num_spines + client_position)] = (gateway + "/30",)
+            networks.append(subnet)
         devices.append(leaf)
         device_plans.append(
             DevicePlan(
@@ -137,9 +134,7 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
 
         for client_position in range(1, config.clients_per_leaf + 1):
             client_idx = (leaf_idx - 1) * config.clients_per_leaf + client_position
-            subnet_base = (client_position - 1) * 4
-            client_ip = f"192.168.{subnet_octet}.{subnet_base + 2}"
-            gateway = f"192.168.{subnet_octet}.{subnet_base + 1}"
+            _, gateway, client_ip = client_addressing.access(leaf_idx, client_position)
             client = Device(
                 name=f"client{client_idx}",
                 role=DeviceRole.CLIENT,
@@ -180,6 +175,7 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
         topology_id=config.name,
         name=config.name,
         scale=scale_name,
+        purpose=config.purpose,
         family="clos",
         management=Management(
             network=config.mgmt_network_name or f"clab-mgmt-{config.name}",
@@ -212,6 +208,9 @@ def build_clos_plan(config: TopologyConfig) -> FabricPlan:
 # - Observability: Syslog and gNMI
 
 """
+    from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
+
+    manifest.pingmesh_plan = compile_pingmesh_plan(manifest)
     return FabricPlan(
         manifest=manifest,
         device_plans=tuple(device_plans),

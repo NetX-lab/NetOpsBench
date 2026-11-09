@@ -64,6 +64,7 @@ cd NetOpsBench
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[agent]"
+python -m netopsbench.platform.runtime.build_tools  # verified official Containerlab v0.77.0
 
 netopsbench benchmark prepare --scales xs
 export OPENAI_API_KEY=...
@@ -71,6 +72,8 @@ PYTHONPATH=. python examples/01_run_scenario.py --vendor openai
 ```
 
 The first successful run produces a `BenchmarkReport` with case-level scores, timing, and artifact paths. For Docker, Containerlab, and runtime setup details, read [Quickstart](docs/content/docs/quickstart.mdx).
+
+Runtime creation uses the official Containerlab v0.77.0 release, with Docker-managed networking and sequential SONiC startup. The installer verifies both the release archive and executable; it does not replace the system Containerlab or modify Docker. Prepare the private tools after installation and configure privileged operations as described in Quickstart. Build the current client image with `docker build -f containers/client/Dockerfile -t netopsbench-client:pingmesh-v2 .`. Pingmesh uses one immutable offline plan for execution, coverage checks, and observation windows. Xlarge has 256 clients and a 66-second minimum window; Fat-tree K12/K18 use 42 seconds. K18 has 405 switches and 324 clients. Regenerate scenario assets with `netopsbench benchmark prepare --scales xlarge,fat-tree-k12,fat-tree-k18` and recreate runtimes after this refactor; previous artifact formats are rejected. `NETOPSBENCH_CLIENT_IMAGE` selects a matching custom image.
 
 ### Run a scenario from Python
 
@@ -100,9 +103,10 @@ NetOpsBench reports detection, fault type, device/interface localization, runtim
 | Small | CLOS | 6 | 8 | 15 |
 | Medium | CLOS | 12 | 16 | 28 |
 | Large | CLOS | 20 | 64 | 52 |
-| Xlarge | CLOS | 144 | 128 | 70 |
+| Xlarge | CLOS | 144 | 256 | 70 |
 | Fat-tree K=8 | Fat-tree | 80 | 128 | 70 |
 | Fat-tree K=12 | Fat-tree | 180 | 144 | 70 |
+| Fat-tree K=18 | Fat-tree | 405 | 324 | 70 |
 
 **Diagnosis score** is the mean end-to-end case score: healthy cases require the correct verdict, while fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
 

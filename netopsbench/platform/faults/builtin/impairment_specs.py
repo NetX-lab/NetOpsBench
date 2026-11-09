@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from netopsbench.platform.faults.defaults import LATENCY_MS, MTU, PACKET_CORRUPTION_PCT, PACKET_LOSS_PCT
+
 from ..models import FaultSpec
 from .common import episode_param
 
@@ -10,7 +12,7 @@ def _inject_mtu_mismatch_episode(injector, episode):
     return injector.inject_mtu_mismatch(
         episode.target_device,
         episode.target_interface,
-        mtu=episode.mtu or 1400,
+        mtu=episode_param(episode, "mtu", MTU),
     )
 
 
@@ -22,7 +24,7 @@ def _inject_packet_corruption_episode(injector, episode):
     return injector.inject_packet_corruption(
         episode.target_device,
         episode.target_interface or "eth1",
-        corruption_pct=episode_param(episode, "corruption_pct", 20),
+        corruption_pct=episode_param(episode, "corruption_pct", PACKET_CORRUPTION_PCT),
     )
 
 
@@ -30,7 +32,7 @@ def _inject_packet_loss_episode(injector, episode):
     return injector.inject_packet_loss(
         episode.target_device,
         episode.target_interface or "eth1",
-        loss_pct=episode_param(episode, "loss_pct", 30),
+        loss_pct=episode_param(episode, "loss_pct", PACKET_LOSS_PCT),
     )
 
 
@@ -38,7 +40,7 @@ def _inject_high_latency_episode(injector, episode):
     return injector.inject_high_latency(
         episode.target_device,
         episode.target_interface or "eth1",
-        latency_ms=episode_param(episode, "latency_ms", 100),
+        latency_ms=episode_param(episode, "latency_ms", LATENCY_MS),
     )
 
 

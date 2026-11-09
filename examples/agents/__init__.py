@@ -1,5 +1,13 @@
-"""Official public example agents for NetOpsBench."""
+"""Bundled diagnostic agents; backend dependencies load only when selected."""
 
-from .minimal_deepagent.agent import MinimalDeepAgent
+__all__ = ["MinimalDeepAgent", "CodexAgent"]
 
-__all__ = ["MinimalDeepAgent"]
+
+def __getattr__(name):
+    if name == "MinimalDeepAgent":
+        from .minimal_deepagent.agent import MinimalDeepAgent
+        return MinimalDeepAgent
+    if name == "CodexAgent":
+        from .codex_agent.agent import CodexAgent
+        return CodexAgent
+    raise AttributeError(name)

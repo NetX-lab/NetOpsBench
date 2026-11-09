@@ -16,6 +16,7 @@ from netopsbench.models.profiles import ScaleRegistry
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.models.scenario import ScenarioSpec
 from netopsbench.platform.runtime.manager import RuntimePool
+from netopsbench.platform.scenario.artifacts import persist_result
 from netopsbench.platform.scenario.executor import ScenarioExecutor
 from netopsbench.platform.scenario.validator import require_scenario_topology
 from netopsbench.platform.session.context import build_worker_execution_context
@@ -24,11 +25,36 @@ from netopsbench.platform.session.reporting import load_topology_metadata
 from netopsbench.platform.session.scoring import score_scenario_episode
 from netopsbench.platform.session.trace_store import TraceWriter
 from netopsbench.platform.session.types import WorkerExecutionContext
-from netopsbench.platform.utils.files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
 WorkerRunResult = tuple[list[Any], list[dict[str, Any]], dict[str, Any]]
+
+
+@dataclass
+class ExecutionControl:
+    """Internal acceptance hooks; ordinary SDK sessions keep their defaults."""
+
+    on_case: Callable[[dict[str, Any], dict[str, Any], list[Any]], None] | None = None
+    stop_on_failure: bool = False
+    cancel_event: Any = None
+    effects_only: bool = False
+
+
+def is_recovered_case_failure(summary: dict[str, Any]) -> bool:
+    """Finished diagnosis or effect failures can advance after verified recovery."""
+    return summary.get("cleanup_failed") is False and (
+        (
+            summary.get("status") == "failed"
+            and summary.get("failure_stage") == "agent"
+            and summary.get("case_valid") is True
+        )
+        or (
+            summary.get("status") == "invalid"
+            and summary.get("failure_stage") == "effect_validation"
+            and summary.get("case_valid") is False
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -90,20 +116,19 @@ def _build_scenario_executor(
     *,
     worker: RuntimeIdentity,
     fault_registry: Any,
-    minimum_baseline_seconds: int,
-    post_recovery_wait_seconds: int,
+    minimum_baseline_seconds: int | None,
     scale_registry: ScaleRegistry,
+    effects_only: bool = False,
 ) -> ScenarioExecutor:
     runner = ScenarioExecutor(
         topology_dir=str(worker_context.topology_dir),
         topology_metadata=load_topology_metadata(worker_context.topology_dir),
         minimum_baseline_seconds=minimum_baseline_seconds,
-        post_recovery_wait_seconds=post_recovery_wait_seconds,
         influxdb_bucket=worker_context.influxdb_bucket,
         topology_id=worker_context.topology_id,
         fault_registry=fault_registry,
         scale_registry=scale_registry,
-        evaluator=_create_evaluator(),
+        evaluator=Evaluator() if effects_only else _create_evaluator(),
         runtime_worker=worker,
     )
     return runner
@@ -121,11 +146,12 @@ def _run_worker(
     raw_dir: Path,
     trace_writer: TraceWriter | None,
     fault_registry: Any,
-    minimum_baseline_seconds: int,
-    post_recovery_wait_seconds: int,
+    minimum_baseline_seconds: int | None,
     scale_registry: ScaleRegistry,
     worker: RuntimeIdentity,
     scenarios: list[ScenarioSpec],
+    control: ExecutionControl | None = None,
+    destroy_after_run: bool = False,
 ) -> WorkerRunResult:
     worker_context = build_worker_execution_context(worker, worker.topology_dir)
     for scenario in scenarios:
@@ -137,34 +163,45 @@ def _run_worker(
         worker=worker,
         fault_registry=fault_registry,
         minimum_baseline_seconds=minimum_baseline_seconds,
-        post_recovery_wait_seconds=post_recovery_wait_seconds,
         scale_registry=scale_registry,
+        **({"effects_only": True} if control and control.effects_only else {}),
     )
     evaluator = runner.evaluator
+    if control:
+        runner._cancel_event = control.cancel_event
 
     evaluations: list[Any] = []
     scenario_summaries: list[dict[str, Any]] = []
     worker_success = True
 
     executed_count = 0
+    final_calibration = None
     try:
         for scenario_index, scenario in enumerate(scenarios):
-            callback = build_runtime_diagnosis_callback(
-                agent,
-                str(worker_context.topology_dir),
-                scenario.id,
-                worker_context,
-                trace_writer,
-                worker.worker_id,
-                runtime.id,
-                scenario.scale,
+            if control and control.cancel_event and control.cancel_event.is_set():
+                worker_success = False
+                break
+            callback = (
+                None
+                if control and control.effects_only
+                else build_runtime_diagnosis_callback(
+                    agent,
+                    str(worker_context.topology_dir),
+                    scenario.id,
+                    worker_context,
+                    trace_writer,
+                    worker.worker_id,
+                    runtime.id,
+                    scenario.scale,
+                    cancel_event=control.cancel_event if control else None,
+                )
             )
             scenario_result = runner.run_scenario(scenario, diagnosis_callback=callback)
             executed_count += 1
             raw_result_path = _persist_raw_scenario_result(worker_raw_dir, scenario.id, scenario_result)
             case_valid = bool(scenario_result.get("case_valid", scenario_result.get("success")))
             scored: list[Any] = []
-            if case_valid:
+            if case_valid and not (control and control.effects_only):
                 try:
                     scored = score_scenario_episode(
                         scenario,
@@ -194,16 +231,41 @@ def _run_worker(
                         logger.debug("failed to persist trace evaluation results", exc_info=True)
             evaluations.extend(scored)
             cleanup_success = bool((scenario_result.get("cleanup") or {}).get("success", True))
+            episode_result = scenario_result.get("episode") or {}
+            execution_failure = (episode_result.get("execution") or {}).get("failure") or {}
+            diagnosis_metadata = (episode_result.get("diagnosis") or {}).get("metadata") or {}
+            recovered = (scenario_result.get("cleanup") or {}).get("success") is True and not (
+                control and control.cancel_event and control.cancel_event.is_set()
+            )
+            recovered_agent_failure = (
+                case_valid
+                and not scenario_result.get("error")
+                and execution_failure.get("domain") in {"agent", "protocol"}
+                and execution_failure.get("phase") in {"diagnosis", "limits"}
+                and not diagnosis_metadata.get("cleanup_errors")
+                and recovered
+            )
+            recovered_effect_failure = (
+                not case_valid
+                and not (control and control.effects_only)
+                and (episode_result.get("effect_audit") or {}).get("valid") is False
+                and not episode_result.get("diagnosis")
+                and bool((scenario_result.get("cleanup") or {}).get("validated_baseline"))
+                and recovered
+            )
             success = case_valid and bool(scenario_result.get("success")) and cleanup_success
             if not case_valid:
                 status = "invalid"
-                failure_stage = "infrastructure"
+                failure_stage = "effect_validation" if recovered_effect_failure else "infrastructure"
             elif success:
                 status = "completed"
                 failure_stage = None
             else:
                 status = "failed"
-                failure_stage = "cleanup" if not cleanup_success else "execution"
+                if not cleanup_success:
+                    failure_stage = "cleanup"
+                else:
+                    failure_stage = "agent" if recovered_agent_failure else "execution"
             scenario_summaries.append(
                 {
                     "scenario_id": scenario.id,
@@ -213,22 +275,45 @@ def _run_worker(
                     "worker": worker.worker_id,
                     "raw_result_path": raw_result_path,
                     "cleanup_failed": not cleanup_success,
+                    "phase_timings": scenario_result.get("phase_timings", {}),
                     **({"failure_stage": failure_stage} if failure_stage else {}),
                 }
             )
             worker_success &= success
             if not cleanup_success:
+                runtime.mark_quarantined("scenario_cleanup_failure", [worker.worker_id])
+            if control and control.on_case:
+                control.on_case(scenario_summaries[-1], scenario_result, scored)
+            if not cleanup_success or (
+                control
+                and control.stop_on_failure
+                and not success
+                and not is_recovered_case_failure(scenario_summaries[-1])
+            ):
                 for skipped in scenarios[scenario_index + 1 :]:
                     scenario_summaries.append(
                         {
                             "scenario_id": skipped.id,
-                            "status": "skipped_infrastructure_failure",
+                            "status": (
+                                "skipped_infrastructure_failure" if not cleanup_success else "skipped_execution_failure"
+                            ),
                             "scale": skipped.scale,
                             "worker": worker.worker_id,
-                            "failure_stage": "prior_case_cleanup",
+                            "failure_stage": "prior_case_cleanup" if not cleanup_success else "prior_case_execution",
                         }
                     )
                 break
+        if executed_count and not any(item.get("cleanup_failed") for item in scenario_summaries):
+            try:
+                final_calibration = runner.final_calibration(scenario, destroy_after_run=destroy_after_run)
+            except BaseException as exc:
+                worker_success = False
+                final_calibration = {"success": False, "error": str(exc)}
+                runtime.mark_quarantined("final_calibration_failure", [worker.worker_id])
+                if not isinstance(exc, Exception):
+                    persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
+                    raise
+            persist_result(worker_raw_dir / "final_calibration.json", final_calibration)
     finally:
         runner.close()
 
@@ -240,6 +325,7 @@ def _run_worker(
         "executed_count": executed_count,
         "skipped_count": len(scenarios) - executed_count,
         "success": worker_success,
+        **({"final_calibration": final_calibration} if final_calibration is not None else {}),
     }
     return evaluations, scenario_summaries, worker_summary
 
@@ -252,7 +338,7 @@ def _persist_raw_scenario_result(
     safe_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in str(scenario_id))
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
     result_path = worker_raw_dir / f"{safe_id}_{timestamp}.json"
-    atomic_write_json(result_path, scenario_result, default=str)
+    persist_result(result_path, scenario_result)
     scenario_result["result_file"] = str(result_path)
     return str(result_path)
 
@@ -265,10 +351,15 @@ def execute_on_runtime_pool(
     raw_dir: Path,
     trace_writer: TraceWriter | None = None,
     fault_registry: Any = None,
-    minimum_baseline_seconds: int = 60,
-    post_recovery_wait_seconds: int = 2,
+    minimum_baseline_seconds: int | None = None,
+    control: ExecutionControl | None = None,
+    destroy_after_run: bool = False,
 ) -> PoolDispatchResult:
     """Run scenarios on an existing runtime and return ordered execution data."""
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    for scenario in scenarios:
+        RecoveryPolicy.from_metadata(scenario.metadata)
     if runtime.state != "warm" or bool(runtime.metadata.get("quarantined")):
         raise RuntimeError(
             f"Runtime {runtime.id!r} is not eligible for execution: "
@@ -287,21 +378,18 @@ def execute_on_runtime_pool(
             trace_writer=trace_writer,
             fault_registry=fault_registry,
             minimum_baseline_seconds=minimum_baseline_seconds,
-            post_recovery_wait_seconds=post_recovery_wait_seconds,
             scale_registry=runtime.scale_registry,
             worker=worker,
             scenarios=assigned,
+            control=control,
+            destroy_after_run=destroy_after_run,
         ),
     )
     cleanup_failures = sorted(
         {str(item["worker"]) for item in result.scenarios if item.get("cleanup_failed") is True and item.get("worker")}
     )
     if cleanup_failures:
-        runtime.state = "quarantined"
-        runtime.metadata["quarantined"] = True
-        runtime.metadata["quarantine_reason"] = "scenario_cleanup_failure"
-        runtime.metadata["quarantined_workers"] = cleanup_failures
-        runtime._write_metadata()
+        runtime.mark_quarantined("scenario_cleanup_failure", cleanup_failures)
     return result
 
 

@@ -62,7 +62,7 @@ def test_update_telegraf_config_rejects_legacy_grouped_topology(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="schema_version.*3.*Regenerate"):
+    with pytest.raises(ValueError, match="schema_version.*4.*Regenerate"):
         telegraf_mod.update_telegraf_config(str(topo_path), output_file=str(tmp_path / "telegraf.conf"))
 
 
@@ -106,7 +106,7 @@ def test_update_telegraf_config_isolates_gnmi_subscriptions_per_role(tmp_path):
     assert '"172.20.20.27:50051"' in leaf_block
     assert '"172.20.20.11:50051"' not in leaf_block
     assert 'path = "COUNTERS/Ethernet64"' in leaf_block
-    assert 'path = "COUNTERS/Ethernet68"' not in leaf_block
+    assert 'path = "COUNTERS/Ethernet68"' in leaf_block
     assert 'subscription_mode = "sample"' in rendered
     assert 'sample_interval = "10s"' in rendered
     assert 'username = "admin"' in rendered
@@ -317,7 +317,7 @@ def test_native_client_image_has_no_python_or_iperf_runtime():
     assert "python" not in runtime_stage.lower()
     assert "iperf" not in runtime_stage.lower()
     assert "/usr/local/bin/netopsbench-client-agent" in runtime_stage
-    assert DEFAULT_CLIENT_IMAGE.startswith("docker.io/yyyyyt123/netopsbench-client@sha256:")
+    assert DEFAULT_CLIENT_IMAGE == "netopsbench-client:pingmesh-v2"
     assert ":latest" not in DEFAULT_CLIENT_IMAGE
     assert DEFAULT_SONIC_VS_IMAGE.startswith("yyyyyt123/netopsbench-sonic-vs-202505-telemetry@sha256:")
 

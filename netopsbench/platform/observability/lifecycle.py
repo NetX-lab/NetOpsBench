@@ -52,6 +52,7 @@ def ensure_observability_core() -> None:
             str(root / "docker-compose.yaml"),
             "up",
             "-d",
+            "--no-recreate",
             "influxdb",
             "grafana",
         ],

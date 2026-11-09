@@ -110,7 +110,7 @@ def _build_builtin_fault_specs() -> list[FaultSpec]:
     Imported lazily inside the function to avoid an import cycle:
     ``builtin/__init__`` may transitively import ``specs`` for shared types.
     """
-    from .builtin.acl_specs import build_acl_fault_specs
+    from .builtin.catalog_specs import build_catalog_fault_specs
     from .builtin.impairment_specs import build_impairment_fault_specs
     from .builtin.link_specs import build_link_fault_specs
     from .builtin.routing_specs import build_routing_fault_specs
@@ -121,7 +121,7 @@ def _build_builtin_fault_specs() -> list[FaultSpec]:
         build_routing_fault_specs,
         build_impairment_fault_specs,
         build_system_fault_specs,
-        build_acl_fault_specs,
+        build_catalog_fault_specs,
     )
     aggregated: list[FaultSpec] = []
     for build_specs in builders:

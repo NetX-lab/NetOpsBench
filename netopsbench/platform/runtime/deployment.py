@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import signal
+import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
@@ -17,9 +18,11 @@ from netopsbench.logging_utils import get_logger
 from netopsbench.models.profiles import ScaleProfile, ScaleRegistry, get_scale_profile
 from netopsbench.models.runtime import RuntimeIdentity
 from netopsbench.platform.runtime.apply_configs import apply_configs
+from netopsbench.platform.runtime.toolchain import containerlab_command
 from netopsbench.platform.topology.config import SONIC_PID1_COMMAND
 from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.platform.topology.topology_utils import clab_container_name, load_topology_manifest
+from netopsbench.platform.utils.control import OperationControl
 from netopsbench.platform.utils.proc import docker_prefix, safe_run, sudo_prefix
 
 APPLY_CONFIG_PARALLELISM = 32
@@ -111,21 +114,39 @@ def allocate_management_subnets(scale: str, worker_count: int, registry: ScaleRe
 
 
 @contextmanager
-def runtime_deploy_lock():
+def runtime_deploy_lock(control: OperationControl | None = None):
     """Serialize host-side network allocation and Containerlab creation."""
     with RUNTIME_DEPLOY_LOCK_PATH.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if control is None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        else:
+            while True:
+                control.remaining()
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    control.sleep(0.2)
         try:
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def deploy_worker_lab(worker: RuntimeIdentity, scale: str, registry: ScaleRegistry | None = None) -> None:
+def deploy_worker_lab(
+    worker: RuntimeIdentity,
+    scale: str,
+    registry: ScaleRegistry | None = None,
+    *,
+    control: OperationControl | None = None,
+) -> None:
     """Generate, deploy, and activate one worker without observability side effects."""
+    if control is not None:
+        control.remaining()
     topology_dir = Path(worker.topology_dir)
+    backend = containerlab_command()  # Validate the official executable before resource changes.
     topology_dir.mkdir(parents=True, exist_ok=True)
-    stale_paths = [topology_dir / "configs", *topology_dir.glob("clab-*")]
+    stale_paths = [path for path in [topology_dir / "configs", *topology_dir.glob("clab-*")] if path.exists()]
     if stale_paths:
         safe_run(
             [*sudo_prefix(), "rm", "-rf", *(str(path) for path in stale_paths)],
@@ -145,17 +166,26 @@ def deploy_worker_lab(worker: RuntimeIdentity, scale: str, registry: ScaleRegist
     if not topology_file.is_file():
         raise FileNotFoundError(f"Generated Containerlab topology not found: {topology_file}")
 
-    command = [*sudo_prefix(), "containerlab", "deploy", "-t", str(topology_file), "--reconfigure"]
+    command = [*sudo_prefix(), *backend, "deploy", "-t", str(topology_file), "--reconfigure"]
     profile = get_scale_profile(scale, registry)
     if profile.containerlab_max_workers is not None:
         command.extend(["--max-workers", str(profile.containerlab_max_workers)])
-    deploy_result = safe_run(command, cwd=topology_dir, check=False, timeout=profile.deploy_timeout_seconds)
+    deploy_result = safe_run(
+        command, cwd=topology_dir, check=False, timeout=profile.deploy_timeout_seconds, control=control
+    )
     if deploy_result.returncode != 0:
         details = (deploy_result.stderr or deploy_result.stdout or "no diagnostic output").strip()
         raise RuntimeError(f"Containerlab deploy failed ({deploy_result.returncode}): {details[-4000:]}")
 
+    if control is not None:
+        control.remaining()
     _verify_sonic_pid1_contract(worker)
-    result = apply_configs(str(topology_dir), APPLY_CONFIG_PARALLELISM, worker.lab_name)
+    result = apply_configs(
+        str(topology_dir),
+        APPLY_CONFIG_PARALLELISM,
+        worker.lab_name,
+        **({"control": control} if control is not None else {}),
+    )
     if result.failed:
         raise RuntimeError(f"SONiC activation failed for: {', '.join(result.failed)}")
 
@@ -254,25 +284,27 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
 
     topology_file = topology_dir / f"{worker.lab_name}.clab.yaml"
     profile = _teardown_profile(topology_dir / "topology.json", registry)
+    backend = containerlab_command()
     command = (
-        [*sudo_prefix(), "containerlab", "destroy", "-t", str(topology_file), "--cleanup"]
+        [*sudo_prefix(), *backend, "destroy", "-t", str(topology_file), "--cleanup"]
         if topology_file.is_file()
-        else [*sudo_prefix(), "containerlab", "destroy", "--name", worker.lab_name, "--cleanup"]
+        else [*sudo_prefix(), *backend, "destroy", "--name", worker.lab_name, "--cleanup"]
     )
     if profile is not None and profile.containerlab_max_workers is not None:
         command.extend(["--max-workers", str(profile.containerlab_max_workers)])
     teardown_timeout = profile.deploy_timeout_seconds if profile is not None else 600
-    destroy = safe_run(
-        command,
-        cwd=topology_dir,
-        check=False,
-        timeout=teardown_timeout,
-    )
+    try:
+        destroy = safe_run(command, cwd=topology_dir, check=False, timeout=teardown_timeout)
+    except subprocess.TimeoutExpired:
+        destroy = subprocess.CompletedProcess(command, 124, "", "Containerlab destroy timed out")
 
     names = _lab_container_names(docker, worker.lab_name)
     if names:
         safe_run([*docker, "docker", "rm", "-f", *names], check=False, timeout=300)
     _wait_for_lab_removal(docker, worker.lab_name)
+    if destroy.returncode != 0:
+        # Finish upstream namespace/hosts cleanup after removing stuck owned containers.
+        destroy = safe_run(command, cwd=topology_dir, check=False, timeout=teardown_timeout)
     network_remove = safe_run(
         [*docker, "docker", "network", "rm", worker.mgmt_network],
         check=False,
@@ -286,7 +318,7 @@ def teardown_worker_lab(worker: RuntimeIdentity, registry: ScaleRegistry | None 
     if _network_exists(docker, worker.mgmt_network):
         details = (network_remove.stderr or network_remove.stdout or "management network remained").strip()
         errors.append(f"{worker.mgmt_network}: {details}")
-    if destroy.returncode != 0 and errors:
+    if destroy.returncode != 0:
         details = (destroy.stderr or destroy.stdout or "").strip()
         errors.append(f"containerlab destroy failed ({destroy.returncode}): {details[-2000:]}")
     if errors:

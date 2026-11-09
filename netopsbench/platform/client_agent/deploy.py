@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 import subprocess
 import time
@@ -16,7 +18,7 @@ from netopsbench.platform.topology.topology_utils import clab_container_name, lo
 from netopsbench.platform.utils.files import atomic_write_text
 from netopsbench.platform.utils.proc import docker_prefix, safe_run
 
-from .config import CLIENT_AGENT_CONFIG_NAME, write_client_agent_config
+from .config import CLIENT_AGENT_CONFIG_NAME, build_client_agent_config
 from .contract import (
     HEARTBEAT_MAX_AGE_SECONDS,
     PINGMESH_CONTROL_PORT,
@@ -31,7 +33,6 @@ CLIENT_AGENT_CONFIG = f"/etc/netopsbench/{CLIENT_AGENT_CONFIG_NAME}"
 CLIENT_AGENT_BIND = "configs/client-agent:/etc/netopsbench:ro"
 CLIENT_AGENT_ENV_NAME = "client-agent.env"
 CLIENT_AGENT_ENV = f"/etc/netopsbench/{CLIENT_AGENT_ENV_NAME}"
-PINGMESH_INGEST_URL = "http://telegraf:8186"
 DEFAULT_DEPLOY_PARALLELISM = 32
 READINESS_TIMEOUT_SECONDS = 15.0
 
@@ -74,14 +75,13 @@ def _validate_bind(topology_dir: Path, lab_name: str) -> None:
     linux_kind = ((topology.get("topology") or {}).get("kinds") or {}).get("linux") or {}
     if CLIENT_AGENT_BIND not in (linux_kind.get("binds") or []):
         raise RuntimeError(
-            f"Native client-agent bind missing from {yaml_path}: expected {CLIENT_AGENT_BIND}. "
-            "Regenerate the topology."
+            f"Native client-agent bind missing from {yaml_path}: expected {CLIENT_AGENT_BIND}. Regenerate the topology."
         )
 
 
-def _write_agent_env(path: Path, *, token: str, org: str, bucket: str) -> None:
+def _write_agent_env(path: Path, *, collector_ip: str, token: str, org: str, bucket: str) -> None:
     values = {
-        "NETOPSBENCH_INFLUXDB_URL": PINGMESH_INGEST_URL,
+        "NETOPSBENCH_INFLUXDB_URL": f"http://{collector_ip}:8186",
         "NETOPSBENCH_INFLUXDB_TOKEN": token,
         "NETOPSBENCH_INFLUXDB_ORG": org,
         "NETOPSBENCH_INFLUXDB_BUCKET": bucket,
@@ -170,7 +170,7 @@ def _cleanup_started_clients(containers: list[str], parallelism: int) -> list[st
     return sorted(failures)
 
 
-def _wait_until_ready(management_ip: str) -> None:
+def _wait_until_ready(management_ip: str, plan_id: str) -> None:
     deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
     last_error = "status endpoint unavailable"
     while time.monotonic() < deadline:
@@ -182,6 +182,8 @@ def _wait_until_ready(management_ip: str) -> None:
             heartbeat_age = time.time() - heartbeat_ns / 1_000_000_000
             if (
                 pingmesh_status.get("ready") is True
+                and pingmesh_status.get("plan_id") == plan_id
+                and pingmesh_status.get("config_schema_version") == 2
                 and 0 <= heartbeat_age <= HEARTBEAT_MAX_AGE_SECONDS
                 and traffic.get("ok") is True
             ):
@@ -198,21 +200,23 @@ def _start_client(
     client_name: str,
     container: str,
     management_ip: str,
+    plan_id: str,
 ) -> tuple[str, bool, str]:
     command = (
         "set -e; "
         f"test -x {CLIENT_AGENT_BINARY}; "
         f"test -r {CLIENT_AGENT_CONFIG}; "
+        f"{CLIENT_AGENT_BINARY} validate-config --config {CLIENT_AGENT_CONFIG}; "
         f"test -r {CLIENT_AGENT_ENV}; "
         f". {CLIENT_AGENT_ENV}; "
         "mkdir -p /run/netopsbench /var/log/netopsbench; "
         f"{_stop_processes_command(exit_with_status=False)} "
         '[ "$status" -eq 0 ]; '
         f"nohup {CLIENT_AGENT_BINARY} pingmesh --config {CLIENT_AGENT_CONFIG} "
-        "> /dev/null 2>&1 </dev/null & "
+        ">> /var/log/netopsbench/pingmesh.log 2>&1 </dev/null & "
         'printf "%s\\n" "$!" > /run/netopsbench/pingmesh.pid; '
         f"nohup {CLIENT_AGENT_BINARY} traffic --config {CLIENT_AGENT_CONFIG} "
-        "> /dev/null 2>&1 </dev/null & "
+        ">> /var/log/netopsbench/traffic.log 2>&1 </dev/null & "
         'printf "%s\\n" "$!" > /run/netopsbench/traffic.pid; '
         "sleep 0.2; "
         'kill -0 "$(cat /run/netopsbench/pingmesh.pid)"; '
@@ -223,7 +227,7 @@ def _start_client(
         detail = (result.stderr or result.stdout or "").strip() or f"exit status {result.returncode}"
         return client_name, False, detail
     try:
-        _wait_until_ready(management_ip)
+        _wait_until_ready(management_ip, plan_id)
     except RuntimeError as exc:
         return client_name, False, str(exc)
     return client_name, True, ""
@@ -246,9 +250,16 @@ def deploy_client_agents(
         raise RuntimeError("Every native client-agent requires a management IP")
     _validate_bind(root, manifest.name)
     config_path = root / "configs" / "client-agent" / CLIENT_AGENT_CONFIG_NAME
-    write_client_agent_config(manifest, config_path)
+    expected = build_client_agent_config(manifest)
+    if not config_path.is_file() or json.loads(config_path.read_text()) != expected:
+        raise RuntimeError("Client-agent config is missing or stale; regenerate the topology")
+    for name, digest in expected["client_plan_sha256"].items():
+        plan_path = config_path.parent / "pinglists" / f"{name}.json"
+        if not plan_path.is_file() or hashlib.sha256(plan_path.read_bytes()).hexdigest() != digest:
+            raise RuntimeError(f"Client plan {name} is missing or stale; regenerate the topology")
     _write_agent_env(
         config_path.parent / CLIENT_AGENT_ENV_NAME,
+        collector_ip=manifest.collector.ipv4,
         token=influxdb_token,
         org=influxdb_org,
         bucket=influxdb_bucket,
@@ -271,6 +282,7 @@ def deploy_client_agents(
                 client_name=client_name,
                 container=container,
                 management_ip=str(client.mgmt_ip),
+                plan_id=manifest.require_pingmesh_plan().settings.plan_id,
             )
             futures[future] = client_name
             scheduled_containers.append(container)

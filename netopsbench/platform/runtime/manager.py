@@ -8,6 +8,7 @@ import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 
 from pydantic import ValidationError
 
@@ -24,6 +25,8 @@ from netopsbench.platform.runtime.lifecycle import (
     RuntimeLifecycleError,
     teardown_workers,
 )
+from netopsbench.platform.runtime.toolchain import runtime_backend_identity
+from netopsbench.platform.utils.control import OperationControl
 from netopsbench.platform.utils.files import atomic_write_json
 from netopsbench.platform.utils.proc import safe_run
 
@@ -47,6 +50,8 @@ class RuntimePool:
     scale_registry: ScaleRegistry = field(default_factory=default_scale_registry, repr=False)
     telemetry_ownership_file: Path = field(repr=False, default=Path(".netopsbench/telemetry-buckets.json"))
     _provision_created_buckets: list[str] = field(default_factory=list, repr=False)
+    operation_control: OperationControl | None = field(default=None, repr=False)
+    _metadata_lock: RLock = field(default_factory=RLock, repr=False, compare=False)
 
     @property
     def size(self) -> int:
@@ -56,7 +61,7 @@ class RuntimePool:
         """Return the canonical serializable runtime description."""
         profile = self.scale_registry.get(self.scale)
         return {
-            "schema_version": "3",
+            "schema_version": "4",
             "id": self.id,
             "name": self.name,
             "scale": self.scale,
@@ -74,11 +79,28 @@ class RuntimePool:
         atomic_write_json(self.root_dir / "runtime.json", self.describe())
 
     def _run_stage(self, stage: str, next_state: str) -> RuntimePool:
+        if stage != "teardown" and self.operation_control is not None:
+            self.operation_control.remaining()
+        if stage != "teardown":
+            identity = runtime_backend_identity()
+            previous_backend = self.metadata.get("runtime_backend")
+            if (
+                previous_backend is None
+                and self.state == "created"
+                and not self.stage_results
+                and not self.metadata.get("deployment_started")
+            ):
+                self.metadata["runtime_backend"] = identity
+                self._write_metadata()  # Durable even if deployment is interrupted.
+            elif previous_backend != identity:
+                raise ValueError("Runtime backend changed or is unrecorded; archive it and create a new runtime")
         previous = self.stage_results.get(stage)
         if previous is not None and previous.status == "completed":
             return self
         try:
-            result = RuntimeLifecycle(scale_registry=self.scale_registry).run(stage, self)
+            lifecycle = RuntimeLifecycle(scale_registry=self.scale_registry)
+            lifecycle.control = None if stage == "teardown" else self.operation_control
+            result = lifecycle.run(stage, self)
         except RuntimeLifecycleError as exc:
             self.stage_results[stage] = exc.result
             self._write_metadata()
@@ -87,6 +109,20 @@ class RuntimePool:
         self.state = next_state
         self._write_metadata()
         return self
+
+    def mark_quarantined(self, reason: str, workers: list[str] | None = None) -> None:
+        """Persist recovery failure immediately and accumulate affected workers."""
+        with self._metadata_lock:
+            changes = {"quarantined": True, "quarantine_reason": reason}
+            if workers is not None:
+                previous = self.metadata.get("quarantined_workers")
+                known = {str(worker) for worker in previous} if isinstance(previous, list) else set()
+                changes["quarantined_workers"] = sorted(known | set(workers))
+            if self.state == "quarantined" and all(self.metadata.get(k) == v for k, v in changes.items()):
+                return
+            self.metadata.update(changes)
+            self.state = "quarantined"
+            self._write_metadata()
 
     def deploy(self) -> RuntimePool:
         return self._run_stage("deploy", "deployed")
@@ -103,58 +139,59 @@ class RuntimePool:
     def status(self) -> dict[str, object]:
         return {"id": self.id, "name": self.name, "scale": self.scale, "state": self.state}
 
+    def _record_cleanup_failure(self, error: BaseException, provision_error: BaseException | None = None) -> None:
+        self.state = "cleanup_failed"
+        self.metadata.update(
+            quarantined=True,
+            cleanup_error=f"{type(error).__name__}: {error}",
+            cleanup_pending_buckets=list(self._provision_created_buckets),
+        )
+        if provision_error is not None:
+            self.metadata["provision_error"] = f"{type(provision_error).__name__}: {provision_error}"
+        try:
+            self._write_metadata()
+        except BaseException as metadata_error:
+            self.metadata["quarantine_persistence_error"] = f"{type(metadata_error).__name__}: {metadata_error}"
+            logger.warning("Unable to persist runtime cleanup failure", exc_info=True)
+
+    def _remove_root(self) -> None:
+        shutil.rmtree(self.root_dir, ignore_errors=True)
+        if self.root_dir.exists():
+            try:
+                safe_run(
+                    ["sudo", "-n", "rm", "-rf", str(self.root_dir)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except Exception:
+                logger.warning("sudo rm of runtime root failed during cleanup", exc_info=True)
+        if self.root_dir.exists():
+            raise RuntimeError(f"runtime directory remained after cleanup: {self.root_dir}")
+
     def teardown(self) -> RuntimePool:
         if self.state == "torn_down":
             return self
-        # ``create()`` only reserves metadata; it has no physical lab to
-        # teardown. A failed deploy does have a stage result and must still
-        # attempt precise cleanup of any partially-created resources.
-        if self.state != "created" or "deploy" in self.stage_results:
-            try:
+        try:
+            # A reservation owns no lab. Interrupted deployment still does,
+            # even when it has not written a lifecycle stage result yet.
+            if self.state != "created" or "deploy" in self.stage_results or self.metadata.get("deployment_started"):
+                pending = self.metadata.get("cleanup_pending_buckets")
+                self._provision_created_buckets = (
+                    [str(bucket) for bucket in pending]
+                    if self.state == "cleanup_failed" and isinstance(pending, list)
+                    else ManagedBucketRegistry(self.telemetry_ownership_file).active_for_runtime(self.id)
+                )
                 RuntimeLifecycle(scale_registry=self.scale_registry).run("teardown", self)
-            except RuntimeLifecycleError as exc:
-                self.stage_results["teardown"] = exc.result
-                self.state = "cleanup_failed"
-                self.metadata["quarantined"] = True
-                self.metadata["cleanup_error"] = exc.result.error or str(exc)
-                self.metadata["cleanup_pending_buckets"] = ManagedBucketRegistry(
-                    self.telemetry_ownership_file
-                ).active_for_runtime(self.id)
-                self._write_metadata()
-                raise
-            registry = ManagedBucketRegistry(self.telemetry_ownership_file)
-            pending = self.metadata.get("cleanup_pending_buckets")
-            if self.state == "cleanup_failed" and isinstance(pending, list):
-                self._provision_created_buckets = [str(bucket) for bucket in pending]
-            else:
-                self._provision_created_buckets = registry.active_for_runtime(self.id)
-            try:
                 self._delete_provision_created_buckets()
-            except Exception as exc:
-                self.state = "cleanup_failed"
-                self.metadata["quarantined"] = True
-                self.metadata["cleanup_error"] = f"{type(exc).__name__}: {exc}"
-                self.metadata["cleanup_pending_buckets"] = list(self._provision_created_buckets)
-                self._write_metadata()
-                raise
-            self.metadata.pop("cleanup_pending_buckets", None)
-
-        if self.root_dir.exists():
-            shutil.rmtree(self.root_dir, ignore_errors=True)
-        if self.root_dir.exists():
-            safe_run(
-                ["sudo", "-n", "rm", "-rf", str(self.root_dir)],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        if self.root_dir.exists():
-            self.state = "cleanup_failed"
-            self.metadata["quarantined"] = True
-            self.metadata["cleanup_error"] = f"runtime directory remained after teardown: {self.root_dir}"
-            self._write_metadata()
-            raise RuntimeError(str(self.metadata["cleanup_error"]))
+                self.metadata.pop("cleanup_pending_buckets", None)
+            self._remove_root()
+        except BaseException as exc:
+            if isinstance(exc, RuntimeLifecycleError):
+                self.stage_results["teardown"] = exc.result
+            self._record_cleanup_failure(exc)
+            raise
         self.state = "torn_down"
         return self
 
@@ -173,6 +210,16 @@ class RuntimePool:
         self._provision_created_buckets = failed
         if errors:
             raise RuntimeError("Managed bucket cleanup failed: " + "; ".join(errors))
+
+
+class RuntimeProvisionError(RuntimeError):
+    """Provisioning left owned resources that still require cleanup."""
+
+    def __init__(self, runtime: RuntimePool, message: str):
+        self.runtime = runtime
+        self.provision_error: BaseException | None = None
+        self.cleanup_error: BaseException | None = None
+        super().__init__(message)
 
 
 class RuntimeManager:
@@ -228,75 +275,40 @@ class RuntimeManager:
         runtime._write_metadata()
         return runtime
 
+    @staticmethod
+    def _failed_provision(
+        runtime: RuntimePool, provision_error: BaseException, cleanup_error: BaseException
+    ) -> RuntimeProvisionError:
+        """Retain ownership even when persisting the quarantine also fails."""
+        runtime._record_cleanup_failure(cleanup_error, provision_error)
+        error = RuntimeProvisionError(
+            runtime,
+            f"Runtime provisioning failed ({runtime.metadata['provision_error']}) "
+            f"and cleanup failed ({runtime.metadata['cleanup_error']})",
+        )
+        error.provision_error = provision_error
+        error.cleanup_error = cleanup_error
+        return error
+
     def provision(
         self, *, scale: str, workers: int = 1, name: str | None = None, root_dir: Path | None = None
     ) -> RuntimePool:
         runtime = self._build_runtime(scale=scale, workers=workers, name=name, root_dir=root_dir)
         try:
             runtime.deploy().ensure_observability().ensure_pingmesh().warm()
-        except Exception as provision_error:
+            runtime.metadata["provisioning_mode"] = "worker_pool"
+            runtime.state = "warm"
+            runtime._write_metadata()
+        except BaseException as provision_error:
             logger.warning("Worker deployment failed; tearing down partial state", exc_info=True)
             try:
                 if runtime.metadata.get("deployment_started"):
                     teardown_workers(runtime.workers, self.scale_registry)
-            except Exception as cleanup_error:
-                logger.warning("Best-effort teardown_workers failed during cleanup", exc_info=True)
-                runtime.state = "cleanup_failed"
-                runtime.metadata["quarantined"] = True
-                runtime.metadata["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
-                runtime.metadata["cleanup_pending_buckets"] = list(runtime._provision_created_buckets)
-                runtime._write_metadata()
-                raise RuntimeError(
-                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
-                    f"{provision_error}) and cleanup failed "
-                    f"({type(cleanup_error).__name__}: {cleanup_error})"
-                ) from cleanup_error
-
-            try:
                 runtime._delete_provision_created_buckets()
-            except Exception as cleanup_error:
-                logger.warning("Managed bucket cleanup failed during provisioning compensation", exc_info=True)
-                runtime.state = "cleanup_failed"
-                runtime.metadata["quarantined"] = True
-                runtime.metadata["cleanup_error"] = f"{type(cleanup_error).__name__}: {cleanup_error}"
-                runtime.metadata["cleanup_pending_buckets"] = list(runtime._provision_created_buckets)
-                runtime._write_metadata()
-                raise RuntimeError(
-                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
-                    f"{provision_error}) and cleanup failed "
-                    f"({type(cleanup_error).__name__}: {cleanup_error})"
-                ) from cleanup_error
-            # Use sudo rm to handle root-owned files left by containerlab.
-            try:
-                safe_run(
-                    ["sudo", "-n", "rm", "-rf", str(runtime.root_dir)],
-                    check=False,
-                    capture_output=True,
-                    timeout=120,
-                )
-            except Exception:
-                logger.warning("sudo rm of runtime root failed during cleanup", exc_info=True)
-            if runtime.root_dir.exists():
-                shutil.rmtree(runtime.root_dir, ignore_errors=True)
-            if runtime.root_dir.exists():
-                residual_cleanup_error = RuntimeError(
-                    f"runtime directory remained after provisioning cleanup: {runtime.root_dir}"
-                )
-                runtime.state = "cleanup_failed"
-                runtime.metadata["quarantined"] = True
-                runtime.metadata["cleanup_error"] = str(residual_cleanup_error)
-                try:
-                    runtime._write_metadata()
-                except Exception:
-                    logger.warning("Unable to persist provisioning cleanup failure", exc_info=True)
-                raise RuntimeError(
-                    f"Runtime provisioning failed ({type(provision_error).__name__}: "
-                    f"{provision_error}) and cleanup failed ({residual_cleanup_error})"
-                ) from residual_cleanup_error
+                runtime._remove_root()
+            except BaseException as cleanup_error:
+                raise self._failed_provision(runtime, provision_error, cleanup_error) from cleanup_error
             raise
-        runtime.metadata["provisioning_mode"] = "worker_pool"
-        runtime.state = "warm"
-        runtime._write_metadata()
         return runtime
 
     def create(self, *, scale: str, workers: int = 1, name: str | None = None) -> RuntimePool:
@@ -311,7 +323,7 @@ class RuntimeManager:
             raise
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeMetadataError(f"Unable to read runtime metadata {metadata_path}: {exc}") from exc
-        if payload.get("schema_version") != "3":
+        if payload.get("schema_version") != "4":
             raise RuntimeMetadataError(
                 "Unsupported runtime.json schema; recreate the runtime with the current RuntimeManager"
             )
@@ -342,7 +354,7 @@ class RuntimeManager:
             }
         except (KeyError, TypeError, ValidationError, ValueError) as exc:
             raise RuntimeMetadataError(
-                f"Invalid schema-v3 runtime metadata in {metadata_path}; recreate the runtime: {exc}"
+                f"Invalid schema-v4 runtime metadata in {metadata_path}; recreate the runtime: {exc}"
             ) from exc
         return RuntimePool(
             id=str(payload["id"]),

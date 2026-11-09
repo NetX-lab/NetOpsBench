@@ -48,4 +48,7 @@ def resolve_container(toolkit, device: str, field_name: str = "device") -> str:
 
 def docker_exec(container: str, cmd_args: list[str], timeout: int) -> subprocess.CompletedProcess:
     args = [*docker_prefix(), "docker", "exec", container] + [str(arg) for arg in cmd_args]
-    return safe_run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    from ..control import current_tool_control
+
+    control = current_tool_control()
+    return safe_run(args, capture_output=True, text=True, timeout=timeout, check=False, control=control)

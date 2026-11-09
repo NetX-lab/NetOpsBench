@@ -395,11 +395,6 @@ def test_query_bgp_events_healthy_fast_path_skips_global_session_details(monkeyp
 
 def test_bgp_fast_event_uses_later_missing_transition_as_latest_state(tmp_path):
     toolkit = _toolkit(tmp_path)
-    scope = toolkit._resolve_pingmesh_time_scope(
-        10,
-        "2026-07-11T00:00:00Z",
-        "2026-07-11T00:00:30Z",
-    )
     rows = [
         {
             "result": "first_state",
@@ -437,7 +432,6 @@ def test_bgp_fast_event_uses_later_missing_transition_as_latest_state(tmp_path):
 
     events = toolkit._build_bgp_events_fast(
         rows,
-        scope,
         toolkit._bgp_device_roles(),
         "leaf1",
         "10.0.0.1",
@@ -481,3 +475,65 @@ def test_get_bgp_neighbor_only_queries_requested_device_and_peer(monkeypatch, tm
     assert "Bad Peer AS" in result.data["last_reset"]
     assert all(call[0].endswith("leaf1") for call in calls)
     assert all("10.0.0.1" in call[1][-1] or "summary" in call[1][-1] for call in calls)
+
+
+@pytest.mark.parametrize(
+    "states",
+    [
+        ["ESTABLISHED", "ESTABLISHED"],
+        ["IDLE", "IDLE"],
+        ["ESTABLISHED", "IDLE"],
+        ["IDLE", "ESTABLISHED"],
+        ["ESTABLISHED", "IDLE", "ESTABLISHED"],
+        ["IDLE", "ESTABLISHED", "IDLE"],
+    ],
+)
+@pytest.mark.parametrize("state_filter", ["all", "established", "non_established"])
+@pytest.mark.parametrize("prior", [None, "ESTABLISHED"])
+def test_snapshot_and_indexed_events_preserve_the_same_session_evidence(states, state_filter, prior):
+    from netopsbench.platform.toolkit._core.observability.bgp_ops import BgpOpsMixin
+
+    toolkit = BgpOpsMixin()
+    base = {"source": "leaf1", "neighbor_address": "192.0.2.1"}
+    times = [f"2026-07-11T00:00:{(index + 1) * 5:02}Z" for index in range(len(states))]
+    snapshots = [
+        {**base, "_measurement": "bgp_neighbors", "_time": timestamp, "session_state": state}
+        for timestamp, state in zip(times, states, strict=True)
+    ]
+    indexed = [
+        {**base, "result": "first_state", "_time": times[0], "_value": states[0]},
+        {**base, "result": "last_state", "_time": times[-1], "_value": states[-1]},
+        {**base, "result": "state_count", "_value": len(states)},
+    ]
+    if prior:
+        snapshots.insert(
+            0,
+            {
+                **base,
+                "_measurement": "bgp_neighbors",
+                "_time": "2026-07-11T00:00:00Z",
+                "session_state": prior,
+                "_scope_prior": True,
+            },
+        )
+        indexed.append(
+            {
+                **base,
+                "result": "prior_field",
+                "_field": "session_state",
+                "_value": prior,
+                "_time": "2026-07-11T00:00:00Z",
+            }
+        )
+    indexed.extend(
+        {**base, "result": "session_events", "previous_state": before, "latest_state": after, "_time": timestamp}
+        for before, after, timestamp in zip(states, states[1:], times[1:], strict=False)
+    )
+    snapshots.append({"source": "leaf1", "_measurement": "bgp_collection", "collection_ok": True, "_time": times[-1]})
+    indexed.append(
+        {"source": "leaf1", "result": "collection_last", "_field": "collection_ok", "_value": True, "_time": times[-1]}
+    )
+    roles = {"leaf1": "leaf", "spine1": "spine"}
+    assert toolkit._build_bgp_events(
+        snapshots, roles, None, None, None, state_filter
+    ) == toolkit._build_bgp_events_fast(indexed, roles, None, None, None, state_filter)

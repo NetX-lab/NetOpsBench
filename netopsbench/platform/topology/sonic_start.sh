@@ -205,46 +205,44 @@ supervisorctl start portsyncd
 supervisorctl start orchagent
 
 supervisorctl start coppmgrd
-
 supervisorctl start neighsyncd
-
 supervisorctl start fdbsyncd
-
 supervisorctl start teamsyncd
-
 supervisorctl start fpmsyncd
-
 supervisorctl start teammgrd
-
 supervisorctl start vrfmgrd
-
 supervisorctl start portmgrd
-
 supervisorctl start intfmgrd
-
 supervisorctl start vlanmgrd
-
 supervisorctl start zebra
-
 supervisorctl start mgmtd
-
 supervisorctl start staticd
-
 supervisorctl start buffermgrd
-
 supervisorctl start nbrmgrd
-
 supervisorctl start vxlanmgrd
-
 supervisorctl start natmgrd
-
 supervisorctl start natsyncd
-
 supervisorctl start tunnelmgrd
-
 supervisorctl start fabricmgrd
 
-supervisorctl start rebootbackend
+# This pinned VS image omits rebootbackend. Skip only an absent service;
+# all existing service start failures still propagate under bash -e.
+if python3 - <<'CHECK_REBOOTBACKEND'
+from supervisor.options import ClientOptions
+import sys
+options = ClientOptions()
+options.realize(args=[])
+with options.getServerProxy() as proxy:
+    names = {p['name'] for p in proxy.supervisor.getAllProcessInfo()}
+sys.exit(0 if 'rebootbackend' in names else 3)
+CHECK_REBOOTBACKEND
+then
+    supervisorctl start rebootbackend
+else
+    status=$?
+    if [ "$status" -ne 3 ]; then exit "$status"; fi
+    echo "NetOpsBench: optional rebootbackend is absent in this VS image"
+fi
 
 # Start arp_update when VLAN exists
 VLAN=`sonic-cfggen -d -v 'VLAN.keys() | join(" ") if VLAN'`

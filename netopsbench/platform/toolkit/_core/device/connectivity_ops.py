@@ -10,8 +10,10 @@ from ..common import ToolResult
 
 
 class ConnectivityOpsMixin:
-    def traceroute(self, src: str, dst_ip: str) -> ToolResult:
+    def traceroute(self, src: str, dst_ip: str, max_hops: int = 8) -> ToolResult:
         try:
+            if not 1 <= max_hops <= 32:
+                raise ValueError("max_hops must be in 1..32")
             safe_src = self._validate_device_name(src, field_name="source")
             safe_dst_ip = self._validate_ip_address(dst_ip, field_name="destination IP")
             source_device = self.manifest.device(safe_src)
@@ -19,13 +21,13 @@ class ConnectivityOpsMixin:
                 raise ValueError(f"Unknown source: {safe_src}")
             if source_device.role is not DeviceRole.CLIENT:
                 raise ValueError(
-                    "Traceroute source must be a client device, " f"got {safe_src} ({source_device.role.value})"
+                    f"Traceroute source must be a client device, got {safe_src} ({source_device.role.value})"
                 )
             container = self._resolve_container(safe_src, field_name="source")
             result = self._docker_exec(
                 container,
-                ["traceroute", "-n", "-q", "1", "-w", "1", "-m", "8", safe_dst_ip],
-                timeout=12,
+                ["traceroute", "-n", "-q", "1", "-w", "1", "-m", str(max_hops), safe_dst_ip],
+                timeout=max_hops + 4,
             )
             if result.returncode != 0:
                 output = (result.stderr or result.stdout or "unknown error").strip()
@@ -63,6 +65,16 @@ class ConnectivityOpsMixin:
                 cmd.extend(["-M", "do"])
             cmd.append(safe_dst_ip)
             result = self._docker_exec(container, cmd, timeout=30)
+            # Docker/OCI execution failures are not ping observations. iputils
+            # itself uses 1 for unanswered probes and 2 for local errors (e.g.
+            # "message too long, mtu=..."); retain those diagnostic messages.
+            if result.returncode not in {0, 1, 2} or (
+                result.returncode
+                and not result.stdout
+                and result.stderr
+                and not result.stderr.lstrip().startswith("ping:")
+            ):
+                return ToolResult(success=False, data=None, error="Probe execution unavailable")
             return ToolResult(
                 success=True,
                 data={

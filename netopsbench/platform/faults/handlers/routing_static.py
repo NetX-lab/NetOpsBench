@@ -134,6 +134,8 @@ class StaticRouteHandler:
         if not container:
             raise ValueError(f"Unknown device: {device}")
 
+        if self._running_config_has_route(device, target_prefix) is not False:
+            raise RuntimeError("Cannot safely own an existing or unreadable static route")
         result = self._sonic.vtysh(
             device,
             [
@@ -189,9 +191,11 @@ class StaticRouteHandler:
         )
         if removed:
             self._tracker.remove_faults(
-                lambda fault: fault["type"] == "blackhole_route"
-                and fault["device"] == device
-                and fault["prefix"] == target_prefix
+                lambda fault: (
+                    fault["type"] == "blackhole_route"
+                    and fault["device"] == device
+                    and fault["prefix"] == target_prefix
+                )
             )
 
         return {
@@ -199,6 +203,7 @@ class StaticRouteHandler:
             "device": device,
             "prefix": target_prefix,
             "recovered": removed,
+            "readback_verified": removed,
             "error": None if removed else result.stderr or "blackhole route remained in running config",
         }
 
@@ -225,6 +230,16 @@ class StaticRouteHandler:
                     f"Unable to determine reachable wrong next-hop from topology metadata: device={device} target_ip={target_ip}"
                 )
 
+        local = next((c for c in self._ctx.clients_by_leaf.get(device, []) if c.get("data_ip") == wrong_nexthop), None)
+        if not local:
+            raise ValueError("Wrong next hop must be another directly attached client")
+        forwarding = self._sonic._cmd.docker_exec(
+            self._ctx.container_names[local["name"]], ["sysctl", "-n", "net.ipv4.ip_forward"]
+        )
+        if forwarding.returncode or forwarding.stdout.strip() != "0":
+            raise RuntimeError("Wrong endpoint must have IP forwarding disabled")
+        if self._running_config_has_route(device, target_ip) is not False:
+            raise RuntimeError("Cannot safely own an existing or unreadable static route")
         result = self._sonic.vtysh(
             device,
             [
@@ -269,31 +284,11 @@ class StaticRouteHandler:
         if not container:
             raise ValueError(f"Unknown device: {device}")
 
-        command_sets = []
-        if wrong_nexthop:
-            command_sets.append(
-                [
-                    "configure terminal",
-                    f"no ip route {target_ip} {wrong_nexthop}",
-                    "end",
-                    "write memory",
-                ]
-            )
-        command_sets.append(
-            [
-                "configure terminal",
-                f"no ip route {target_ip}",
-                "end",
-                "write memory",
-            ]
+        if not wrong_nexthop:
+            raise ValueError("Recovery requires the owned next hop")
+        result = self._sonic.vtysh(
+            device, ["configure terminal", f"no ip route {target_ip} {wrong_nexthop}", "end", "write memory"]
         )
-
-        result = None
-        for commands in command_sets:
-            result = self._sonic.vtysh(device, commands)
-            if result.returncode == 0:
-                break
-        assert result is not None
 
         removed = (
             result.returncode == 0
@@ -302,9 +297,11 @@ class StaticRouteHandler:
         )
         if removed:
             self._tracker.remove_faults(
-                lambda fault: fault["type"] == "static_route_misconfig"
-                and fault["device"] == device
-                and fault["target_ip"] == target_ip
+                lambda fault: (
+                    fault["type"] == "static_route_misconfig"
+                    and fault["device"] == device
+                    and fault["target_ip"] == target_ip
+                )
             )
 
         return {
@@ -313,5 +310,6 @@ class StaticRouteHandler:
             "target_ip": target_ip,
             "wrong_nexthop": wrong_nexthop,
             "recovered": removed,
+            "readback_verified": removed,
             "error": None if removed else result.stderr or "static route remained in running config",
         }

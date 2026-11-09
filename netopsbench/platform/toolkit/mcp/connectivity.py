@@ -2,9 +2,9 @@ from .context import as_payload, get_toolkit
 from .contracts import ToolSpec
 
 
-def traceroute(src: str, dst_ip: str):
+def traceroute(src: str, dst_ip: str, max_hops: int = 8):
     """Run traceroute from a client device to a destination IP."""
-    return as_payload(get_toolkit().traceroute(src=src, dst_ip=dst_ip))
+    return as_payload(get_toolkit().traceroute(src=src, dst_ip=dst_ip, max_hops=max_hops))
 
 
 def ping_test(

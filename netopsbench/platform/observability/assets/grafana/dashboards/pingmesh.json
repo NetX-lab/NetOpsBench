@@ -75,7 +75,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"_field\", \"path_type\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"_field\", \"path_type\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
           "refId": "A"
         }
       ],
@@ -113,7 +113,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"cross_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"cross_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
           "refId": "A"
         }
       ],
@@ -151,7 +151,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"same_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.path_type == \"same_rack\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> mean(column: \"_value\")\n  |> group()\n  |> last()",
           "refId": "A"
         }
       ],
@@ -190,7 +190,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> max(column: \"_value\")\n  |> group()\n  |> last()",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> group(columns: [\"_time\"])\n  |> max(column: \"_value\")\n  |> group()\n  |> last()",
           "refId": "A"
         }
       ],
@@ -235,7 +235,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> filter(fn: (r) => r.dst_leaf == \"${dst_leaf}\" or \"${dst_leaf}\" == \"all\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> filter(fn: (r) => r.dst_leaf == \"${dst_leaf}\" or \"${dst_leaf}\" == \"all\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")",
           "refId": "A"
         }
       ],
@@ -273,7 +273,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)\n  |> limit(n: 12)",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> group(columns: [\"src_leaf\", \"dst_leaf\", \"_field\"])\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> last()\n  |> pivot(rowKey: [\"src_leaf\", \"dst_leaf\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)\n  |> limit(n: 12)",
           "refId": "A"
         }
       ],
@@ -318,7 +318,7 @@
       "targets": [
         {
           "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> group(columns: [\"dst_leaf\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)",
+          "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_leaf == \"${src_leaf}\" or \"${src_leaf}\" == \"all\")\n  |> group(columns: [\"dst_leaf\"])\n  |> aggregateWindow(every: 15s, fn: mean, createEmpty: false)",
           "refId": "A"
         }
       ],
@@ -380,7 +380,7 @@
           "targets": [
             {
               "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> yield(name: \"result\")",
               "refId": "A"
             }
           ],
@@ -417,7 +417,7 @@
           "targets": [
             {
               "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p90\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
               "refId": "A"
             }
           ],
@@ -454,7 +454,7 @@
           "targets": [
             {
               "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_p99\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
               "refId": "A"
             }
           ],
@@ -493,7 +493,7 @@
           "targets": [
             {
               "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> last()\n  |> mean()",
               "refId": "A"
             }
           ],
@@ -540,7 +540,7 @@
           "targets": [
             {
               "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\", \"_field\"])\n  |> last()\n  |> pivot(rowKey: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)",
+              "query": "from(bucket: \"${bucket}\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"pingmesh\")\n  |> filter(fn: (r) => r.plan_id == \"${plan_id}\")\n  |> filter(fn: (r) => r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\")\n  |> filter(fn: (r) => r._field == \"rtt_avg\" or r._field == \"rtt_p90\" or r._field == \"rtt_p99\" or r._field == \"packet_loss\")\n  |> filter(fn: (r) => r.src_name == \"${src_host}\" or \"${src_host}\" == \"all\")\n  |> filter(fn: (r) => r.dst_name == \"${dst_host}\" or \"${dst_host}\" == \"all\")\n  |> filter(fn: (r) => r.path_type == \"${path_type}\" or \"${path_type}\" == \"all\")\n  |> group(columns: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\", \"_field\"])\n  |> last()\n  |> pivot(rowKey: [\"src_name\", \"dst_name\", \"src_leaf\", \"dst_leaf\", \"path_type\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> sort(columns: [\"rtt_p99\"], desc: true)",
               "refId": "A"
             }
           ],
@@ -594,6 +594,24 @@
         "type": "query"
       },
       {
+        "name": "plan_id",
+        "label": "Plan",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "InfluxDB_v2"
+        },
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"plan_id\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"plan_id\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "current": {},
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 2,
+        "sort": 0,
+        "hide": 0
+      },
+      {
         "current": { "selected": true, "text": "all", "value": "all" },
         "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
         "definition": "all,same_rack,cross_rack",
@@ -615,7 +633,7 @@
       {
         "current": { "selected": true, "text": "all", "value": "all" },
         "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "hide": 0,
         "includeAll": true,
         "allValue": "all",
@@ -623,7 +641,7 @@
         "multi": false,
         "name": "src_leaf",
         "options": [],
-        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "refresh": 2,
         "sort": 1,
         "type": "query"
@@ -631,7 +649,7 @@
       {
         "current": { "selected": true, "text": "all", "value": "all" },
         "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "hide": 0,
         "includeAll": true,
         "allValue": "all",
@@ -639,7 +657,7 @@
         "multi": false,
         "name": "dst_leaf",
         "options": [],
-        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_leaf\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "refresh": 2,
         "sort": 1,
         "type": "query"
@@ -647,7 +665,7 @@
       {
         "current": { "selected": true, "text": "all", "value": "all" },
         "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "hide": 0,
         "includeAll": true,
         "allValue": "all",
@@ -655,7 +673,7 @@
         "multi": false,
         "name": "src_host",
         "options": [],
-        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"src_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "refresh": 2,
         "sort": 1,
         "type": "query"
@@ -663,7 +681,7 @@
       {
         "current": { "selected": true, "text": "all", "value": "all" },
         "datasource": { "type": "influxdb", "uid": "InfluxDB_v2" },
-        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "hide": 0,
         "includeAll": true,
         "allValue": "all",
@@ -671,7 +689,7 @@
         "multi": false,
         "name": "dst_host",
         "options": [],
-        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(\n  bucket: \"${bucket}\",\n  tag: \"dst_name\",\n  predicate: (r) => r._measurement == \"pingmesh\" and r.plan_id == \"${plan_id}\" and (r.topology_id == \"${topology_id}\" or \"${topology_id}\" == \"all\"),\n  start: -1h\n)",
         "refresh": 2,
         "sort": 1,
         "type": "query"

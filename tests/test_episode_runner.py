@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from netopsbench.models.scenario import EpisodeSpec
 from netopsbench.platform.scenario.episode_runner import observe_episode
+from netopsbench.platform.scenario.timing import PhaseTimings
 
 _BASELINE = {"start_time": "baseline-start", "end_time": "baseline-end"}
 
@@ -14,11 +16,11 @@ class StubExecutor:
     def __init__(
         self,
         *,
-        post_recovery_wait_seconds: float = 0,
         injection_success: bool = True,
         observe_payload: dict[str, Any] | None = None,
     ):
-        self.post_recovery_wait_seconds = post_recovery_wait_seconds
+        self.timings = PhaseTimings()
+        self.observation_timeout_seconds = 60
         self._injection_success = injection_success
         self._observe_payload = observe_payload or {"observed": True}
         self.calls: list[str] = []
@@ -28,25 +30,26 @@ class StubExecutor:
         self.calls.append("inject")
         return {"success": self._injection_success, "fault_type": episode.fault_type}
 
-    def _wait_and_observe(self, seconds, *, baseline_window):
-        self.calls.append(f"observe:{seconds}")
-        self.baseline_windows.append(baseline_window)
-        return {"duration": seconds, **self._observe_payload}
-
     def _capture_observation_window(self, seconds, name):
         self.calls.append(f"capture:{name}:{seconds}")
-        return {"name": name, "duration": seconds, **self._observe_payload}
+        return {
+            "name": name,
+            "duration_seconds": seconds,
+            "start_time": "2026-10-24T00:00:00+00:00",
+            "end_time": (datetime(2026, 10, 24, tzinfo=UTC) + timedelta(seconds=seconds)).isoformat(),
+            **self._observe_payload,
+        }
 
     def _merge_observation_windows(
         self,
         windows,
-        *,
         total_duration_seconds,
+        *,
         baseline_window,
     ):
         self.calls.append("merge")
         self.baseline_windows.append(baseline_window)
-        return {"windows": list(windows), "total": total_duration_seconds}
+        return {"windows": list(windows), "total": total_duration_seconds, **self._observe_payload}
 
 
 def _episode(**overrides) -> EpisodeSpec:
@@ -72,7 +75,8 @@ def test_healthy_episode_is_observed_without_fault_actions():
     )
 
     assert result["state"] == "active"
-    assert executor.calls == ["observe:2"]
+    assert result["observations"]["observed"] is True
+    assert executor.calls == ["capture:full:2", "merge"]
 
 
 def test_healthy_episode_promotes_coverage_audit_without_private_observation_key():
@@ -96,7 +100,7 @@ def test_observation_keeps_fault_active_for_incident_engine():
     active = observe_episode(executor, episode, baseline_window=_BASELINE)
 
     assert active["state"] == "active"
-    assert executor.calls == ["inject", "capture:steady:2", "merge"]
+    assert executor.calls == ["inject", "capture:full:2", "merge"]
 
 
 def test_interactive_kernel_uses_explicit_cached_baseline_window():
@@ -123,10 +127,10 @@ def test_observation_defers_detector_analysis_until_all_windows_are_captured():
     )
 
     assert result["state"] == "active"
-    assert executor.calls == ["inject", "capture:early:4", "capture:steady:6", "merge"]
+    assert executor.calls == ["inject", "capture:full:12", "merge"]
 
 
-def test_observation_uses_executor_sleep_hook_for_stabilization():
+def test_stabilization_is_a_slice_gap_not_an_additional_wait():
     executor = StubExecutor()
     slept: list[float] = []
     executor.sleep = slept.append
@@ -137,4 +141,5 @@ def test_observation_uses_executor_sleep_hook_for_stabilization():
         baseline_window=_BASELINE,
     )
 
-    assert slept == [1]
+    assert slept == []
+    assert executor.calls == ["inject", "capture:full:3", "merge"]

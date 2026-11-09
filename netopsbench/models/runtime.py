@@ -27,7 +27,7 @@ class RuntimeIdentity(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["3"] = "3"
+    schema_version: Literal["4"] = "4"
     runtime_id: str
     worker_id: str
     worker_index: int = Field(ge=1)

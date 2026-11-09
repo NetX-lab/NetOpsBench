@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 anyhow = "=1.0.104"
-blake2 = "=0.10.6"
 clap = { version = "=4.6.4", features = ["derive"] }
 libc = "=0.2.189"
 nix = { version = "=0.30.1", features = ["net", "socket", "time", "uio"] }

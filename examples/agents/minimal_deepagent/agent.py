@@ -39,6 +39,10 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 
 from netopsbench.agents.base import DiagnosticContext
+from netopsbench.models.profiles import default_experiment_profile
+from netopsbench.platform.scenario.timing import agent_cleanup_timing
+from netopsbench.platform.toolkit._core.control import diagnosis_budget_scope
+from netopsbench.platform.toolkit.mcp.session_server import session_mcp
 from netopsbench.sdk.agents import DiagnosisResult
 from netopsbench.sdk.mcp import builtin_mcp_server_config
 
@@ -89,6 +93,7 @@ class MinimalDeepAgent:
         max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         mcp_server_config: dict[str, dict[str, Any]] | None = None,
+        diagnosis_timeout_seconds: int | None = None,
     ):
         provider = get_provider(vendor)  # raises ValueError for unknown vendor
 
@@ -104,8 +109,28 @@ class MinimalDeepAgent:
         self.system_prompt = system_prompt
         self.api_key = api_key or os.environ.get(provider.PRESET["api_key_env"], "")
         self.mcp_server_config = mcp_server_config
+        self.diagnosis_timeout_seconds = (
+            diagnosis_timeout_seconds
+            if diagnosis_timeout_seconds is not None
+            else default_experiment_profile().diagnosis_timeout_seconds
+        )
 
     async def diagnose(self, context: DiagnosticContext) -> DiagnosisResult:
+        try:
+            async with diagnosis_budget_scope(self.diagnosis_timeout_seconds):
+                return await self._diagnose(context)
+
+        except TimeoutError:
+            return _error_result(
+                self.name,
+                self.vendor,
+                self.model,
+                TimeoutError("Total diagnosis timeout exceeded"),
+                tool_calls=[],
+                token_counts={},
+            )
+
+    async def _diagnose(self, context: DiagnosticContext) -> DiagnosisResult:
         if not self.api_key:
             raise ValueError(
                 f"{self._provider.PRESET['api_key_env']} is required. "
@@ -113,8 +138,7 @@ class MinimalDeepAgent:
             )
 
         repo_root = Path(__file__).resolve().parents[3]
-        worker_env = context.metadata.get("worker_env") if context.metadata else None
-        server_config = self.mcp_server_config or builtin_mcp_server_config(workspace=repo_root, env=worker_env)
+        server_config = self.mcp_server_config
         exit_stack = AsyncExitStack()
         trace_callback = _langchain_trace_callback(context)
         tool_calls: list[dict[str, Any]] = []
@@ -122,6 +146,17 @@ class MinimalDeepAgent:
 
         try:
             await exit_stack.__aenter__()
+            if self.mcp_server_config is None and context.tools is not None:
+                endpoint = await exit_stack.enter_async_context(session_mcp(context, record_trace=False))
+                server_config = {
+                    "netopsbench": {
+                        "transport": "streamable_http",
+                        "url": endpoint["url"],
+                        "headers": {"Authorization": f"Bearer {endpoint['token']}"},
+                    }
+                }
+            if server_config is None:
+                server_config = builtin_mcp_server_config(workspace=repo_root)
             mcp_tools = await _connect_mcp_tools(exit_stack, server_config)
 
             llm = self._provider.build_llm(
@@ -172,7 +207,9 @@ class MinimalDeepAgent:
                 token_counts=token_counts,
             )
         finally:
-            await exit_stack.aclose()
+            with agent_cleanup_timing():
+                # MCP's AnyIO scopes must exit on the task that entered them.
+                await exit_stack.aclose()
 
     async def aclose(self) -> None:
         return None

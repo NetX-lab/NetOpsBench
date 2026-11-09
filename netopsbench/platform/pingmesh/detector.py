@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
@@ -11,6 +12,7 @@ from netopsbench.platform.topology.topology_utils import coerce_topology_manifes
 
 from ._detector_analysis import DetectorAnalysisMixin
 from ._detector_coverage import DetectorCoverageMixin
+from ._detector_ingestion import DetectorIngestionMixin
 from ._detector_query import DetectorQueryMixin
 
 
@@ -35,7 +37,7 @@ class Anomaly:
     persistence: str | None = None
 
 
-class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysisMixin):
+class AnomalyDetector(DetectorIngestionMixin, DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysisMixin):
     """Detect anomalies in Pingmesh data using statistical methods."""
 
     _anomaly_type = Anomaly
@@ -50,24 +52,28 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         topology_id: str | None = None,
         loss_pct_threshold: float = 5.0,
         loss_pct_delta: float = 5.0,
+        runtime_start_time: str | None = None,
     ):
+        self.runtime_start_time = runtime_start_time
         self.influxdb_url = influxdb_url
         self.token = token
         self.org = org
         self.bucket = bucket
-        self.client_to_leaf: dict[str, str] = {}
         self.loss_pct_threshold = float(loss_pct_threshold)
         self.loss_pct_delta = float(loss_pct_delta)
         self._pingmesh_clients: list[str] = []
-        self._pingmesh_policy: dict = {}
         if topology_metadata is None:
             raise ValueError("Canonical topology_metadata is required for Pingmesh anomaly detection")
         manifest = coerce_topology_manifest(topology_metadata)
         self.topology_id = topology_id or manifest.topology_id
-        projected_topology = manifest.to_agent_topology()
+        self.client_to_leaf = {
+            client.name: client.attached_switch for client in manifest.clients() if client.attached_switch
+        }
         self._pingmesh_clients = [device.name for device in manifest.clients()]
-        self._pingmesh_policy = dict(projected_topology["pingmesh"])
-        self._load_topology_metadata(projected_topology)
+        self._client_addresses = {device.name: device.data_ip for device in manifest.clients()}
+        self._pingmesh_plan = manifest.require_pingmesh_plan()
+        self._compile_coverage_expectations()
+        self.plan_id = self._pingmesh_plan.settings.plan_id
 
     def _anomaly_to_dict(self, anomaly: Anomaly) -> dict:
         return asdict(anomaly)
@@ -119,6 +125,7 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
         return {
             "timestamp": now_utc,
+            "plan_id": self.plan_id,
             "windows": {
                 "baseline": {"start": baseline_start, "end": baseline_end},
                 "current": {"start": current_start, "end": current_end},
@@ -126,6 +133,7 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
             "query_status": query_status,
             "coverage": coverage,
             "quality": quality,
+            "ingestion_status": coverage.get("ingestion", {}).get("status", "not_ready"),
             "summary": {
                 "total_anomalies": len(anomalies),
                 "latency_spikes": len(latency),
@@ -195,39 +203,6 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 anomaly.persistence = "full_window"
         return sorted(full.values(), key=lambda item: (item.type, item.src_ip, item.dst_ip))
 
-    def _query_covered_snapshot(self, start_time: str, end_time: str):
-        snapshot = self._query_snapshot(start_time, end_time)
-        if snapshot.status != "ok":
-            return snapshot, {
-                "status": "error",
-                "coverage_status": "error",
-                "error": snapshot.error or "query_failed",
-            }
-        coverage = self.summarize_coverage(snapshot.rows)
-        expected_seconds = int(coverage.get("expected_epoch_cycles", 0)) * int(
-            self._pingmesh_policy.get("cycle_interval_seconds", 1)
-        )
-        actual_seconds = max(
-            0.0,
-            (
-                datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                - datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-            ).total_seconds(),
-        )
-        for _attempt in range(2):
-            if actual_seconds < expected_seconds or coverage.get("coverage_status") == "complete":
-                break
-            time.sleep(max(1, int(self._pingmesh_policy.get("cycle_interval_seconds", 1))))
-            snapshot = self._query_snapshot(start_time, end_time)
-            if snapshot.status != "ok":
-                return snapshot, {
-                    "status": "error",
-                    "coverage_status": "error",
-                    "error": snapshot.error or "query_failed",
-                }
-            coverage = self.summarize_coverage(snapshot.rows)
-        return snapshot, coverage
-
     def generate_windowed_anomaly_report(
         self,
         *,
@@ -237,9 +212,26 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         current_end: str,
         windows: list[dict],
         include_internal_health: bool = False,
+        evidence_pairs: list[dict] | None = None,
+        deadline: float | None = None,
     ) -> dict:
-        baseline, baseline_coverage = self._query_covered_snapshot(baseline_start, baseline_end)
-        current, current_coverage = self._query_covered_snapshot(current_start, current_end)
+        budget = {"deadline": deadline} if deadline is not None else {}
+        if (baseline_start, baseline_end) == (current_start, current_end):
+            # A newly captured healthy window needs one fresh read. Absolute
+            # health below is still checked; a zero relative delta is no proof.
+            baseline, baseline_coverage = self._query_covered_snapshot(baseline_start, baseline_end, **budget)
+            current, current_coverage = baseline, dict(baseline_coverage)
+        else:
+            # Both reads remain fresh; HTTP concurrency is process-wide bounded.
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                baseline_future = executor.submit(
+                    copy_context().run, self._query_covered_snapshot, baseline_start, baseline_end, **budget
+                )
+                current_future = executor.submit(
+                    copy_context().run, self._query_covered_snapshot, current_start, current_end, **budget
+                )
+                baseline, baseline_coverage = baseline_future.result()
+                current, current_coverage = current_future.result()
         query_status = self._error_status(baseline, current)
         if not query_status["ok"]:
             return self._build_report(
@@ -249,7 +241,7 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
                 current_start=current_start,
                 current_end=current_end,
                 query_status=query_status,
-                coverage={"status": "error", "coverage_status": "error", "error": query_status["error"]},
+                coverage={**current_coverage, "status": "error", "error": query_status["error"]},
                 quality={},
             )
 
@@ -258,7 +250,13 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         for window in windows:
             name = str(window.get("name") or "window")
             rows = self._slice_rows(current.rows, str(window["start_time"]), str(window["end_time"]))
-            window_analyses.append((name, self.analyze_snapshot_rows(baseline.rows, rows).anomalies))
+            # A healthy steady window usually contains the entire snapshot.
+            # Check the actual slice, so invalid timestamps and boundary rows
+            # retain their filtering semantics even when the bounds match.
+            analysis = (
+                full_analysis if len(rows) == len(current.rows) else self.analyze_snapshot_rows(baseline.rows, rows)
+            )
+            window_analyses.append((name, analysis.anomalies))
         anomalies = self._merge_window_anomalies(window_analyses)
         report = self._build_report(
             anomalies=anomalies,
@@ -281,4 +279,8 @@ class AnomalyDetector(DetectorQueryMixin, DetectorCoverageMixin, DetectorAnalysi
         if include_internal_health:
             report["_baseline_health"] = absolute_health
             report["_baseline_coverage"] = baseline_coverage
+        if evidence_pairs:
+            from ._detector_analysis import probe_pair_evidence
+
+            report["_probe_evidence"] = probe_pair_evidence(baseline.rows, current.rows, evidence_pairs)
         return report

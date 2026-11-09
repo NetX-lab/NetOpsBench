@@ -78,3 +78,18 @@ def test_observability_existence_queries_are_globally_bounded():
     assert '_field == "schema_version"' in bgp_query
     assert 'r.topology_id == "lab-a"' in syslog_query
     assert "|> limit(n: 1)" in syslog_query
+
+
+def test_individual_observability_check_only_queries_requested_source():
+    queries = []
+
+    def query_runner(query):
+        queries.append(query)
+        return ",result,table,_time,_value\n,,0,2026-07-01T18:49:04Z,1\n"
+
+    assert (
+        check_observability(query_runner, bucket="test", obs_device="leaf1", syslog_marker="marker", checks={"syslog"})
+        == []
+    )
+    assert len(queries) == 1
+    assert '_measurement == "syslog"' in queries[0]

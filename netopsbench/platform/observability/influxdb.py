@@ -1,18 +1,26 @@
 """Shared InfluxDB lifecycle and Flux query client."""
 
+import csv
+import http.client
 import json
+import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from io import StringIO
 from typing import Literal
 
 import requests
 
 from netopsbench.logging_utils import get_logger
+from netopsbench.platform.utils.measurements import count_operation
 
 logger = get_logger(__name__)
+
+_QUERY_SLOTS = threading.BoundedSemaphore(4)
 
 DEFAULT_MANAGED_BUCKET_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
@@ -24,33 +32,108 @@ class FluxQueryResult:
     error: str | None = None
 
 
+def iter_annotated_csv_rows(csv_text: str):
+    """Parse Flux CSV while honoring the repeated headers emitted by multiple yields."""
+    header: list[str] | None = None
+    for values in csv.reader(StringIO(csv_text)):
+        if not values or (values[0] and values[0].startswith("#")):
+            continue
+        if "result" in values and "table" in values:
+            header = values
+            continue
+        if header is None:
+            continue
+        padded = [*values, *([""] * max(0, len(header) - len(values)))]
+        yield dict(zip(header, padded[: len(header)], strict=False))
+
+
 def query_flux(
     base_url: str,
     token: str,
     org: str,
     query: str,
     *,
-    timeout: int = 30,
+    timeout: float = 30,
+    deadline: float | None = None,
 ) -> FluxQueryResult:
     """Execute one Flux query without interpreting its domain-specific CSV."""
+    count_operation("influx_queries")
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/vnd.flux",
         "Accept": "application/csv",
     }
+    limit = time.monotonic() + timeout
+    if deadline is not None:
+        limit = min(limit, deadline)
+    remaining = limit - time.monotonic()
+    if remaining <= 0 or not _QUERY_SLOTS.acquire(timeout=max(0, remaining)):
+        return FluxQueryResult(status="error", error="InfluxDB query deadline exceeded while waiting for a slot")
     try:
+        remaining = limit - time.monotonic()
+        if remaining <= 0:
+            return FluxQueryResult(status="error", error="InfluxDB query deadline exceeded")
+        url = f"{base_url.rstrip('/')}/api/v2/query"
+        if deadline is not None:
+            return FluxQueryResult(status="ok", text=_query_before_deadline(url, org, query, headers, limit))
         response = requests.post(
             f"{base_url.rstrip('/')}/api/v2/query",
             params={"org": org},
             headers=headers,
             data=query,
-            timeout=timeout,
+            timeout=remaining,
             proxies={"http": "", "https": ""},
         )
         response.raise_for_status()
-    except requests.RequestException as exc:
+    except (requests.RequestException, OSError, http.client.HTTPException) as exc:
+        if time.monotonic() >= limit:
+            return FluxQueryResult(status="error", error="InfluxDB query deadline exceeded")
         return FluxQueryResult(status="error", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        _QUERY_SLOTS.release()
     return FluxQueryResult(status="ok", text=response.text)
+
+
+def _query_before_deadline(url: str, org: str, query: str, headers: dict, limit: float) -> str:
+    """Interrupt slow response headers or bodies at the shared elapsed-time limit."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise OSError("Invalid InfluxDB query URL")
+    connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parsed.hostname, parsed.port, timeout=max(0.001, limit - time.monotonic()))
+    timer = None
+    try:
+        connection.connect()
+        transport = connection.sock
+        remaining = limit - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("InfluxDB query deadline exceeded")
+        if transport is None:
+            raise OSError("InfluxDB connection did not create a socket")
+
+        def interrupt():
+            try:
+                transport.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass  # The completed request may already have closed its socket.
+
+        timer = threading.Timer(remaining, interrupt)
+        timer.start()
+        transport.settimeout(remaining)
+        path = parsed.path + "?" + urllib.parse.urlencode({"org": org})
+        connection.request("POST", path, body=query.encode("utf-8"), headers=headers)
+        response = connection.getresponse()
+        if response.status >= 400:
+            raise OSError(f"InfluxDB HTTP {response.status}: {response.reason}")
+        text = response.read().decode("utf-8")
+        if time.monotonic() >= limit:
+            raise TimeoutError("InfluxDB query deadline exceeded")
+        return text
+    finally:
+        if timer is not None:
+            timer.cancel()
+            timer.join()
+        connection.close()
 
 
 def _make_url_opener(url: str):

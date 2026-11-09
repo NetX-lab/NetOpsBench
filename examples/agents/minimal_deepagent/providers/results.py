@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from examples.agents.diagnosis import build_result
 from netopsbench.sdk.agents import DiagnosisResult
 
 from ..schema import DiagnosisOutput
@@ -200,37 +201,15 @@ def _build_diagnosis_result(
     token_counts: dict[str, int] | None = None,
 ) -> DiagnosisResult:
     """Build a successful ``DiagnosisResult`` from parsed structured output."""
-    location = structured.get("location") or {}
-    evidence = structured.get("evidence") or []
-    if not isinstance(evidence, list):
-        evidence = [str(evidence)]
-
-    confidence = structured.get("confidence", 0.0)
-    try:
-        confidence = float(confidence)
-    except (TypeError, ValueError):
-        confidence = 0.0
-
-    return DiagnosisResult(
-        agent_name=agent_name,
-        verdict=structured.get("verdict", "inconclusive"),
-        success=True,
-        findings={
-            "fault_type": structured.get("fault_type"),
-            "location": {"device": location.get("device"), "interface": location.get("interface")},
-            "evidence": evidence,
-        },
-        confidence=confidence,
-        reasoning=structured.get("reasoning", ""),
+    return build_result(
+        agent_name,
+        structured,
         metadata={
             "provider": vendor,
             "model": model,
             "runtime": "deepagents+mcp",
             "tool_calls": tool_calls,
-            "input_tokens": int((token_counts or {}).get("input_tokens", 0) or 0),
-            "output_tokens": int((token_counts or {}).get("output_tokens", 0) or 0),
-            "total_tokens": int((token_counts or {}).get("total_tokens", 0) or 0),
-            "llm_call_count": int((token_counts or {}).get("llm_call_count", 0) or 0),
+            **dict(token_counts or {}),
         },
     )
 

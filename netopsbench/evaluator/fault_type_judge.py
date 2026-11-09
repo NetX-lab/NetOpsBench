@@ -31,18 +31,6 @@ _LEGACY_FAULT_TYPE_ALIASES: dict[str, str] = {
     "static_route_misconfiguration": "static_route_misconfig",
     "route_misconfig": "static_route_misconfig",
     "mtu_error": "mtu_mismatch",
-    "bgp_peer_misconfig": "bgp_neighbor_misconfig",
-    "bgp_peer_config_error": "bgp_neighbor_misconfig",
-    "bgp_session_misconfig": "bgp_neighbor_misconfig",
-    "bgp_neighbor_config_error": "bgp_neighbor_misconfig",
-    "route_policy_error": "route_policy_misconfig",
-    "route_policy_misconfiguration": "route_policy_misconfig",
-    "bgp_policy_misconfig": "route_policy_misconfig",
-    "route_origination_missing": "route_policy_misconfig",
-    "network_statement_missing": "route_policy_misconfig",
-    "prefix_filter_misconfig": "route_policy_misconfig",
-    "outbound_prefix_filter": "route_policy_misconfig",
-    "acl_misconfiguration": "acl_misconfig",
 }
 
 

@@ -37,6 +37,12 @@ def validate_scenario(
     registry = fault_registry or create_fault_registry()
     scales = scale_registry or default_scale_registry()
     errors: list[str] = []
+    from netopsbench.models.recovery import RecoveryPolicy
+
+    try:
+        RecoveryPolicy.from_metadata(scenario.metadata)
+    except ValueError as exc:
+        errors.append(f"Invalid recovery_policy: {exc}")
 
     if not scenario.scenario_id:
         errors.append("Missing scenario_id")
@@ -144,7 +150,7 @@ def validate_scenario_topology(scenario, topology_dir: str) -> dict:
             f"actual='{actual_scale}'. Use matching scenario files or redeploy the topology."
         )
 
-    required_duration = manifest.pingmesh.complete_window_seconds(manifest.facts.total_clients)
+    required_duration = manifest.require_pingmesh_plan().settings.complete_window_seconds
     if scenario.episode.duration_seconds < required_duration:
         errors.append(
             f"[scenario={scenario.scenario_id} episode={scenario.episode.episode_id}] "

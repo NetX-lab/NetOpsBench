@@ -31,12 +31,12 @@ from netopsbench.platform.simulator.environment import (
     ToolAction,
 )
 from netopsbench.platform.simulator.runtime import RuntimeEpisodeBackend, RuntimeLeasePool, WarmRuntime
-from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.sdk.simulators import SimulatorManager
 
 
 def _scenario(*, healthy: bool = False) -> ScenarioSpec:
     return ScenarioSpec(
+        metadata={"recovery_policy": {"version": 3}},
         scenario_id="scenario-1",
         name="scenario-1",
         topology_scale="xs",
@@ -543,248 +543,54 @@ def test_observation_integrity_does_not_reject_real_network_anomalies():
     assert observation_integrity_errors(observation) == []
 
 
-def test_simulator_builds_reference_and_validation_once_then_reuses_latest_window(tmp_path):
-    topology_dir = tmp_path / "xs-topology"
-    generate_topology("xs", str(topology_dir), name="sim-baseline")
-    reference = {
-        "name": "baseline",
-        "start_time": "2026-01-01T00:00:00Z",
-        "end_time": "2026-01-01T00:01:00Z",
-        "duration_seconds": 60,
-    }
-    calls = []
-
-    class BaselineRunner:
-        def __init__(self):
-            self.topology_dir = topology_dir
-            self.traffic_controller = object()
-
-        def _capture_baseline_window(self):
-            calls.append("reference")
-            return reference
-
-        def _wait_and_observe(self, duration, *, baseline_window):
-            calls.append(("validation", duration, baseline_window))
-            return _baseline_observation()
-
-    runner = BaselineRunner()
-    record = WarmRuntime(runtime=FakeRuntime("xs"), runner=runner)
-    backend = RuntimeEpisodeBackend(SimpleNamespace(), default_scale_registry())
-    backend.record = record
-
-    backend._ensure_baseline(_scenario(healthy=True))
-    backend._ensure_baseline(_scenario(healthy=True))
-
-    assert calls == ["reference", ("validation", 60, reference)]
-    assert record.baseline == {
-        "name": "baseline",
-        "start_time": "2026-01-01T00:01:00Z",
-        "end_time": "2026-01-01T00:02:00Z",
-        "duration_seconds": 60,
-    }
-
-    runner.traffic_controller = object()
-    backend._ensure_baseline(_scenario(healthy=True))
-    assert calls.count("reference") == 2
-
-
-def test_simulator_rebuilds_missing_traffic_once_and_invalidates_baseline(monkeypatch):
+@pytest.mark.parametrize("failure", [None, "Background traffic matrix incomplete", "Healthy baseline is unavailable"])
+def test_simulator_delegates_preparation_and_quarantines_failed_preparation(monkeypatch, failure):
     events = []
-
-    class StaleTraffic:
-        active_flows = {"flow": object()}
-
-        @staticmethod
-        def verify_active_flows():
-            events.append("verify")
-            return False
-
-    class FreshTraffic:
-        active_flows = {"fresh": object()}
-
-    class Runner:
-        topology_dir = "unused"
-        post_recovery_wait_seconds = 0
-
-        def __init__(self):
-            self.traffic_controller = StaleTraffic()
-
-        @staticmethod
-        def _recover_fault():
-            return []
-
-        def _stop_traffic(self):
-            events.append("stop")
-            self.traffic_controller = None
-
-        def _setup_traffic(self, scale, profile):
-            events.append(("setup", scale, profile))
-            self.traffic_controller = FreshTraffic()
-
-    worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
-    record = WarmRuntime(
-        runtime=SimpleNamespace(workers=[worker]),
-        runner=Runner(),
-        baseline_signature="old-signature",
-        baseline={"name": "old"},
-    )
-
-    class Leases:
-        @staticmethod
-        def acquire(_scale):
-            return record
-
-        @staticmethod
-        def release(_record):
-            events.append("release")
-
-        @staticmethod
-        def quarantine(_record):
-            events.append("quarantine")
-
-    class Delegate:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def prepare(_scenario):
-            return {"case_id": "case-test"}
-
-        @staticmethod
-        def finish(*, broken=False):
-            events.append(("finish", broken))
-
-    backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
-    monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
-
-    def ensure_baseline(_scenario):
-        assert record.baseline_signature is None
-        assert record.baseline is None
-        events.append("baseline")
-
-    monkeypatch.setattr(backend, "_ensure_baseline", ensure_baseline)
-    monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
-    validated = []
-    monkeypatch.setattr(
-        simulator_runtime_module,
-        "require_scenario_topology",
-        lambda scenario, topology_dir: validated.append((scenario.id, topology_dir)),
-    )
-
-    result = backend.prepare(_scenario(healthy=True))
-
-    assert result == {"case_id": "case-test"}
-    assert events[:4] == ["verify", "stop", ("setup", "xs", "standard"), "baseline"]
-    assert validated == [("scenario-1", "unused")]
-
-
-def test_simulator_rebuilds_baseline_after_recovering_lingering_fault(monkeypatch):
-    class Traffic:
-        active_flows = {"flow": object()}
-
-        @staticmethod
-        def verify_active_flows():
-            return True
-
     runner = SimpleNamespace(
-        traffic_controller=Traffic(),
-        topology_dir="unused",
-        post_recovery_wait_seconds=0,
-        sleep=lambda _seconds: None,
-        _recover_fault=lambda: [{"type": "link_down", "recovered": True}],
-    )
-    worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
-    record = WarmRuntime(
-        runtime=SimpleNamespace(workers=[worker]),
-        runner=runner,
-        baseline_signature="stale",
-        baseline={"name": "stale"},
-    )
-
-    class Leases:
-        @staticmethod
-        def acquire(_scale):
-            return record
-
-    class Delegate:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        @staticmethod
-        def prepare(_scenario):
-            return {"case_id": "case-test"}
-
-    backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
-    monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        backend,
-        "_ensure_baseline",
-        lambda _scenario: (record.baseline_signature is None and record.baseline is None)
-        or pytest.fail("lingering-fault recovery must invalidate the cached baseline"),
-    )
-    monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
-    monkeypatch.setattr(
-        simulator_runtime_module,
-        "require_scenario_topology",
-        lambda _scenario, _topology_dir: None,
-    )
-
-    assert backend.prepare(_scenario(healthy=True)) == {"case_id": "case-test"}
-
-
-def test_simulator_quarantines_when_traffic_rebuild_is_incomplete(monkeypatch):
-    events = []
-
-    class StaleTraffic:
-        active_flows = {"flow": object()}
-
-        @staticmethod
-        def verify_active_flows():
-            return False
-
-    runner = SimpleNamespace(
-        traffic_controller=StaleTraffic(),
-        topology_dir="unused",
-        post_recovery_wait_seconds=0,
-        _recover_fault=lambda: [],
-        _stop_traffic=lambda: events.append("stop"),
-        _setup_traffic=lambda _scale, _profile: (_ for _ in ()).throw(
-            RuntimeError("Background traffic matrix incomplete")
-        ),
+        topology_dir="unused", begin_case=lambda: None, _baseline_handoff=SimpleNamespace(clear=lambda reason: None)
     )
     worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
     record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
-
-    class Leases:
-        @staticmethod
-        def acquire(_scale):
-            return record
-
-        @staticmethod
-        def quarantine(_record):
-            events.append("quarantine")
-
-    from netopsbench.platform.incident.engine import IncidentEngine, IncidentState
-
-    backend = RuntimeEpisodeBackend(Leases(), default_scale_registry())
-    monkeypatch.setattr(backend, "_health_errors", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        simulator_runtime_module,
-        "require_scenario_topology",
-        lambda _scenario, _topology_dir: None,
+    leases = SimpleNamespace(
+        acquire=lambda scale: record,
+        release=lambda record: events.append("release"),
+        quarantine=lambda record: events.append("quarantine"),
     )
 
-    incident = IncidentEngine(lambda: backend).prepare(_scenario(healthy=True))
+    class Delegate:
+        def __init__(self, executor, **kwargs):
+            assert executor is runner
+            assert kwargs == {"influxdb_bucket": "bucket", "topology_id": "topology"}
 
-    assert events == ["stop", "quarantine"]
-    assert incident.state is IncidentState.BROKEN
-    assert incident.failure is not None
-    assert incident.failure.message == "Background traffic matrix incomplete"
+        def prepare(self, scenario):
+            events.append("shared_prepare")
+            if failure:
+                raise RuntimeError(failure)
+            return {"case_id": "case-test"}
+
+        def finish(self, *, broken=False):
+            events.append(("shared_finish", broken))
+
+    monkeypatch.setattr(simulator_runtime_module, "ExecutorIncidentBackend", Delegate)
+    monkeypatch.setattr(simulator_runtime_module, "require_scenario_topology", lambda *args: None)
+    backend = RuntimeEpisodeBackend(leases, default_scale_registry())
+    incident = IncidentEngine(lambda: backend).prepare(_scenario(healthy=True))
+    if failure:
+        assert incident.state is IncidentState.BROKEN
+        assert incident.failure.message == failure
+        assert events == ["shared_prepare", ("shared_finish", True), "quarantine"]
+    else:
+        assert incident.observation == {"case_id": "case-test"}
+        incident.close()
+        incident.close()
+        assert events == ["shared_prepare", ("shared_finish", False), "release"]
 
 
 def test_simulator_invalid_topology_releases_lease_without_quarantine(monkeypatch):
     events = []
-    runner = SimpleNamespace(topology_dir="unused")
+    runner = SimpleNamespace(
+        topology_dir="unused", begin_case=lambda: None, _baseline_handoff=SimpleNamespace(clear=lambda reason: None)
+    )
     worker = SimpleNamespace(topology_dir="unused", bucket="bucket", topology_id="topology")
     record = WarmRuntime(runtime=SimpleNamespace(workers=[worker]), runner=runner)
 
@@ -815,3 +621,153 @@ def test_simulator_invalid_topology_releases_lease_without_quarantine(monkeypatc
     assert incident.failure is not None
     assert incident.failure.message == "invalid scenario"
     assert events == ["acquire", "release"]
+
+
+def test_slow_provision_does_not_block_release_or_refresh(monkeypatch):
+    pool, _ = _pool(monkeypatch)
+    pool.config = SimulatorConfig(max_active_runtimes=2)
+    first = pool.acquire("xs")
+    entered, proceed = threading.Event(), threading.Event()
+    results = []
+
+    def slow(scale):
+        entered.set()
+        assert proceed.wait(2)
+        return WarmRuntime(runtime=FakeRuntime(scale), runner=FakeRunner())
+
+    monkeypatch.setattr(pool, "_provision", slow)
+    thread = threading.Thread(target=lambda: results.append(pool.acquire("medium")))
+    thread.start()
+    assert entered.wait(1)
+    try:
+        done = threading.Event()
+
+        def update():
+            pool.refresh(first)
+            pool.release(first)
+            done.set()
+
+        updater = threading.Thread(target=update)
+        updater.start()
+        assert done.wait(1), "provisioning held the lease lock"
+        updater.join(1)
+        assert pool._pending == 1
+        assert pool.acquire("xs") is first
+    finally:
+        proceed.set()
+        thread.join(2)
+    assert len(results) == 1
+    assert pool._runtime_count() == 2 and pool._pending == 0
+
+
+def test_failed_provision_releases_reserved_capacity(monkeypatch):
+    pool, _ = _pool(monkeypatch)
+    original = pool._provision
+    monkeypatch.setattr(pool, "_provision", lambda scale: (_ for _ in ()).throw(RuntimeError("deploy failed")))
+    with pytest.raises(RuntimeError, match="deploy failed"):
+        pool.acquire("xs")
+    assert pool._pending == 0
+    monkeypatch.setattr(pool, "_provision", original)
+    assert pool.acquire("xs").in_use
+
+
+def test_slow_teardown_does_not_block_other_lease(monkeypatch):
+    pool, _ = _pool(monkeypatch)
+    pool.config = SimulatorConfig(max_active_runtimes=2)
+    first, second = pool.acquire("xs"), pool.acquire("xs")
+    entered, proceed, updated = threading.Event(), threading.Event(), threading.Event()
+
+    def teardown():
+        entered.set()
+        assert proceed.wait(2)
+
+    first.runtime.teardown = teardown
+    thread = threading.Thread(target=lambda: pool.quarantine(first))
+    thread.start()
+    assert entered.wait(1)
+    try:
+
+        def release():
+            pool.release(second)
+            updated.set()
+
+        updater = threading.Thread(target=release)
+        updater.start()
+        assert updated.wait(1)
+        updater.join(1)
+        assert pool.acquire("xs") is second
+    finally:
+        proceed.set()
+        thread.join(2)
+    assert first not in pool._runtimes["xs"]
+
+
+def test_incident_close_waits_for_inflight_tool_before_recovery():
+    entered, proceed, closing, finished = (threading.Event() for _ in range(4))
+
+    class Backend(FakeBackend):
+        def call_tool(self, action):
+            entered.set()
+            assert proceed.wait(2)
+            assert not finished.is_set()
+            return {"success": True, "data": {}}
+
+        def finish(self, *, broken=False):
+            finished.set()
+
+    incident = IncidentEngine(Backend).prepare(_scenario())
+    tool = threading.Thread(target=lambda: incident.call_tool(ToolAction(name="get_topology")))
+
+    def close():
+        closing.set()
+        incident.close()
+
+    closer = threading.Thread(target=close)
+    tool.start()
+    assert entered.wait(1)
+    closer.start()
+    assert closing.wait(1)
+    try:
+        assert not finished.wait(0.05)
+    finally:
+        proceed.set()
+        tool.join(2)
+        closer.join(2)
+    assert finished.is_set()
+
+
+def test_failed_provision_cleanup_occupies_capacity_until_drain():
+    from netopsbench.platform.runtime.manager import RuntimeProvisionError
+
+    runtime = FakeRuntime("xs")
+
+    class Manager:
+        def provision(self, **kwargs):
+            raise RuntimeProvisionError(runtime, "deployment and cleanup failed")
+
+    pool = RuntimeLeasePool(Manager(), default_scale_registry(), SimulatorConfig(max_active_runtimes=1))
+    with pytest.raises(RuntimeProvisionError):
+        pool.acquire("xs")
+    assert pool._pending == 0
+    assert pool._runtime_count() == 1
+    record = pool._runtimes["xs"][0]
+    assert record.quarantined and record.runner is None
+    pool.drain()
+    assert runtime.teardowns == 1
+    assert pool._runtime_count() == 0
+
+
+def test_public_step_required_flags_and_transition_serialization_are_preserved():
+    from pydantic import ValidationError
+
+    from netopsbench.platform.incident.engine import SessionTransition
+    from netopsbench.platform.simulator.environment import StepResult
+
+    transition = SessionTransition(state=SessionState.ACTIVE)
+    with pytest.raises(ValidationError):
+        StepResult(state=SessionState.ACTIVE)
+    result = StepResult.model_validate(transition.model_dump())
+    assert result.model_dump() == transition.model_dump()
+    assert set(StepResult.model_json_schema()["required"]) == {"valid", "case_valid", "state"}
+    with pytest.raises(ValidationError):
+        result.valid = False

@@ -191,6 +191,8 @@ class PreparedIncident:
             raise ValueError(f"Invalid tool action: {action.name}")
         self._refresh_lease()
         with self._tool_lock:
+            if self.state is not IncidentState.ACTIVE:
+                raise RuntimeError(f"Incident is not active: {self.state}")
             result = self.backend.call_tool(action)
         self._refresh_lease()
         return result
@@ -254,7 +256,8 @@ class PreparedIncident:
             broken = self.state is IncidentState.BROKEN
             if not broken:
                 self.state = IncidentState.CLOSING
-            self._finish_backend(broken=broken)
+            with self._tool_lock:
+                self._finish_backend(broken=broken)
             return self.cleanup_status
 
     def _finish_backend(self, *, broken: bool) -> None:
@@ -325,19 +328,24 @@ class DiagnosticSession:
                 metrics=self._metrics(elapsed),
             )
         try:
-            result = self.incident.call_tool(action)
+            from netopsbench.platform.toolkit._core.control import tool_deadline_scope
+
+            with tool_deadline_scope(self.started_at + self.config.max_agent_seconds):
+                result = self.incident.call_tool(action)
         except Exception as exc:  # noqa: BLE001 - ordinary query errors are recoverable
             failure = ExecutionFailure(
                 domain=FailureDomain.TOOL_EXECUTION,
                 phase="tool_execution",
-                message=str(exc),
+                message="Diagnostic query failed",
                 error_type=type(exc).__name__,
             )
             return SessionTransition(
                 state=self.state,
-                observation=self._bounded_tool_observation({"tool": action.name, "success": False, "error": str(exc)}),
+                observation=self._bounded_tool_observation(
+                    {"tool": action.name, "success": False, "error": "Diagnostic query failed"}
+                ),
                 failure=failure,
-                error=str(exc),
+                error="Diagnostic query failed",
                 metrics=self._metrics(elapsed),
             )
         return SessionTransition(
@@ -406,8 +414,10 @@ class DiagnosticSession:
         )
 
     def _limit_transition(self, elapsed: float) -> SessionTransition | None:
+        timings = getattr(self, "phase_timings", None)
+        cleanup_seconds = timings.phases.get("agent_cleanup", {}).get("actual_seconds", 0) if timings else 0
         message = None
-        if elapsed > self.config.max_agent_seconds:
+        if max(0.0, elapsed - cleanup_seconds) > self.config.max_agent_seconds:
             message = "max_agent_seconds exceeded"
         elif self.tool_calls >= self.config.max_tool_calls:
             message = "max_tool_calls exceeded"

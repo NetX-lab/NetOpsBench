@@ -40,7 +40,7 @@ class ScenarioSpec(BaseModel):
     scenario_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
-    topology_scale: str = Field(default="xs", min_length=1)
+    topology_scale: str = Field(default="medium", min_length=1)
     traffic_profile: Literal["standard"] = "standard"
     episode: EpisodeSpec
     metadata: dict[str, Any] = Field(default_factory=dict)

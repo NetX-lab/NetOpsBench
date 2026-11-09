@@ -23,7 +23,7 @@ def _write_topology(
     (topology_dir / "topology.json").write_text(
         json.dumps(
             {
-                "schema_version": "3",
+                "schema_version": "4",
                 "topology_id": "demo",
                 "name": "demo",
                 "scale": "test",
@@ -52,7 +52,7 @@ def _write_topology(
                             "name": name,
                             "role": "client",
                             "attached_switch": "leaf1",
-                            "data_ip": f"192.168.101.{index + 1}",
+                            "data_ip": f"192.168.1.{index + 1}",
                             "mgmt_ip": f"172.20.20.{100 + index}",
                             "metadata": {"rack": "rack1"},
                         }
@@ -65,6 +65,21 @@ def _write_topology(
         ),
         encoding="utf-8",
     )
+    from netopsbench.models.topology import Link, LinkEndpoint, TopologyManifest
+    from netopsbench.platform.client_agent.config import write_client_agent_config
+    from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
+
+    manifest = TopologyManifest.model_validate_json((topology_dir / "topology.json").read_text())
+    manifest.links = [
+        Link(
+            kind="access",
+            endpoints=(LinkEndpoint(device="leaf1", interface=f"eth{i}"), LinkEndpoint(device=name, interface="eth1")),
+        )
+        for i, name in enumerate(client_names)
+    ]
+    manifest.pingmesh_plan = compile_pingmesh_plan(manifest)
+    (topology_dir / "topology.json").write_text(manifest.model_dump_json())
+    write_client_agent_config(manifest, topology_dir / "configs" / "client-agent" / "client-agent.json")
     linux_kind = {"image": "client"}
     if include_bind:
         linux_kind["binds"] = [deploy_mod.CLIENT_AGENT_BIND]
@@ -145,7 +160,8 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
             assert "iperf3" not in command
             assert ". /etc/netopsbench/client-agent.env" in command
             assert "NETOPSBENCH_INFLUXDB_TOKEN=" not in command
-            assert "> /dev/null 2>&1" in command
+            assert ">> /var/log/netopsbench/pingmesh.log 2>&1" in command
+            assert ">> /var/log/netopsbench/traffic.log 2>&1" in command
             return subprocess.CompletedProcess(
                 ["docker", *args],
                 0,
@@ -164,6 +180,10 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
             "status": {
                 "ready": port == deploy_mod.PINGMESH_CONTROL_PORT,
                 "heartbeat_unix_ns": deploy_mod.time.time_ns(),
+                "config_schema_version": 2,
+                "plan_id": json.loads((topology_dir / "topology.json").read_text())["pingmesh_plan"]["settings"][
+                    "plan_id"
+                ],
             },
         },
     )
@@ -179,10 +199,11 @@ def test_deploy_starts_exactly_two_native_processes_per_client(tmp_path, monkeyp
     config_path = topology_dir / "configs" / "client-agent" / "client-agent.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     env_path = config_path.with_name("client-agent.env")
-    assert config["schema_version"] == 1
+    assert config["schema_version"] == 2
     assert len(config["clients"]) == len(clients)
     assert "probes" not in config
-    assert "NETOPSBENCH_INFLUXDB_URL=http://telegraf:8186" in env_path.read_text()
+    collector = json.loads((topology_dir / "topology.json").read_text())["collector"]["ipv4"]
+    assert f"NETOPSBENCH_INFLUXDB_URL=http://{collector}:8186" in env_path.read_text()
     assert "NETOPSBENCH_INFLUXDB_BUCKET=test-bucket" in env_path.read_text()
     assert env_path.stat().st_mode & 0o777 == 0o600
     assert _RecordingExecutor.max_workers_seen == [7]
@@ -237,6 +258,10 @@ def test_deploy_is_all_or_nothing(tmp_path, monkeypatch):
             "status": {
                 "ready": port == deploy_mod.PINGMESH_CONTROL_PORT,
                 "heartbeat_unix_ns": deploy_mod.time.time_ns(),
+                "config_schema_version": 2,
+                "plan_id": json.loads((topology_dir / "topology.json").read_text())["pingmesh_plan"]["settings"][
+                    "plan_id"
+                ],
             },
         },
     )
@@ -302,6 +327,8 @@ def test_readiness_allows_slow_start_within_fifteen_seconds(monkeypatch):
             "status": {
                 "ready": port == deploy_mod.PINGMESH_CONTROL_PORT,
                 "heartbeat_unix_ns": deploy_mod.time.time_ns(),
+                "config_schema_version": 2,
+                "plan_id": "expected-plan",
             },
         }
 
@@ -311,7 +338,7 @@ def test_readiness_allows_slow_start_within_fifteen_seconds(monkeypatch):
         _status,
     )
 
-    deploy_mod._wait_until_ready("172.20.20.101")
+    deploy_mod._wait_until_ready("172.20.20.101", "expected-plan")
 
     assert 10.0 <= clock[0] < deploy_mod.READINESS_TIMEOUT_SECONDS
 
@@ -327,7 +354,7 @@ def test_readiness_failure_is_explicit(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="readiness failed: connection refused"):
-        deploy_mod._wait_until_ready("172.20.20.101")
+        deploy_mod._wait_until_ready("172.20.20.101", "expected-plan")
 
 
 def test_custom_image_without_native_bind_is_rejected(tmp_path):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -26,6 +27,8 @@ from netopsbench.platform.runtime.deployment import (
     teardown_worker_lab,
 )
 from netopsbench.platform.runtime.health import check_worker_health
+from netopsbench.platform.utils.control import OperationControl
+from netopsbench.platform.utils.measurements import measurement_scope
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +90,16 @@ def deploy_workers(
     scale: str,
     runtime_root: Path | None = None,
     scale_registry: ScaleRegistry | None = None,
+    *,
+    control: OperationControl | None = None,
 ) -> None:
     if not workers:
         return
     job_count = _parallel_job_count(scale, len(workers), scale_registry)
 
     def deploy(worker: RuntimeIdentity) -> None:
+        if control is not None:
+            control.remaining()
         logger.info(
             "[Worker Deploy %s/%s] %s subnet=%s",
             worker.worker_index,
@@ -101,7 +108,7 @@ def deploy_workers(
             worker.mgmt_subnet,
         )
         _append_worker_log_header(_worker_deploy_log_path(worker, runtime_root), f"worker deploy {worker.lab_name}")
-        deploy_worker_lab(worker, scale, scale_registry)
+        deploy_worker_lab(worker, scale, scale_registry, **({"control": control} if control is not None else {}))
 
     if job_count == 1:
         for worker in workers:
@@ -110,7 +117,7 @@ def deploy_workers(
 
     failures: list[tuple[RuntimeIdentity, Exception]] = []
     with ThreadPoolExecutor(max_workers=job_count) as executor:
-        future_map = {executor.submit(deploy, worker): worker for worker in workers}
+        future_map = {executor.submit(copy_context().run, deploy, worker): worker for worker in workers}
         for future in as_completed(future_map):
             try:
                 future.result()
@@ -126,11 +133,12 @@ def deploy_workers(
         raise error
 
 
-def ensure_worker_client_agent(worker: RuntimeIdentity) -> None:
+def ensure_worker_client_agent(worker: RuntimeIdentity, *, control: OperationControl | None = None) -> None:
     preflight_errors = check_worker_health(
         worker,
         require_client_agent=False,
         all_routing_devices=True,
+        cancel_event=control.cancel_event if control else None,
     )
     if preflight_errors:
         raise RuntimeError("Network must converge before starting native client agents: " + "; ".join(preflight_errors))
@@ -146,10 +154,17 @@ def validate_worker_health(
     worker: RuntimeIdentity,
     runtime_root: Path | None = None,
     scale_registry: ScaleRegistry | None = None,
+    *,
+    control: OperationControl | None = None,
 ) -> None:
     log_path = _worker_deploy_log_path(worker, runtime_root)
     _append_worker_log_header(log_path, "worker health validation")
-    errors = check_worker_health(worker, scale_registry=scale_registry)
+    errors = check_worker_health(
+        worker,
+        scale_registry=scale_registry,
+        all_routing_devices=True,
+        cancel_event=control.cancel_event if control else None,
+    )
     if errors:
         message = "; ".join(errors)
         with open(log_path, "a", encoding="utf-8") as log_file:
@@ -203,6 +218,7 @@ class RuntimeLifecycle:
 
     def __init__(self, scale_registry: ScaleRegistry | None = None):
         self.scale_registry = scale_registry or default_scale_registry()
+        self.control: OperationControl | None = None
 
     def run(self, stage: str, runtime: RuntimePoolLike) -> LifecycleStageResult:
         operations = {
@@ -219,8 +235,13 @@ class RuntimeLifecycle:
 
         started_at = datetime.now(UTC)
         started_tick = monotonic()
+        counts: dict[str, int] = {}
         try:
-            details = operation(runtime) or {}
+            if self.control is not None:
+                self.control.remaining()
+            with measurement_scope(counts):
+                details = operation(runtime) or {}
+            details["operations"] = counts
         except Exception as exc:
             ended_at = datetime.now(UTC)
             result = LifecycleStageResult(
@@ -230,6 +251,7 @@ class RuntimeLifecycle:
                 ended_at=ended_at,
                 duration_seconds=monotonic() - started_tick,
                 error=f"{type(exc).__name__}: {exc}",
+                details={"operations": counts},
             )
             raise RuntimeLifecycleError(result) from exc
 
@@ -243,7 +265,7 @@ class RuntimeLifecycle:
         )
 
     def _deploy(self, runtime: RuntimePoolLike) -> dict[str, Any]:
-        with runtime_deploy_lock():
+        with runtime_deploy_lock(self.control):
             subnets = allocate_management_subnets(runtime.scale, runtime.size, self.scale_registry)
             runtime.workers = [
                 worker.model_copy(update={"mgmt_subnet": subnets[index]})
@@ -252,11 +274,16 @@ class RuntimeLifecycle:
             for worker in runtime.workers:
                 assert_worker_slot_available(worker)
             runtime.metadata["deployment_started"] = True
-            deploy_workers(runtime.workers, runtime.scale, runtime.root_dir, self.scale_registry)
+            deploy_workers(
+                runtime.workers,
+                runtime.scale,
+                runtime.root_dir,
+                self.scale_registry,
+                **({"control": self.control} if self.control is not None else {}),
+            )
         return {"workers": runtime.size}
 
-    @staticmethod
-    def _ensure_observability(runtime: RuntimePoolLike) -> dict[str, Any]:
+    def _ensure_observability(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         registry = ManagedBucketRegistry(runtime.telemetry_ownership_file)
         created: list[str] = []
 
@@ -266,22 +293,33 @@ class RuntimeLifecycle:
             runtime._provision_created_buckets.append(bucket)
 
         for worker in runtime.workers:
+            if self.control is not None:
+                self.control.remaining()
             ensure_worker_observability(
                 worker,
                 on_bucket_created=record_created,
             )
         return {"workers": runtime.size, "created_buckets": created}
 
-    @staticmethod
-    def _ensure_pingmesh(runtime: RuntimePoolLike) -> dict[str, Any]:
+    def _ensure_pingmesh(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         for worker in runtime.workers:
-            ensure_worker_client_agent(worker)
+            ensure_worker_client_agent(worker, **({"control": self.control} if self.control is not None else {}))
         return {"workers": runtime.size}
 
     def _warm(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         for worker in runtime.workers:
-            validate_worker_health(worker, runtime.root_dir, self.scale_registry)
-        return {"workers": runtime.size, "health": "ready"}
+            validate_worker_health(
+                worker,
+                runtime.root_dir,
+                self.scale_registry,
+                **({"control": self.control} if self.control is not None else {}),
+            )
+        return {
+            "workers": runtime.size,
+            "health": "ready",
+            "all_routing_devices": True,
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
 
     def _teardown(self, runtime: RuntimePoolLike) -> dict[str, Any]:
         teardown_workers(runtime.workers, self.scale_registry)

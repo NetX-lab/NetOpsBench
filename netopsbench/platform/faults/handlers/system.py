@@ -6,6 +6,8 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from netopsbench.platform.runtime.apply_configs import activate_device
+from netopsbench.platform.runtime.toolchain import runtime_tools
+from netopsbench.platform.utils.control import current_operation_control
 from netopsbench.platform.utils.proc import docker_prefix, sudo_prefix
 
 if TYPE_CHECKING:
@@ -40,7 +42,7 @@ class SystemHandler:
     def _containerlab_node_command(self, operation: str, device: str) -> list[str]:
         return [
             *sudo_prefix(),
-            "containerlab",
+            str(runtime_tools() / "containerlab"),
             operation,
             "-t",
             str(self._ctx.topology_file),
@@ -88,7 +90,8 @@ class SystemHandler:
                 responsive_polls = 0
             if time.monotonic() >= deadline:
                 return state, parking
-            time.sleep(self._STOP_SETTLE_POLL_SECONDS)
+            control = current_operation_control()
+            control.sleep(self._STOP_SETTLE_POLL_SECONDS) if control else time.sleep(self._STOP_SETTLE_POLL_SECONDS)
 
     def _expected_dataplane_interface_count(self, device: str) -> int:
         return sum(
@@ -182,6 +185,7 @@ class SystemHandler:
             self._ctx.manifest.name,
             ecmp_hash_policy,
             readiness_max_tries=self._ACTIVATION_MAX_TRIES,
+            control=current_operation_control(),
         )
         if not activated:
             return False, activation_error, True
@@ -197,7 +201,8 @@ class SystemHandler:
                 last_error = (bgp_result.stderr or bgp_result.stdout or "").strip() or last_error
             elif running is None:
                 last_error = "unable to read container running state"
-            time.sleep(5)
+            control = current_operation_control()
+            control.sleep(5) if control else time.sleep(5)
         return False, last_error or "device did not recover after containerlab node start", True
 
     def inject_device_down(self, device: str) -> dict[str, Any]:
@@ -205,6 +210,15 @@ class SystemHandler:
         if not container:
             raise ValueError(f"Unknown device: {device}")
 
+        original_running = self._cmd.container_is_running(container)
+        if original_running is not True:
+            return {
+                "type": "device_down",
+                "device": device,
+                "success": False,
+                "original_state": {"container_running": original_running},
+                "error": "Device must be running before this fault can own its stop/start lifecycle",
+            }
         result = self._cmd.run_cmd(
             self._containerlab_node_command("stop", device),
             timeout=self._CONTAINERLAB_COMMAND_TIMEOUT_SECONDS,
@@ -226,6 +240,7 @@ class SystemHandler:
             "device": device,
             "container": container,
             "mode": "containerlab_node_stop",
+            "original_state": {"container_running": original_running},
             "success": success,
             "parking_namespace": parking_namespace,
             "container_running": running_state,
@@ -259,6 +274,7 @@ class SystemHandler:
             "type": "device_down",
             "device": device,
             "recovered": ready,
+            "readback_verified": ready,
             "container_running": self._cmd.container_is_running(container),
             "sonic_ready": ready,
             "retryable": retryable,

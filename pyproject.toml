@@ -36,9 +36,12 @@ netopsbench = "netopsbench.cli.main:main"
 netopsbench-bgp-collector = "netopsbench.platform.observability.bgp_collector:main"
 netopsbench-mcp-server = "netopsbench.platform.toolkit.fastmcp_server:main"
 netopsbench-runtime = "netopsbench.platform.runtime.cli:main"
-netopsbench-simulator = "netopsbench.sdk.simulator_service:main"
 
 [project.optional-dependencies]
+codex = [
+    "fastmcp>=3.4.0",
+    "uvicorn>=0.30.0",
+]
 agent = [
     "openai>=1.0.0",
     "deepagents>=0.0.12",
@@ -46,15 +49,12 @@ agent = [
     "langchain-openai>=0.2.0",
     "langchain-mcp-adapters>=0.1.0",
     "langsmith>=0.3.0",
-    "fastmcp>=2.0.0",
+    "fastmcp>=3.4.0",
+    "uvicorn>=0.30.0",
     "json-repair>=0.54.0",
 ]
 plots = [
     "matplotlib>=3.8.0",
-]
-simulator = [
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
 ]
 dev = [
     "pytest>=6.0.0",
@@ -76,6 +76,7 @@ netopsbench = [
     "models/*.yaml",
     "platform/topology/*.json",
     "platform/topology/*.sh",
+    "platform/runtime/assets/*",
     "platform/observability/assets/**/*",
     "platform/scenario/specs/*.yaml",
 ]
@@ -84,6 +85,7 @@ netopsbench = [
 "*" = ["**/__pycache__", "**/__pycache__/*", "**/*.pyc"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "real: tests requiring deployed real environment and external services",
     "slow: tests that are slow but do not need a real environment",

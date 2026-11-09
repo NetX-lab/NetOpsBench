@@ -3,11 +3,20 @@
 import json
 import tempfile
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from netopsbench.platform.faults.injector import FaultInjector
 from netopsbench.platform.faults.models import ActiveFault
 from netopsbench.platform.topology.generator import generate_topology
+
+
+@pytest.fixture(autouse=True)
+def mocked_runtime_tools(monkeypatch, tmp_path):
+    # These transaction tests mock every command; toolchain validation has its own tests.
+    monkeypatch.setattr("netopsbench.platform.faults.handlers.system.runtime_tools", lambda: tmp_path)
 
 
 def _metadata() -> dict:
@@ -92,8 +101,9 @@ def test_link_flapping_uses_python_background_control_metadata():
 
     states, _commands = _stub_link_state(injector)
 
-    fault = injector.inject_link_flapping(device="spine1", interface="Ethernet0", iterations=1, down_time=0, up_time=0)
-    time.sleep(0.01)
+    fault = injector.inject_link_flapping(device="spine1", interface="Ethernet0", down_time=0.01, up_time=0.01)
+    time.sleep(0.015)
+    injector.recover_all()
 
     assert fault["type"] == "link_flapping"
     assert fault["orchestration"] == "python"
@@ -104,6 +114,44 @@ def test_link_flapping_uses_python_background_control_metadata():
     assert states[("clab-dcn-leaf1", "eth1")] == "up"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("converges", [False, True])
+def test_link_admin_readback_waits_for_async_sonic_state_with_a_deadline(monkeypatch, enabled, converges):
+    from netopsbench.platform.faults.handlers import link
+
+    injector = FaultInjector(topology_metadata=_metadata())
+    clock, reads, mutations = [0.0], [], []
+
+    def sleep(delay):
+        clock[0] += delay
+
+    def configure(device, commands):
+        mutations.append(commands)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def read(container, commands, *, timeout):
+        assert commands == ["ip", "-o", "link", "show", "dev", "eth1"]
+        assert clock[0] < 3
+        assert 0 < timeout <= 3 - clock[0]
+        reads.append(timeout)
+        applied = enabled if converges and len(reads) >= 3 else not enabled
+        flags = "BROADCAST,MULTICAST,UP" if applied else "BROADCAST,MULTICAST"
+        return SimpleNamespace(returncode=0, stdout=f"1: eth1: <{flags}>", stderr="")
+
+    monkeypatch.setattr(link, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(injector._sonic, "config_cmd", configure)
+    monkeypatch.setattr(injector._cmd, "docker_exec", read)
+    result = injector._link._set_link_admin_state("spine1", "clab-dcn-spine1", "Ethernet0", "eth1", enabled=enabled)
+    assert result["success"] is converges
+    assert mutations == [["interface", "startup" if enabled else "shutdown", "Ethernet0"]]
+    if converges:
+        assert len(reads) == 3
+        assert clock[0] < 3
+    else:
+        assert clock[0] == 3
+        assert result["error"]
+
+
 def test_link_flapping_recovery_verifies_both_physical_endpoints():
     injector = FaultInjector(topology_metadata=_metadata())
     states, _commands = _stub_link_state(injector)
@@ -111,7 +159,6 @@ def test_link_flapping_recovery_verifies_both_physical_endpoints():
     injector.inject_link_flapping(
         device="spine1",
         interface="Ethernet0",
-        iterations=10,
         down_time=10,
         up_time=10,
     )
@@ -123,6 +170,7 @@ def test_link_flapping_recovery_verifies_both_physical_endpoints():
             "device": "spine1",
             "interface": "Ethernet0",
             "recovered": True,
+            "readback_verified": True,
             "error": None,
         }
     ]
@@ -249,6 +297,7 @@ def test_access_link_recovery_restores_client_routes_removed_by_link_down():
 
 def test_device_down_uses_containerlab_node_stop():
     injector = FaultInjector(topology_metadata=_metadata())
+    injector._system._cmd.container_is_running = lambda _container: True
     calls = []
     result = type("R", (), {"returncode": 0, "stderr": "", "stdout": "spine1"})()
     injector._system._cmd.run_cmd = lambda command, **_kwargs: calls.append(command) or result

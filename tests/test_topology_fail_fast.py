@@ -22,7 +22,7 @@ def test_toolkit_uses_only_the_explicit_topology_directory(tmp_path):
     selected_dir = tmp_path / "selected"
     unrelated_dir = tmp_path / "newer"
     generate_topology("xs", str(selected_dir), name="selected-lab")
-    generate_topology("small", str(unrelated_dir), name="unrelated-lab")
+    generate_topology("medium", str(unrelated_dir), name="unrelated-lab")
 
     toolkit = AgentToolkit(topology_dir=selected_dir)
 

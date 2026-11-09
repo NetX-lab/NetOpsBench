@@ -29,7 +29,20 @@ class SonicRuntime:
         cmd = ["vtysh"]
         for command in commands:
             cmd.extend(["-c", command])
-        return self._cmd.docker_exec(container, cmd)
+        result = self._cmd.docker_exec(container, cmd)
+        if result.returncode == 0 and "write memory" in commands:
+            # FRR rewrites its bind-mounted startup file as frr:frr 0640.
+            # Preserve the generated configuration's host-side readability
+            # so runtime baseline fingerprints can still inspect it.
+            readable = self._cmd.docker_exec(container, ["chmod", "a+r", "/etc/frr/frr.conf"])
+            if readable.returncode != 0:
+                return subprocess.CompletedProcess(
+                    result.args,
+                    readable.returncode,
+                    result.stdout,
+                    readable.stderr or "Saved FRR configuration could not be made readable",
+                )
+        return result
 
     def config_cmd(self, device: str, args: list[str]) -> subprocess.CompletedProcess:
         container = self._ctx.container_names.get(device)

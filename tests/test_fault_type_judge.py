@@ -23,7 +23,7 @@ class RecordingJudge:
 def test_canonicalize_fault_type_preserves_legacy_aliases():
     assert canonicalize_fault_type("link failure") == "link_down"
     assert canonicalize_fault_type("static_route_misconfiguration") == "static_route_misconfig"
-    assert canonicalize_fault_type("acl_misconfiguration") == "acl_misconfig"
+    assert canonicalize_fault_type("acl_misconfiguration") == "acl_misconfiguration"
 
 
 def test_exact_canonical_match_uses_fast_path_without_calling_judge():
@@ -52,7 +52,7 @@ def test_exact_canonical_match_uses_fast_path_without_calling_judge():
 def test_structured_fault_type_judge_accepts_mapping_results():
     def judge_fn(request):
         return {
-            "canonical_agent_fault_type": "bgp_neighbor_misconfig",
+            "canonical_agent_fault_type": "bgp_as_mismatch",
             "canonical_ground_truth_fault_type": request.canonical_ground_truth_fault_type,
             "is_match": True,
             "confidence": 0.92,
@@ -62,22 +62,22 @@ def test_structured_fault_type_judge_accepts_mapping_results():
     judge = StructuredFaultTypeJudge(judge_fn, model="judge-model")
     request = build_fault_type_judge_request(
         agent_fault_type="BGP peer AS mismatch",
-        ground_truth_fault_type="bgp_neighbor_misconfig",
+        ground_truth_fault_type="bgp_as_mismatch",
         agent_reasoning="BGP peer has wrong remote AS.",
     )
 
     result = judge.judge(request)
 
     assert result.is_match is True
-    assert result.canonical_agent_fault_type == "bgp_neighbor_misconfig"
+    assert result.canonical_agent_fault_type == "bgp_as_mismatch"
     assert result.judge_model == "judge-model"
 
 
 def test_evaluator_uses_judge_for_semantic_fault_type_match():
     judge = RecordingJudge(
         FaultTypeJudgeResult(
-            canonical_agent_fault_type="bgp_neighbor_misconfig",
-            canonical_ground_truth_fault_type="bgp_neighbor_misconfig",
+            canonical_agent_fault_type="bgp_as_mismatch",
+            canonical_ground_truth_fault_type="bgp_as_mismatch",
             is_match=True,
             confidence=0.93,
             reasoning="The agent described a BGP peer AS/session configuration issue.",
@@ -94,7 +94,7 @@ def test_evaluator_uses_judge_for_semantic_fault_type_match():
             reasoning="The BGP peer has the wrong remote AS.",
             evidence=["BGP session is Idle"],
         ),
-        {"fault_type": "bgp_neighbor_misconfig", "location": {"device": "leaf1", "interface": "Ethernet1"}},
+        {"fault_type": "bgp_as_mismatch", "location": {"device": "leaf1", "interface": "Ethernet1"}},
         "case-1",
     )
 
@@ -182,8 +182,8 @@ def test_create_judge_from_env_returns_judge_when_enabled():
 def test_public_evaluator_adapter_uses_canonical_scenario_and_report_fields():
     judge = RecordingJudge(
         FaultTypeJudgeResult(
-            canonical_agent_fault_type="bgp_neighbor_misconfig",
-            canonical_ground_truth_fault_type="bgp_neighbor_misconfig",
+            canonical_agent_fault_type="bgp_as_mismatch",
+            canonical_ground_truth_fault_type="bgp_as_mismatch",
             is_match=True,
             confidence=0.9,
             reasoning="Equivalent BGP peer configuration failure.",
@@ -196,7 +196,7 @@ def test_public_evaluator_adapter_uses_canonical_scenario_and_report_fields():
         name="BGP case",
         episode={
             "episode_id": "diagnosis",
-            "fault_type": "bgp_neighbor_misconfig",
+            "fault_type": "bgp_as_mismatch",
             "target_device": "leaf1",
         },
     )
