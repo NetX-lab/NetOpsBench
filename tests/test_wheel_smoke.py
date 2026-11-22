@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
-import venv
 import zipfile
 from pathlib import Path
 
@@ -39,28 +37,30 @@ def test_installed_wheel_generates_topology_without_source_checkout(tmp_path):
     assert "netopsbench/platform/observability/assets/grafana/provisioning/datasources/default.yaml" in names
     assert "netopsbench/platform/scenario/specs/fault_campaign.yaml" in names
     assert "netopsbench/models/scale_profiles.yaml" in names
-    assert "netopsbench/platform/simulator/service.py" not in names
+    for removed_module in ("contracts", "engine", "payloads", "service"):
+        assert f"netopsbench/platform/simulator/{removed_module}.py" not in names
     assert "netopsbench/sdk/simulator_service.py" not in names
     assert not any("rl_experiment" in name or "verl" in name for name in names)
     assert not any(name.startswith("netopsbench/resources/") for name in names)
     assert "netopsbench/platform/observability/assets/telegraf.conf" not in names
     assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)
 
-    venv_dir = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=True, system_site_packages=True).create(venv_dir)
-    python = venv_dir / "bin" / "python"
+    installed = tmp_path / "installed"
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-deps", "--force-reinstall", str(wheel)],
+        [sys.executable, "-m", "pip", "install", "--no-deps", "--target", str(installed), str(wheel)],
         check=True,
         capture_output=True,
         text=True,
     )
-    assert not (venv_dir / "bin" / "netopsbench-simulator").exists()
-    assert not (venv_dir / "bin" / "netopsbench-rl").exists()
+    assert not (installed / "bin" / "netopsbench-simulator").exists()
+    assert not (installed / "bin" / "netopsbench-rl").exists()
 
     outside = tmp_path / "outside"
     outside.mkdir()
+    # Load the wheel first and use the test interpreter's installed dependencies.
     script = f"""
+import sys
+sys.path.insert(0, {str(installed)!r})
 from pathlib import Path
 from importlib.resources import files
 import netopsbench
@@ -69,9 +69,8 @@ from netopsbench.platform.topology.generator import generate_topology
 from netopsbench.models.profiles import default_scale_registry
 from netopsbench.sdk import NetOpsBench, SimulatorConfig
 
-source_root = Path({str(repo)!r}).resolve()
 package_file = Path(netopsbench.__file__).resolve()
-assert source_root not in package_file.parents, package_file
+assert Path({str(installed)!r}).resolve() in package_file.parents, package_file
 output = Path.cwd() / "generated"
 result = generate_topology("xs", str(output), name="wheel-xs")
 assert Path(result["metadata_file"]).is_file()
@@ -80,17 +79,6 @@ assert (output / "configs" / "sonic" / "spine1" / "config_db.json").is_file()
 assert (observability_asset_root() / "telegraf.conf.template").is_file()
 assert files("netopsbench.platform.scenario").joinpath("specs", "fault_campaign.yaml").is_file()
 assert default_scale_registry().get("fat-tree-k12").total_clients == 144
-print(package_file)
 """
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    completed = subprocess.run(
-        [str(python), "-c", script],
-        cwd=outside,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert str(repo) not in completed.stdout
+    completed = subprocess.run([sys.executable, "-I", "-c", script], cwd=outside, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr

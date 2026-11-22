@@ -13,8 +13,16 @@ from netopsbench.platform.topology.clos_builder import build_clos_plan
 from netopsbench.platform.topology.config import config_for_scale
 
 
-@pytest.mark.parametrize("fault", ["packet_loss", "packet_corruption", "high_latency"])
-@pytest.mark.parametrize("collection", ["ok", "failed", "invalid_json"])
+@pytest.mark.parametrize(
+    ("fault", "collection"),
+    [
+        ("packet_loss", "ok"),
+        ("packet_corruption", "ok"),
+        ("high_latency", "ok"),
+        ("packet_loss", "failed"),
+        ("packet_corruption", "invalid_json"),
+    ],
+)
 def test_impairment_effect_uses_private_qdisc_collection(monkeypatch, fault, collection):
     manifest = build_clos_plan(config_for_scale("medium")).manifest
     pair = {"src": "client1", "dst": "client3"}

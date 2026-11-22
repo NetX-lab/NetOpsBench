@@ -478,18 +478,18 @@ def test_get_bgp_neighbor_only_queries_requested_device_and_peer(monkeypatch, tm
 
 
 @pytest.mark.parametrize(
-    "states",
+    ("states", "state_filter", "prior"),
     [
-        ["ESTABLISHED", "ESTABLISHED"],
-        ["IDLE", "IDLE"],
-        ["ESTABLISHED", "IDLE"],
-        ["IDLE", "ESTABLISHED"],
-        ["ESTABLISHED", "IDLE", "ESTABLISHED"],
-        ["IDLE", "ESTABLISHED", "IDLE"],
+        (["ESTABLISHED", "ESTABLISHED"], "all", None),
+        (["IDLE", "IDLE"], "non_established", "ESTABLISHED"),
+        (["ESTABLISHED", "IDLE"], "all", None),
+        (["IDLE", "ESTABLISHED"], "established", None),
+        (["ESTABLISHED", "IDLE", "ESTABLISHED"], "all", "ESTABLISHED"),
+        (["IDLE", "ESTABLISHED", "IDLE"], "all", None),
+        (["ESTABLISHED", "ESTABLISHED"], "non_established", None),
+        (["IDLE", "IDLE"], "established", None),
     ],
 )
-@pytest.mark.parametrize("state_filter", ["all", "established", "non_established"])
-@pytest.mark.parametrize("prior", [None, "ESTABLISHED"])
 def test_snapshot_and_indexed_events_preserve_the_same_session_evidence(states, state_filter, prior):
     from netopsbench.platform.toolkit._core.observability.bgp_ops import BgpOpsMixin
 

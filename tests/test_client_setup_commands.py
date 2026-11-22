@@ -9,9 +9,11 @@ import pytest
 from netopsbench.platform.topology.planning import client_commands
 
 
+# Gateway quoting is exercised when the route command runs. Each command
+# position independently verifies that a nonzero exit stops the sequence.
 @pytest.mark.parametrize("fail_at", [0, 1, 2, 3, 4, 5])
-@pytest.mark.parametrize("gateway", ["192.168.1.1", "192.168.1.1; exit 99"])
-def test_client_setup_order_and_fail_fast(tmp_path, fail_at, gateway):
+def test_client_setup_order_and_fail_fast(tmp_path, fail_at):
+    gateway = "192.168.1.1; exit 99" if fail_at == 0 else "192.168.1.1"
     log = tmp_path / "calls.jsonl"
     stub = (
         f"#!{sys.executable}\n"

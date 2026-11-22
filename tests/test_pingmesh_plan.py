@@ -4,6 +4,7 @@ from collections import Counter
 
 import pytest
 
+from netopsbench.models.profiles import get_scale_profile
 from netopsbench.platform.pingmesh.detector import AnomalyDetector
 from netopsbench.platform.pingmesh.planner import compile_pingmesh_plan
 from netopsbench.platform.topology.clos_builder import build_clos_plan
@@ -40,6 +41,7 @@ def test_fixed_plans_cover_all_links_and_ports(manifests, scale, pairs, epoch, w
     assert plan.directed_pair_count == pairs
     assert plan.settings.coverage_epoch_seconds == epoch
     assert plan.settings.complete_window_seconds == window
+    assert get_scale_profile(scale).experiment.window_seconds(window) == max(30, window)
     assert len(plan.coverage.directed_links) == 2 * len(manifest.links)
     assert set(plan.coverage.covered_switches) == {device.name for device in manifest.switches()}
     assert plan.coverage.minimum_witnesses >= (2 if scale in {"xlarge", "fat-tree-k18"} else 1)

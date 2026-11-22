@@ -35,29 +35,6 @@ def test_all_diagnostic_observation_durations_use_complete_pingmesh_window():
         assert profile.model_copy(update={"observation_seconds": requested}).window_seconds(complete) == expected
 
 
-@pytest.mark.parametrize(
-    "scale,expected_window",
-    [
-        ("xs", 7),
-        ("medium", 8),
-        ("large", 30),
-        ("xlarge", 66),
-        ("fat-tree-k8", 42),
-        ("fat-tree-k12", 42),
-        ("fat-tree-k18", 42),
-    ],
-)
-def test_builtin_scale_complete_windows_are_topology_derived(scale, expected_window):
-    from netopsbench.platform.topology.clos_builder import build_clos_plan
-    from netopsbench.platform.topology.config import TopologyConfig, config_for_scale
-    from netopsbench.platform.topology.fat_tree_builder import build_fat_tree_plan
-
-    config = config_for_scale(scale)
-    manifest = (build_clos_plan if isinstance(config, TopologyConfig) else build_fat_tree_plan)(config).manifest
-    assert manifest.require_pingmesh_plan().settings.complete_window_seconds == expected_window
-    assert get_scale_profile(scale).experiment.window_seconds(expected_window) == max(30, expected_window)
-
-
 def test_custom_pingmesh_policy_derives_complete_window_without_scale_name():
     from netopsbench.platform.topology.clos_builder import build_clos_plan
     from netopsbench.platform.topology.config import TopologyConfig

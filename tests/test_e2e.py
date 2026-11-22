@@ -101,9 +101,12 @@ class TestTopologyGeneration:
             assert not list(Path(tmpdir, "configs").glob("*.configdb.json"))
             client_agent_dir = Path(tmpdir, "configs", "client-agent")
             assert client_agent_dir.is_dir()
-            assert (client_agent_dir / "client-agent.json").is_file()
+            payload = json.loads((client_agent_dir / "client-agent.json").read_text())
 
             manifest = TopologyManifest.model_validate(result["metadata"])
+            assert len(payload["clients"]) == manifest.facts.total_clients
+            assert len({client["name"] for client in payload["clients"]}) == len(payload["clients"])
+            assert "probes" not in payload
             first_routing = manifest.routing_devices()[0].name
             first_attached = manifest.client_attached_devices()[0].name
             first_routing_config = Path(tmpdir, "configs", "sonic", first_routing, "config_db.json")
@@ -238,16 +241,6 @@ class TestAgentToolkit:
             assert "devices" in result.data
             assert "links" in result.data
 
-    def test_toolkit_loads_dynamic_topology(self):
-        """Test toolkit can load dynamic topology from metadata."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Generate topology
-            result = generate_topology("xs", tmpdir)
-            metadata = result["metadata"]
-
-            # Create toolkit with metadata
-            toolkit = AgentToolkit(topology_metadata=metadata)
-
             assert toolkit.topology_name == "dcn"
             assert "spine1" in toolkit.container_names
             assert "leaf1" in toolkit.container_names
@@ -256,17 +249,6 @@ class TestAgentToolkit:
 
 class TestClientAgentConfig:
     """Tests for the compact native client-agent configuration."""
-
-    @pytest.mark.parametrize("scale", supported_scales())
-    def test_config_scales_linearly_with_topology(self, scale):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = generate_topology(scale, tmpdir)
-            manifest = TopologyManifest.model_validate(result["metadata"])
-            payload = build_client_agent_config(manifest)
-
-            assert len(payload["clients"]) == manifest.facts.total_clients
-            assert len({client["name"] for client in payload["clients"]}) == len(payload["clients"])
-            assert "probes" not in payload
 
     def test_xlarge_config_is_deterministic_and_bounded(self):
         with tempfile.TemporaryDirectory() as tmpdir:

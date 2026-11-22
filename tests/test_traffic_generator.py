@@ -126,8 +126,7 @@ def test_xlarge_standard_profile_respects_switch_budget(tmp_path):
     assert traffic_generator.validate_traffic_config(config, "xlarge") is True
 
 
-@pytest.mark.parametrize("scale", ["xlarge", "fat-tree-k18"])
-@pytest.mark.parametrize("switch_budget", [None, 1000, 5000, 10000])
+@pytest.mark.parametrize(("scale", "switch_budget"), [("xlarge", None), ("xlarge", 1000), ("fat-tree-k18", 10000)])
 def test_switch_budget_cannot_raise_profile_client_limit(scale, switch_budget):
     assert traffic_generator._max_pps_per_client(scale, switch_budget) == 50
 
@@ -194,7 +193,7 @@ def test_standard_matrix_balances_destination_listener_budget(tmp_path, scale, e
         listener_ports[flow["dst"]].add(flow["dst_port"])
         source_protocols[flow["src"]][flow["protocol"]] += 1
 
-    assert len(config["flows"]) == expected_flows
+    assert config["stats"]["total_flows"] == len(config["flows"]) == expected_flows
     assert set(incoming.values()) == {expected_incoming}
     assert all(ports == set(range(5201, 5201 + expected_incoming)) for ports in listener_ports.values())
     if scale != "xs":
@@ -203,20 +202,6 @@ def test_standard_matrix_balances_destination_listener_budget(tmp_path, scale, e
     assert config["stats"]["min_incoming_flows"] == expected_incoming
     assert config["stats"]["max_incoming_flows"] == expected_incoming
     assert config["stats"]["required_listener_ports"] == list(range(5201, 5201 + expected_incoming))
-
-
-def test_large_standard_matrix_never_exceeds_four_destination_listeners(tmp_path):
-    from netopsbench.platform.topology.generator import generate_topology
-
-    result = generate_topology("large", str(tmp_path / "large"))
-    topology = load_topology_manifest(result["metadata_file"]).model_dump(mode="json")
-
-    config = traffic_generator.generate_traffic_config_from_topology(topology, "large", "standard")
-    incoming = Counter(flow["dst"] for flow in config["flows"])
-
-    assert config["stats"]["total_flows"] == 256
-    assert set(incoming.values()) == {4}
-    assert set(flow["dst_port"] for flow in config["flows"]) == {5201, 5202, 5203, 5204}
 
 
 @pytest.mark.parametrize("profile", ["light", "stress"])

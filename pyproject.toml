@@ -48,6 +48,7 @@ agent = [
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
     "langchain-mcp-adapters>=0.1.0",
+    "mcp<2",  # The adapter imports the v1 FastMCP tool API.
     "langsmith>=0.3.0",
     "fastmcp>=3.4.0",
     "uvicorn>=0.30.0",

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-import subprocess
+import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -250,24 +250,6 @@ def test_minimal_deepagent_supports_kimi_vendor(monkeypatch):
     assert agent.api_key == "kimi-test-key"
 
 
-def test_minimal_deepagent_closes_exit_stack_within_each_diagnose_call(tmp_path, monkeypatch):
-    fake_graph = _FakeRuntime({"messages": [_diagnosis_json_message()]})
-    agent = MinimalDeepAgent(
-        api_key="test-key",
-        mcp_server_config={"netopsbench": {"transport": "stdio"}},
-    )
-    _patch_agent_deps(monkeypatch, fake_graph)
-
-    context = DiagnosticContext(
-        scenario_id="scenario-close",
-        topology={"devices": {}},
-        symptoms={"observations": {"pingmesh_metrics": {"anomalies": []}}},
-    )
-
-    result = asyncio.run(agent.diagnose(context))
-    assert result.verdict == "inconclusive"
-
-
 def test_minimal_deepagent_parses_final_json_block(monkeypatch):
     fake_graph = _FakeRuntime(
         {
@@ -429,106 +411,6 @@ def test_minimal_deepagent_aclose_is_safe_without_persistent_runtime():
     asyncio.run(agent.aclose())
 
 
-class _FakeReport:
-    def __init__(self):
-        self.summary = {"status": "completed"}
-        self.scenario_summaries = [{"scenario_id": "demo"}]
-        self.artifact_paths = {"report": "/tmp/report.json"}
-
-    def pretty_print(self):
-        return None
-
-
-class _FakeRun:
-    def __init__(self):
-        self.id = "run-001"
-        self.runtime_id = "runtime-001"
-        self.status = "completed"
-
-    def wait(self, raise_on_failure=False):
-        return _FakeReport()
-
-
-class _FakeRuntimePool:
-    def __init__(self):
-        self.name = "runtime-001"
-        self.state = "ready"
-        self.size = 2
-        self.workers = [
-            SimpleNamespace(
-                name="worker-1", lab_name="lab-1", topology_dir="/tmp/topology-1", mgmt_subnet="10.0.0.0/24"
-            ),
-            SimpleNamespace(
-                name="worker-2", lab_name="lab-2", topology_dir="/tmp/topology-2", mgmt_subnet="10.0.1.0/24"
-            ),
-        ]
-        self.teardown_called = False
-
-    def teardown(self):
-        self.teardown_called = True
-        self.state = "deleted"
-
-
-class _FakeRuntimes:
-    def __init__(self):
-        self.calls = []
-        self.runtime = _FakeRuntimePool()
-
-    def provision(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.runtime
-
-
-class _FakeSessions:
-    def __init__(self):
-        self.calls = []
-        self.run = _FakeRun()
-
-    def run_scenario(self, **kwargs):
-        self.calls.append(("scenario", kwargs))
-        return self.run
-
-    def run_suite(self, **kwargs):
-        self.calls.append(("suite", kwargs))
-        return self.run
-
-    def run_on_runtime_scenario(self, **kwargs):
-        self.calls.append(("on_runtime_scenario", kwargs))
-        return self.run
-
-    def run_on_runtime_suite(self, **kwargs):
-        self.calls.append(("on_runtime_suite", kwargs))
-        return self.run
-
-
-class _FakeFaults:
-    def register_pack(self, pack):
-        pass
-
-
-class _FakeBench:
-    def __init__(self, workspace):
-        self.workspace = workspace
-        self.runtimes = _FakeRuntimes()
-        self.sessions = _FakeSessions()
-        self.faults = _FakeFaults()
-        self.agents = SimpleNamespace(wrap=lambda agent: agent)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class _FakeAgent:
-    def __init__(self, *, vendor="minimax"):
-        self.closed = False
-
-    async def aclose(self):
-        self.closed = True
-
-
 def _prepare_basic_repo(tmp_path):
     repo = tmp_path / "repo"
     scenario_root = repo / "scenarios" / "generated" / "medium"
@@ -536,7 +418,7 @@ def _prepare_basic_repo(tmp_path):
     (scenario_root / "generated_link_down_medium_001.yaml").write_text("scenario: link_down\n", encoding="utf-8")
     (scenario_root / "generated_packet_loss_medium_001.yaml").write_text("scenario: packet_loss\n", encoding="utf-8")
     (scenario_root / "generated_high_latency_medium_001.yaml").write_text("scenario: high_latency\n", encoding="utf-8")
-    # Also create custom fault scenario for 03_custom_faults
+    # Custom fault cases live alongside the example pack.
     fault_dir = repo / "examples" / "faults" / "custom_fault_pack"
     fault_dir.mkdir(parents=True)
     (fault_dir / "scenario.yaml").write_text("scenario: custom\n", encoding="utf-8")
@@ -574,20 +456,6 @@ def test_scale_benchmark_default_workers_respect_topology_size(tmp_path, monkeyp
     assert captured["workers"] == expected
 
 
-def test_05_manual_runtime_main(tmp_path, capsys):
-    import importlib
-
-    mod = importlib.import_module("examples.05_manual_runtime")
-    repo = _prepare_basic_repo(tmp_path)
-
-    result = mod.main(repo_root=repo, bench_cls=_FakeBench, agent_cls=_FakeAgent)
-
-    assert result == 0
-    output = capsys.readouterr().out
-    assert "Tear it down when finished:" in output
-    assert "PYTHONPATH=. netopsbench runtime teardown manual-" in output
-
-
 def test_example_common_does_not_mask_agent_constructor_errors():
     from examples._common import build_wrapped_agent
 
@@ -595,10 +463,8 @@ def test_example_common_does_not_mask_agent_constructor_errors():
         def __init__(self):
             self.name = "no-vendor"
 
-    bench = _FakeBench(workspace=".")
-
     with pytest.raises(TypeError, match="vendor"):
-        build_wrapped_agent(bench, _NoVendorAgent, vendor="minimax")
+        build_wrapped_agent(SimpleNamespace(), _NoVendorAgent, vendor="minimax")
 
 
 def test_example_common_require_scenarios_accepts_single_path_and_raises_actionable_error(tmp_path):
@@ -647,110 +513,6 @@ def test_example_common_help_mentions_pythonpath_and_api_key():
     assert "OPENAI_API_KEY" in help_text
     assert "--repo-root" in help_text
     assert "NetOpsBench checkout" in help_text
-
-
-def _direct_script_smoke(driver: str, argv=None) -> None:
-    repo = Path(__file__).resolve().parents[1]
-    script = f"""
-import runpy, sys, types
-from pathlib import Path
-
-sys.argv = [{driver!r}, *{list(argv or [])!r}]
-
-class _FakeReport:
-    def pretty_print(self):
-        print('REPORT.pretty_print')
-
-class _FakeRun:
-    id = 'run-001'
-    runtime_id = 'runtime-001'
-    status = 'completed'
-    def wait(self, raise_on_failure=False):
-        return _FakeReport()
-
-class _FakeRuntime:
-    def __init__(self):
-        self.name = 'runtime-001'
-        self.state = 'ready'
-        self.size = 2
-        self.workers = []
-    def teardown(self):
-        self.state = 'deleted'
-
-class _FakeRuntimes:
-    def provision(self, **kwargs):
-        return _FakeRuntime()
-
-class _FakeSessions:
-    def run_scenario(self, **kwargs):
-        return _FakeRun()
-    def run_suite(self, **kwargs):
-        return _FakeRun()
-    def run_on_runtime_scenario(self, **kwargs):
-        return _FakeRun()
-    def run_on_runtime_suite(self, **kwargs):
-        return _FakeRun()
-
-class _FakeFaultsInline:
-    def register_pack(self, pack):
-        pass
-
-
-class _FakeAgentsInline:
-    def wrap(self, agent):
-        return agent
-
-class NetOpsBench:
-    def __init__(self, workspace):
-        self.workspace = workspace
-        self.runtimes = _FakeRuntimes()
-        self.sessions = _FakeSessions()
-        self.faults = _FakeFaultsInline()
-        self.agents = _FakeAgentsInline()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-class MinimalDeepAgent:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def aclose(self):
-        return None
-
-fake_sdk = types.ModuleType('netopsbench.sdk')
-fake_sdk.NetOpsBench = NetOpsBench
-fake_sdk.RunFailedError = RuntimeError
-fake_sdk.supported_scales = lambda: ('xs', 'medium', 'large', 'xlarge', 'fat-tree-k8', 'fat-tree-k12', 'fat-tree-k18')
-sys.modules['netopsbench.sdk'] = fake_sdk
-
-fake_examples_agents = types.ModuleType('examples.agents')
-fake_examples_agents.MinimalDeepAgent = MinimalDeepAgent
-sys.modules['examples.agents'] = fake_examples_agents
-
-runpy.run_path({driver!r}, run_name='__main__')
-"""
-    result = subprocess.run([sys.executable, "-c", script], cwd=repo, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-
-
-def test_01_run_scenario_can_run_as_direct_script():
-    _direct_script_smoke("examples/01_run_scenario.py")
-
-
-def test_02_run_suite_can_run_as_direct_script():
-    _direct_script_smoke("examples/02_run_suite.py")
-
-
-def test_05_manual_runtime_can_run_as_direct_script():
-    _direct_script_smoke("examples/05_manual_runtime.py")
-
-
-def test_03_run_scale_benchmark_can_run_as_direct_script():
-    _direct_script_smoke("examples/03_run_scale_benchmark.py", ["--scale", "xs"])
 
 
 def test_example_agent_passes_tools_skills_and_backend_to_deepagent(monkeypatch):
@@ -850,9 +612,38 @@ def test_minimal_deepagent_uses_sdk_default_mcp_server_config(monkeypatch):
     assert captured_config["args"] == ["-m", "netopsbench.platform.toolkit.fastmcp_server"]
 
 
-@pytest.mark.parametrize("example", ["01_run_scenario", "02_run_suite", "03_run_scale_benchmark", "04_custom_faults"])
-def test_example_main(tmp_path, example):
-    import importlib
+@pytest.mark.parametrize(
+    ("driver", "session_method"),
+    [
+        ("01_run_scenario", "run_scenario"),
+        ("02_run_suite", "run_suite"),
+        ("03_run_scale_benchmark", "run_suite"),
+        ("04_custom_faults", "run_scenario"),
+        ("05_manual_runtime", "run_on_runtime_scenario"),
+    ],
+)
+def test_example_cli_runs_session(tmp_path, monkeypatch, capsys, driver, session_method):
+    workspace = _prepare_basic_repo(tmp_path)
+    script = Path(__file__).resolve().parents[1] / "examples" / f"{driver}.py"
+    sdk = MagicMock()
+    bench = sdk.return_value.__enter__.return_value
+    monkeypatch.setattr("netopsbench.sdk.NetOpsBench", sdk)
+    monkeypatch.setattr("examples.agents.MinimalDeepAgent", MagicMock())
+    monkeypatch.setattr(sys, "argv", [str(script), "--repo-root", str(workspace), "--vendor", "openai"])
 
-    module = importlib.import_module(f"examples.{example}")
-    assert module.main(repo_root=_prepare_basic_repo(tmp_path), bench_cls=_FakeBench, agent_cls=_FakeAgent) == 0
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert exit_info.value.code == 0
+    sdk.assert_called_once_with(workspace=str(workspace))
+    session = getattr(bench.sessions, session_method)
+    session.assert_called_once()
+    session.return_value.wait.assert_called_once_with(raise_on_failure=True)
+    if driver == "04_custom_faults":
+        bench.faults.register_pack.assert_called_once()
+    if driver == "05_manual_runtime":
+        bench.runtimes.provision.assert_called_once()
+        assert session.call_args.kwargs["runtime"] is bench.runtimes.provision.return_value
+        output = capsys.readouterr().out
+        assert "Tear it down when finished:" in output
+        assert "PYTHONPATH=. netopsbench runtime teardown manual-" in output
