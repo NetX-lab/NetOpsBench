@@ -1,79 +1,11 @@
 ---
 title: Overview
-description: Documentation map for implementing, running, and evaluating NetOpsBench agents.
+description: NetOpsBench runs troubleshooting agents against faults and healthy cases in emulated data-center networks.
 ---
 
-NetOpsBench evaluates troubleshooting agents on generated data-center network fault scenarios. A run provisions a SONiC-VS / Containerlab topology, injects a controlled fault or healthy episode, exposes runtime evidence, calls an agent, and scores the returned `DiagnosisResult` against scenario ground truth.
-
-<Callout title="NetOpsBench v0.2.0 · 2026-08" type="info">
-The current release adds Xlarge CLOS, Fat-tree K=8/K=12, and the native Rust Pingmesh/traffic client agent. Read the [v0.2.0 release notes](/docs/releases/v0.2.0).
-</Callout>
-
-These docs are organized around the agent-development workflow.
-
-## Main path
-
-<Steps>
-  <Step>
-    ### Verify the runtime
-
-    Use [Quickstart](/docs/quickstart) to check Linux, Docker, Containerlab, credentials, generated scenarios, and one XS run.
-  </Step>
-  <Step>
-    ### Implement the agent contract
-
-    Read [Custom Troubleshooting Agents](/docs/build-your-agent/custom-agents) for the required `diagnose(context) -> DiagnosisResult` shape.
-  </Step>
-  <Step>
-    ### Run benchmark cases
-
-    Use [Running Benchmarks](/docs/run-benchmarks/run-scenario-vs-suite) for one scenario, small suites, full scale runs, and multi-scale batches.
-  </Step>
-  <Step>
-    ### Interpret results
-
-    Use [Benchmark Methodology](/docs/run-benchmarks/methodology) for scoring definitions and [Benchmark Results](/docs/run-benchmarks/results) as a reference snapshot.
-  </Step>
-</Steps>
-
-## Task map
-
 <Cards>
-  <Card
-    title="First run"
-    href="/docs/quickstart"
-    description="Install runtime dependencies, prepare XS scenarios, and produce one BenchmarkReport."
-  />
-  <Card
-    title="Agent contract"
-    href="/docs/build-your-agent/custom-agents"
-    description="Implement the input and output objects that the benchmark can score."
-  />
-  <Card
-    title="Python API"
-    href="/docs/build-your-agent/python-api-guide"
-    description="Run scenarios and suites from code, manage runtimes, and inspect artifacts."
-  />
-  <Card
-    title="Benchmark runs"
-    href="/docs/run-benchmarks/run-scenario-vs-suite"
-    description="Move from one case to suites, scale benchmarks, and batch scripts."
-  />
-  <Card
-    title="Runtime inspection"
-    href="/docs/debug-operate/observability"
-    description="Use Grafana, worker buckets, manual runtimes, and cleanup commands when debugging."
-  />
-  <Card
-    title="Fault extension"
-    href="/docs/extend-netopsbench/custom-faults"
-    description="Add project-local fault definitions after the standard agent workflow is working."
-  />
+  <Card title="Run your first case" href="/docs/quickstart" description="Set up a Linux host, diagnose one XS link fault, and open the report." />
+  <Card title="Connect your agent" href="/docs/build-your-agent/custom-agents" description="Read the observations, query diagnostic tools, and return a diagnosis." />
+  <Card title="Run a benchmark" href="/docs/run-benchmarks/run-scenario-vs-suite" description="Select cases, distribute them across labs, and collect the results." />
+  <Card title="Understand the score" href="/docs/run-benchmarks/methodology" description="See how healthy verdicts, device localization, and interface localization earn credit." />
 </Cards>
-
-## Reference material
-
-- [System Overview](/docs/architecture/system-overview) explains the runtime loop, evidence path, worker isolation, and report aggregation.
-- [Benchmark Methodology](/docs/run-benchmarks/methodology) defines scenario coverage, scoring, negative samples, and optional semantic fault-type matching.
-- [Benchmark Results](/docs/run-benchmarks/results) reports the current seven-scale v0.2 validation.
-- [NetOpsBench v0.2.0](/docs/releases/v0.2.0) summarizes the Xlarge, Fat-tree, native client-agent, and lifecycle release.

@@ -3,8 +3,6 @@ title: Operations
 description: Inspect observability, preserve runtimes, reproduce the stack, and clean up labs.
 ---
 
-Most benchmark runs use automatic runtime lifecycle management. Use this page only when a run needs inspection, a runtime should remain alive, or low-level observability must be reproduced by hand.
-
 ## Grafana and worker buckets
 
 NetOpsBench starts InfluxDB, Telegraf, Grafana, and Pingmesh during benchmark runs.
@@ -20,14 +18,7 @@ exposed on shared hosts. For remote access, use an SSH tunnel such as
 `ssh -L 3000:127.0.0.1:3000 <host>`. If a local proxy intercepts the request,
 set `NO_PROXY=localhost,127.0.0.1`.
 
-Grafana dashboards use a `Bucket` drop-down. Benchmark data lives in worker buckets, not in the default housekeeping bucket.
-
-| Run mode | Bucket pattern |
-|---|---|
-| One scenario | `network_data_xs_w01` |
-| XS suite with 3 workers | `network_data_xs_w01` through `network_data_xs_w03` |
-| Scale benchmark | `network_data_{scale}_w01` through the configured worker count |
-| Manual runtime | Worker bucket printed by the runtime script |
+In Grafana, select the bucket recorded for the runtime worker. SDK-managed buckets default to `network_data_<runtime-label>_w01` for the first worker. Separate runs on the same scale can have different buckets.
 
 Useful dashboards:
 
@@ -44,7 +35,7 @@ Useful dashboards:
 
 | Symptom | Likely cause | Action |
 |---|---|---|
-| No data in every panel | Wrong bucket or no active runtime | Select `network_data_{scale}_w{n}` or start a runtime. |
+| No data in every panel | Wrong bucket or no active runtime | Select the active worker’s bucket or start a runtime. |
 | No same-rack P99 on XS | XS has two racks with one client per rack | Use cross-rack panels on XS. |
 | Packet loss spikes during a scenario | Fault episode is active | Expected during the observation window. |
 | Packet loss remains after recovery | Cleanup or recovery may not have completed | Inspect scenario logs and preserved runtime state. |
@@ -53,34 +44,14 @@ Useful dashboards:
 
 ## Preserve a runtime
 
-Automatic examples tear down the runtime after the report is collected. `examples/05_manual_runtime.py` keeps a runtime alive:
+Prepare the Medium scenarios and run the caller-owned runtime example:
 
 ```bash
-PYTHONPATH=. python examples/05_manual_runtime.py --repo-root .
+netopsbench benchmark prepare --scales medium
+PYTHONPATH=. python examples/05_manual_runtime.py --vendor openai
 ```
 
-The script provisions a runtime and runs a scenario through the existing-runtime API:
-
-```python
-runtime = bench.runtimes.provision(scale="xs", workers=1, name=runtime_name)
-run = bench.sessions.run_on_runtime_scenario(
-    scenario=scenario,
-    runtime=runtime,
-    agent=agent,
-    artifacts_dir=artifacts_dir,
-)
-```
-
-Because the runtime is caller-owned, it remains active until explicit teardown.
-
-Useful checks:
-
-```bash
-sudo containerlab inspect -t lab-topology/generated_topology_xs/dcn.clab.yaml
-docker ps | grep clab-dcn
-docker ps | grep -E "influxdb|telegraf|grafana"
-docker logs telegraf | tail -20
-```
+The script prints the runtime name and leaves the lab running for inspection. Use `netopsbench runtime list` to find it again.
 
 ## Reproduce observability manually
 
@@ -96,17 +67,8 @@ export NETOPSBENCH_TOPOLOGY_DIR="$PWD/lab-topology/generated_topology_xs"
 
 `deploy.sh` generates topology metadata, renders Telegraf config, starts InfluxDB / Telegraf / Grafana, and starts the native Pingmesh and background-traffic processes in each client.
 
-The default client image is pinned by digest. A custom client image must provide
-`/usr/local/bin/netopsbench-client-agent`; runtime preparation fails explicitly
-when the binary is absent.
+The client image must contain `/usr/local/bin/netopsbench-client-agent`. For the standard image, use the [Quickstart build command](/docs/quickstart#install-netopsbench).
 
-Common overrides:
-
-```bash
-export NETOPSBENCH_MGMT_SUBNET=172.31.250.0/24
-```
-
-The default SONiC image and the observability containers are pinned by digest.
 The generated gNMI contract uses `50051`, `admin`, `json_ietf`,
 `COUNTERS_DB`, and a 10-second sampled subscription. Runtime-owned InfluxDB
 buckets retain raw telemetry for seven days; attaching an existing
@@ -120,15 +82,12 @@ or deleted.
 
 ## Cleanup
 
-Xlarge and Fat-tree labs can consume substantial CPU, memory, container, and telemetry capacity. Start with one worker, inspect `docker stats`, host memory and pressure, and confirm one complete baseline before increasing concurrency. Keeping a topology warm is useful for repeated experiments, but do not leave unused large workers running alongside a new campaign.
-
 SDK-visible runtimes:
 
 ```bash
 netopsbench runtime list
 netopsbench runtime show <runtime-name>
 netopsbench runtime teardown <runtime-name>
-netopsbench runtime teardown --all
 ```
 
 Prefer the exact runtime name. `teardown --all` is intended only when every runtime registered in the current workspace is owned by the caller; it is not a substitute for host-wide Docker cleanup. Do not use global `docker system prune`, broad container-name filters, or shared-network deletion on multi-user hosts.
@@ -137,12 +96,4 @@ Manual deployment teardown:
 
 ```bash
 bash scripts/runtime/teardown.sh lab-topology/generated_topology_xs
-```
-
-InfluxDB buckets can be inspected directly when debugging retained evidence:
-
-```bash
-sudo docker exec influxdb influx bucket list \
-  --host http://localhost:8086 \
-  --token "$NETOPSBENCH_INFLUXDB_TOKEN"
 ```

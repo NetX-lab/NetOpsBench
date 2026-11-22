@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import styles from './page.module.css';
+import { Leaderboard } from '@/components/leaderboard';
 import { withBasePath } from '@/lib/base-path';
 
 const metrics = [
@@ -103,7 +104,10 @@ export default function HomePage() {
             NetOpsBench evaluated agentic network troubleshooting in modern AI infrastructure. The platform supports the emulation of diverse live, interactive data-center network environments, injects controlled and reproducible faults, and evaluates custom agent strategies against ground truth.
           </p>
           <div className={styles.heroCta}>
-            <Link href="/docs/quickstart" className={styles.ctaSecondary}>
+            <a href="#leaderboard" className={styles.ctaSecondary}>
+              View Leaderboard
+            </a>
+            <Link href="/docs/quickstart" className={styles.ctaPrimary}>
               Run Quickstart
             </Link>
             <a className={styles.ctaOutlined} href="https://github.com/NetX-lab/NetOpsBench">
@@ -111,9 +115,6 @@ export default function HomePage() {
             </a>
             <Link href="/docs" className={styles.ctaPrimary}>
               Read Documentation
-            </Link>
-            <Link href="/docs/releases/v0.2.0" className={styles.ctaOutlined}>
-              v0.2.0 Release Notes
             </Link>
           </div>
         </div>
@@ -159,6 +160,8 @@ export default function HomePage() {
         </div>
       </section>
 
+      <Leaderboard />
+
       <section className={`${styles.section} ${styles.sectionAlt} ${styles.pipelineSection}`}>
         <div className={styles.sectionInner}>
           <div className={styles.sectionLabel}>Benchmark workflow</div>
@@ -181,8 +184,8 @@ export default function HomePage() {
             ))}
           </div>
           <div className={styles.pipelineLinks}>
-            <Link href="/docs/run-benchmarks/results" className={styles.pipelinePrimaryLink}>
-              See benchmark results
+            <Link href="#leaderboard" className={styles.pipelinePrimaryLink}>
+              View leaderboard
             </Link>
             <Link href="/docs/build-your-agent/custom-agents" className={styles.pipelineSecondaryLink}>
               Build your own agent

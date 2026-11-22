@@ -17,9 +17,18 @@ type DocsPageData = {
   toc?: TOCItemType[];
 };
 
+const archivedPages: Record<string, string> = {
+  'architecture/core-simplification': '/docs/architecture/system-overview',
+  'architecture/runtime-audit': '/docs/architecture/system-overview',
+  'architecture/recovery-v2-audit': '/docs/architecture/state-checked-recovery',
+  'releases/v0.2.0': '/#leaderboard',
+  'run-benchmarks/results': '/#leaderboard',
+  'benchmark/results': '/#leaderboard',
+};
+
 const legacySlugs = [
+  ...Object.keys(archivedPages).map((path) => path.split('/')),
   ['getting-started'],
-  ['benchmark', 'results'],
   ['benchmark', 'methodology'],
   ['examples', 'run-scenario-vs-suite'],
   ['examples', 'scale-and-batch-benchmarks'],
@@ -55,45 +64,44 @@ function mapLegacySlug(slug?: string[]): string[] | null {
   if (slug[0] === 'getting-started') return ['quickstart'];
 
   if (slug[0] === 'benchmark') {
-    if (slug[1] === 'results') return ['run-benchmarks', 'results'];
     if (slug[1] === 'methodology') return ['run-benchmarks', 'methodology'];
   }
 
   if (slug[0] === 'examples') {
     if (slug[1] === 'run-scenario-vs-suite') return ['run-benchmarks', 'run-scenario-vs-suite'];
     if (slug[1] === 'scale-and-batch-benchmarks') return ['run-benchmarks', 'scale-and-batch-benchmarks'];
-    if (slug[1] === 'llm-fault-type-judge') return ['run-benchmarks', 'llm-fault-type-judge'];
-    if (slug[1] === 'manual-runtime') return ['debug-operate', 'manual-runtime'];
-    if (slug[1] === 'custom-fault-example') return ['extend-netopsbench', 'custom-fault-example'];
+    if (slug[1] === 'llm-fault-type-judge') return ['run-benchmarks', 'methodology'];
+    if (slug[1] === 'manual-runtime') return ['debug-operate', 'observability'];
+    if (slug[1] === 'custom-fault-example') return ['extend-netopsbench', 'custom-faults'];
   }
 
   if (slug[0] === 'operations') {
     if (slug[1] === 'observability') return ['debug-operate', 'observability'];
-    if (slug[1] === 'deployment') return ['debug-operate', 'deployment'];
+    if (slug[1] === 'deployment') return ['debug-operate', 'host-setup'];
   }
 
   if (slug[0] === 'contribute') {
     if (slug[1] === 'custom-faults') return ['extend-netopsbench', 'custom-faults'];
-    if (slug[1] === 'fault-types') return ['extend-netopsbench', 'fault-types'];
-    if (slug[1] === 'repository-layout') return ['contributing', 'repository-layout'];
+    if (slug[1] === 'fault-types') return ['extend-netopsbench', 'custom-faults'];
+    if (slug[1] === 'repository-layout') return ['architecture', 'system-overview'];
   }
 
   if (slug[0] === 'api') {
     if (slug[1] === 'quickstart') return ['build-your-agent', 'python-api-guide'];
-    if (slug[1] === 'cli') return ['build-your-agent', 'cli'];
-    if (slug[1] === 'reference') return ['build-your-agent', 'sdk-reference'];
+    if (slug[1] === 'cli') return ['run-benchmarks', 'run-scenario-vs-suite'];
+    if (slug[1] === 'reference') return ['build-your-agent', 'python-api-guide'];
   }
 
   if (slug[0] === 'guides') {
     if (slug[1] === 'getting-started') return ['quickstart'];
-    if (slug[1] === 'deployment') return ['debug-operate', 'deployment'];
+    if (slug[1] === 'deployment') return ['debug-operate', 'host-setup'];
     if (slug[1] === 'observability') return ['debug-operate', 'observability'];
   }
 
   if (slug[0] === 'contributor') {
-    if (slug[1] === 'repository-layout') return ['contributing', 'repository-layout'];
+    if (slug[1] === 'repository-layout') return ['architecture', 'system-overview'];
     if (slug[1] === 'custom-faults') return ['extend-netopsbench', 'custom-faults'];
-    if (slug[1] === 'fault-types') return ['extend-netopsbench', 'fault-types'];
+    if (slug[1] === 'fault-types') return ['extend-netopsbench', 'custom-faults'];
   }
 
   return null;
@@ -104,6 +112,9 @@ export default async function DocsRoute(props: PageProps) {
   let page = source.getPage(params.slug);
 
   if (!page) {
+    const archived = archivedPages[params.slug?.join('/') ?? ''];
+    if (archived) redirect(archived);
+
     const legacySlug = mapLegacySlug(params.slug);
 
     if (legacySlug) {

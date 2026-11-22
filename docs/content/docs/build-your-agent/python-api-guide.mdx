@@ -13,38 +13,14 @@ Use the checked-in examples for runnable scripts and the SDK for application cod
 
 ## Run one scenario
 
-Prepare scenarios first with `netopsbench benchmark prepare --scales xs`, then call `run_scenario(...)`:
+[Quickstart](/docs/quickstart#run-the-xs-case) runs `examples/01_run_scenario.py`. The example passes a wrapped agent and a scenario path to the synchronous session API:
 
 ```python
-from examples.agents import MinimalDeepAgent
-from netopsbench.sdk import NetOpsBench, RunFailedError
-
-with NetOpsBench(workspace=".") as bench:
-    agent = bench.agents.wrap(MinimalDeepAgent(vendor="openai"))
-    run = bench.sessions.run_scenario(
-        scenario="scenarios/generated/xs/generated_link_down_xs_001.yaml",
-        agent=agent,
-    )
-    try:
-        report = run.wait(raise_on_failure=True)
-    except RunFailedError as exc:
-        report = exc.report
-        raise
-
-print(report.summary)
-print(run.report_path)
+run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
+report = run.wait(raise_on_failure=True)
 ```
 
-`run` is a `RunHandle`. It records the run id, mode, runtime id, artifact directory, scenario ids, status, and persisted report path. `run.wait()` loads the saved `BenchmarkReport`.
-
-`bench.agents.wrap(...)` is recommended for provider-backed or asynchronous agents because it gives the SDK one lifecycle boundary to close resources.
-
-:::note NetOpsBench 0.2
-Session calls are synchronous. The placeholder `RunHandle.cancel()` method and ignored
-`wait(timeout=...)` argument were removed; use `run.wait()` after a session call returns.
-Runtime objects are SDK facades—use `status()` or `describe()` instead of private platform
-payload methods.
-:::
+The returned `RunHandle` exposes `id` and `report_path`. Calling `wait()` loads the saved `BenchmarkReport`. With `raise_on_failure=True`, a failed run raises `RunFailedError` carrying the report in `exc.report`.
 
 ## Session APIs
 
@@ -76,33 +52,17 @@ When `artifacts_dir` is omitted, session artifacts are written under the workspa
 
 The `scenario_summaries[*].raw_result_path` fields point to raw JSON files for case-level debugging.
 
-Agent traces are saved by default and can be disabled for a run with `trace=False`. Disabling trace prevents private runtime trace collection and sidecar artifact creation. Ground truth and score details are written to `traces/results.jsonl`, not into the agent trajectory.
+Tracing is enabled by default. Set `trace=False` to turn it off. Agent trajectories record observations and tool calls. Ground truth and scores are stored separately in `traces/results.jsonl`.
 
-NetOpsBench stores visible prompts, model messages, tool calls, and observations with secret redaction and a fixed per-field safety limit. The bundled `MinimalDeepAgent` attaches `context.trace.langchain_callback()` to its LangChain-compatible runtime so private LLM messages and tool events flow into the same recorder. Non-LangChain agents can use the advanced manual recorder methods, such as `context.trace.record_llm_request(...)` and `context.trace.record_llm_response(...)`, when they need to capture private model calls.
-
-Open a completed run directly in the Harbor viewer:
+For model-level tracing, attach `context.trace.langchain_callback()` to a LangChain runtime or use the recorder’s `record_llm_request` and `record_llm_response` methods when tracing is available.
 
 ```bash
 netopsbench trace list
-netopsbench trace view
-netopsbench trace view run-20260605T124040Z
+netopsbench trace view <run-id>
+netopsbench trace export <run-id> --output harbor-jobs
 ```
 
-The command exports Harbor-compatible viewer files under `<workspace>/.netopsbench/harbor-jobs` and starts the local viewer. Export traces from Python when you need a reusable Harbor jobs directory:
-
-```python
-bench.artifacts.export_traces(run.id, output="harbor-jobs")
-trace_index = bench.artifacts.get_run_traces(run.id)
-trace_results = bench.artifacts.get_run_trace_results(run.id)
-```
-
-The CLI also supports an explicit export path for CI or offline inspection:
-
-```bash
-netopsbench trace export run-20260605T124040Z --output harbor-jobs
-```
-
-NetOpsBench validates exported `job/result.json` and `trial/result.json` with Harbor's own models before writing them.
+The corresponding SDK methods are `bench.artifacts.get_run_traces`, `get_run_trace_results`, and `export_traces`.
 
 ## SDK managers
 
@@ -119,31 +79,3 @@ NetOpsBench validates exported `job/result.json` and `trial/result.json` with Ha
 | `bench.evaluators` | Score `DiagnosisResult` objects and produce canonical reports. |
 | `bench.simulators` | Create interactive diagnostic environments over benchmark scenarios. |
 | `bench.artifacts` | Resolve run artifacts and report files. |
-
-The stable external boundary is `netopsbench.sdk`, documented example scripts, and documented CLI commands such as `benchmark prepare`, `scenario validate`, `result show`, and `runtime teardown`.
-
-## Migrating to 0.2
-
-Version 0.2 uses one canonical episode per scenario. Replace an `episodes:` list
-with a singular `episode:` object; legacy multi-episode YAML now fails with an
-explicit migration error. `ScenarioManager.create()` likewise accepts only
-`episode=` and returns `ScenarioSpec` directly.
-
-Reports now use only the canonical `id`, `summary`, `scenario_summaries`,
-`detailed_results`, `artifact_paths`, and `raw` fields. The 0.1
-`ScenarioHandle`, `PlatformDefaults`, `ScenarioEvaluator`, `report_id`, and
-`payload` compatibility names are not part of the 0.2 SDK.
-
-Fat-tree topology payloads now expose only the real `cores`, `aggs`, `edges`,
-and `clients` groups. The former compatibility projection that duplicated
-cores as `spines`, edges as `leafs`, and a client's edge as `leaf` was
-incorrect and has been removed. CLOS payloads continue to expose
-`spines`, `leafs`, and `clients`.
-
-Raw Pingmesh and BGP measurements are internal observability contracts, so
-0.2 also removes fields that had no detector, tool, dashboard, or health
-consumer.
-
-## Runtime ownership
-
-Automatic session methods are best for comparable benchmark runs because the SDK owns provisioning, observability startup, execution, and teardown. Existing-runtime methods are useful when debugging Containerlab, SONiC, Pingmesh, Telegraf, Grafana, or repeated agent iterations against a preserved lab.

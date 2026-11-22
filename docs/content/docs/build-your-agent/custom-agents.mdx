@@ -5,26 +5,6 @@ description: Implement the diagnosis contract that NetOpsBench evaluates.
 
 An agent is any Python object with a `diagnose(context)` method. NetOpsBench passes a `DiagnosticContext`; the agent returns a structured `DiagnosisResult`; the evaluator compares that result with scenario ground truth.
 
-## Native Codex
-
-The bundled `examples.agents.CodexAgent` connects the native Codex CLI to this contract. Install `pip install -e '.[codex]'`, install the native CLI 0.159.2 package with its `codex-code-mode-host` helper, and run `codex login`. Then use `PYTHONPATH=. python examples/01_run_scenario.py --agent codex --scenario scenarios/generated/xs/generated_healthy_network_xs_001.yaml` or wrap `CodexAgent()` with `bench.agents.wrap()`.
-
-Each diagnosis runs in a fresh container with anonymous observations, episode-scoped MCP tools and Python/shell access. The container cannot access the repository, scenario answers, Docker socket or management network directly. Only private authentication persists between cases. Defaults are `gpt-6.1-sol`, effort `xhigh`, 600 seconds and 40 MCP calls; constructor options and recorded runtime artifacts make these settings explicit. See `examples/agents/codex_agent/README.md` for image building, isolation and acceptance commands.
-
-## Native Antigravity
-
-On Linux, install `pip install -e '.[agent]'`, Bubblewrap (`bwrap`), and the [Antigravity CLI](https://antigravity.google/docs/cli/tutorial/). The example was tested with `agy` 1.5.14. Set `GEMINI_API_KEY` in the environment for automated runs. The adapter can also read an existing Antigravity sign-in for local testing. Review [Google's headless usage guidance](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) before using a personal account in an integration.
-
-```bash
-xs_scenario_dir="$(mktemp -d)/migrated"
-netopsbench scenario migrate scenarios/generated/xs/generated_healthy_network_xs_001.yaml \
-  --out "$xs_scenario_dir"
-PYTHONPATH=. python examples/01_run_scenario.py --agent antigravity \
-  --scenario "$xs_scenario_dir/generated_healthy_network_xs_001.yaml"
-```
-
-The adapter starts a fresh CLI workspace for each case, passes the episode MCP endpoint and diagnosis schema, and records the CLI's token usage. Shell commands and file tools are denied. Bubblewrap isolates the filesystem, while the CLI uses the host network and its HTTP proxy settings. In Python, wrap `examples.agents.AntigravityAgent()` with `bench.agents.wrap()` and optionally choose a model available through your authentication method.
-
 ## Agent contract
 
 ```python
@@ -62,15 +42,13 @@ with NetOpsBench(workspace=".") as bench:
 
 | Field | Meaning |
 |---|---|
-| `scenario_id` | Scenario or testcase identifier. |
+| `scenario_id` | Public case identifier. |
 | `topology` | Switches, clients, links, and scale-specific topology metadata. |
 | `symptoms` | Pingmesh observations with their window and data-quality metadata. |
 | `tools` | Optional runtime or MCP-backed tool access. |
 | `metadata` | Runtime metadata such as worker-specific environment values. |
 
-The reference LLM agent builds a compact prompt from topology size, symptom keys, episode data, Pingmesh windows, and high-signal anomalies. A custom agent may instead use rules, symbolic logic, retrieval, additional tool calls, or another model wrapper.
-
-Initial symptoms do not include whole-network FIB differences or device-state summaries. Use diagnostic tools to investigate routing, BGP, interfaces, ACLs, services and logs. Private effect and recovery evidence is kept out of the agent context. This policy applies to new campaigns; archived and running frozen campaigns keep their original inputs and scores.
+Use `context.tools` to investigate the initial observations. Ground truth and private fault-effect checks stay outside the agent context.
 
 ## Output: `DiagnosisResult`
 
@@ -85,47 +63,28 @@ Initial symptoms do not include whole-network FIB differences or device-state su
 | `findings.evidence` | Concise evidence used to support the verdict. |
 | `confidence` | Float between 0 and 1. |
 | `reasoning` | Short explanation tied to observed evidence. |
-
-`success=False` is an agent execution failure, even if the fallback verdict is `inconclusive`. It does not count as a completed diagnosis. A successful `inconclusive` verdict remains a normal scored result. Acceptance records the failed case and continues after verified fault recovery. Budget exhaustion, timeout and invalid agent output do not stop the suite. Diagnosis mode also continues after an invalid effect audit when a complete recovery health window succeeds; that case stays invalid and unscored. These finished failures are reported separately and skipped on resume. Setup failures, missing recovery proof, effects-only invalid cases and cancellation still stop execution; failed recovery quarantines the lab. Ordinary SDK session ownership and teardown defaults are unchanged.
 | `metadata` | Optional provider, model, tool-call, token, or timing details. |
 
-Return structured fields rather than only natural language. Free-form explanations are useful for review, but scoring depends on verdict, fault type, and location fields.
-
-For reproducibility, NetOpsBench saves a per-attempt runtime trace beside the raw scenario result. The bundled reference agent captures private LLM and tool events by attaching `context.trace.langchain_callback()` to its LangChain-compatible runtime. Custom non-LangChain agents can use advanced manual recorder methods such as `context.trace.record_llm_request(...)` and `context.trace.record_llm_response(...)` when they need private model calls in the trace. The harness writes uniquely named ATIF v1.7 `trajectory-<trace-id>.atif.json` artifacts for Harbor-style inspection while keeping ground truth out of the agent trajectory; scoring details are linked separately through `traces/results.jsonl`. Use `netopsbench trace view` to sync trace-enabled runs into the local Harbor viewer cache, or `netopsbench trace view <run_id>` to ensure a specific saved run is available in the viewer.
-
-Trace storage preserves visible agent-environment interactions with secret redaction and per-field size limits. NetOpsBench does not monkeypatch arbitrary LLM SDKs, so fully private model prompts and responses are captured only when the agent uses a supported framework callback or the manual recorder methods.
+Return `success=False` when execution fails. A successful `inconclusive` verdict means the agent completed its investigation with insufficient evidence. See [Methodology](/docs/run-benchmarks/methodology#scoring-dimensions) for scoring and the [Python API guide](/docs/build-your-agent/python-api-guide#artifacts) for trace recording.
 
 ## Reference agent
 
-`examples/agents/minimal_deepagent/agent.py` defines `MinimalDeepAgent`, the runnable LLM-backed reference implementation used by the public examples. It:
+The runnable examples use `examples.agents.MinimalDeepAgent` by default. It reads episode observations, queries the [diagnostic tools](/docs/build-your-agent/diagnostic-tools), and returns a structured diagnosis. Select a provider with `--vendor`.
 
-1. selects a provider preset such as `openai`, `minimax`, `deepseek`, `zhipu`, or `kimi`;
-2. builds the built-in MCP server configuration;
-3. summarizes `DiagnosticContext` into a prompt;
-4. asks the model for a schema-constrained diagnosis;
-5. normalizes the model output into `DiagnosisResult`.
+## Native Codex
 
-The schema in `examples/agents/minimal_deepagent/schema.py` constrains verdict values to the scorer-compatible labels. Keep the same discipline in custom agents.
+The bundled `examples.agents.CodexAgent` connects the native Codex CLI to this contract. Install `pip install -e '.[codex]'`, install the native CLI 0.159.2 package with its `codex-code-mode-host` helper, and run `codex login`. Then use `PYTHONPATH=. python examples/01_run_scenario.py --agent codex --scenario scenarios/generated/xs/generated_healthy_network_xs_001.yaml` or wrap `CodexAgent()` with `bench.agents.wrap()`.
 
-## Scoring implications
+Each diagnosis runs in a fresh container with anonymous observations, episode-scoped MCP tools and Python/shell access. The container cannot access the repository, scenario answers, Docker socket or management network directly. Only private authentication persists between cases. Defaults are `gpt-6.1-sol`, effort `xhigh`, 600 seconds and 40 MCP calls; constructor options and recorded runtime artifacts make these settings explicit. See `examples/agents/codex_agent/README.md` for image building, isolation and acceptance commands.
 
-NetOpsBench scores the returned result along these dimensions:
+## Native Antigravity
 
-| Dimension | What must be correct |
-|---|---|
-| Detection | Faulted cases should return `fault_detected`; healthy cases should return `network_healthy`. |
-| Device localization | `findings.location.device` should match the ground-truth device or an accepted equivalent location. |
-| Interface localization | `findings.location.interface` should match when interface-level ground truth exists. |
-| Fault type | `findings.fault_type` should match the canonical fault label, or a semantically equivalent label when the optional judge is enabled. |
-| Efficiency | Reports may include diagnosis time, tool calls, and token usage from metadata. |
+On Linux, install `pip install -e '.[agent]'`, Bubblewrap (`bwrap`), and the [Antigravity CLI](https://antigravity.google/docs/cli/tutorial/). The example was tested with `agy` 1.5.14. Set `GEMINI_API_KEY` in the environment for automated runs. The adapter can also read an existing Antigravity sign-in for local testing. Review [Google's headless usage guidance](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) before using a personal account in an integration.
 
-For interface-applicable faults, localization score is split between device and interface correctness. Healthy cases receive credit only for the correct `network_healthy` verdict.
+```bash
+netopsbench benchmark prepare --scales xs
+PYTHONPATH=. python examples/01_run_scenario.py --agent antigravity \
+  --scenario scenarios/generated/xs/generated_healthy_network_xs_001.yaml
+```
 
-## Practical checklist
-
-- Use exact verdict strings: `fault_detected`, `network_healthy`, `inconclusive`.
-- Include device and interface when the evidence supports localization.
-- Prefer canonical fault names from the built-in fault catalog.
-- Return `success=False` and an `inconclusive` verdict when the agent runtime fails.
-
-The [diagnostic tool contract](/docs/build-your-agent/diagnostic-tools) describes the shared 16-entry surface and optional routing, interface and Pingmesh views.
+The adapter starts a fresh CLI workspace for each case, passes the episode MCP endpoint and diagnosis schema, and records the CLI's token usage. Shell commands and file tools are denied. Bubblewrap isolates the filesystem, while the CLI uses the host network and its HTTP proxy settings. In Python, wrap `examples.agents.AntigravityAgent()` with `bench.agents.wrap()` and optionally choose a model available through your authentication method.

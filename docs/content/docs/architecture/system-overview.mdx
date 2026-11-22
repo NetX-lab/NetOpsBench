@@ -16,6 +16,7 @@ A benchmark run is a closed loop: resolve a scenario, provision a topology, inje
 | Fault episode | The scenario executor applies traffic generation, injects the selected fault, waits through the observation window, and records symptoms. |
 | Diagnosis context | The platform assembles topology, symptoms, Pingmesh summaries, runtime metadata, and optional tools into `DiagnosticContext`. |
 | Agent call | The agent investigates evidence and returns `DiagnosisResult`. |
+| Recovery | The worker restores modified resources and checks network state before accepting another case. See [State-checked Recovery](/docs/architecture/state-checked-recovery). |
 | Scoring and report | The evaluator compares verdict, fault type, device, and interface against ground truth and writes reports plus artifacts. |
 
 Pingmesh is the first symptom source for many cases. It exposes path-level loss, latency, and reachability changes before deeper tool use. Agents can correlate that signal with topology, BGP state, routes, interface counters, syslog, and connectivity checks.
@@ -37,31 +38,6 @@ Suite runs use a worker pool when `workers=N`. Each worker owns a separate lab a
 
 ![Parallel benchmark architecture for DCN troubleshooting agents](/assets/worker_pool_design.png)
 
-| Step | What happens |
-|---|---|
-| Submit run | The user passes an agent plus one scenario or a suite into `NetOpsBench(...).sessions`. |
-| Start session | The session manager resolves scenarios, infers scale, creates a run id, and prepares artifact paths. |
-| Build runtime pool | The runtime manager creates workers with separate lab names, topology directories, management subnets, buckets, logs, and raw result paths. |
-| Deploy workers | Each worker provisions an independent Containerlab / SONiC topology and starts worker-local telemetry against shared core observability services. |
-| Schedule scenarios | The dispatcher assigns scenarios across workers and runs them in parallel when more than one worker is available. |
-| Execute and score | Each worker runs the episode, builds context, calls the agent, records raw output, and scores the case. |
-| Aggregate report | The dispatcher merges worker summaries, scenario summaries, raw artifact paths, and aggregate metrics into one `BenchmarkReport`. |
+Each worker has its own topology, management subnet, telemetry bucket, and raw result directory. Workers share the core observability services. The session combines their scored cases into one `BenchmarkReport`.
 
-## Shared and worker-local state
-
-| Layer | Components |
-|---|---|
-| Shared | SDK entrypoint, session orchestration, scenario assignment, final report aggregation, shared observability services. |
-| Worker-local | Containerlab topology, SONiC nodes, management subnet, fault episode, Pingmesh / Telegraf data, InfluxDB bucket, raw outputs, worker logs. |
-
-Evaluators are worker-local during concurrent execution. Final report generation uses a separate aggregation evaluator after worker results are merged in deterministic worker-index order.
-
-## SDK mapping
-
-| SDK call | Architecture path |
-|---|---|
-| `run_scenario(...)` | One worker, one scenario, one report. |
-| `run_suite(..., workers=N)` | Scenarios distributed across isolated workers and merged into one report. |
-| `run_on_runtime_suite(...)` | Same execution path, but the caller owns the already-provisioned runtime pool. |
-
-Use the single-scenario path for agent contract validation. Use suite or scale runs when collecting benchmark-level evidence.
+See [Running Benchmarks](/docs/run-benchmarks/run-scenario-vs-suite) to select a worker count and [Python API Guide](/docs/build-your-agent/python-api-guide#session-apis) for runtime ownership.

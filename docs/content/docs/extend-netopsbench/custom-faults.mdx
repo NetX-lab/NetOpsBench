@@ -3,112 +3,22 @@ title: Custom Faults
 description: Built-in fault labels and the supported SDK path for adding project-local faults.
 ---
 
-Fault extension changes the benchmark fault surface. Most agent work should use the built-in fault set first; add custom faults when the research question requires a new failure mode.
+## Register a fault
 
-## Built-in fault catalog
-
-Scenario YAML references faults by `fault_type`.
-
-The [benchmark methodology](/docs/run-benchmarks/methodology) lists all 24
-canonical labels, their 27 mechanisms, coverage units and corpus sizes.
-`bgp_neighbor_misconfig`, `route_policy_misconfig` and `acl_misconfig` are
-retired. Regenerate scenarios; no old-format converter is supplied.
-
-Interface faults include links, interface addressing, netem, MTU and all ACL
-variants. Each applies to one explicit data interface. ACLs record interface,
-direction, match fields and counters; L4 uses UDP destination port 33434 by
-default and ICMP as a protocol control. Software packet corruption is not a
-physical CRC fault.
-
-Merged publication, filtering and ECMP labels require an explicit mechanism
-inside `episode.parameters`. BGP neighbor faults require `peer_ip`; prefix
-filters require `peer_ip` or `peer_ips`; loops require `next_hop`. Injected
-configuration belongs in `episode.parameters`, rather than scenario metadata.
-Built-in handlers read injection values only from `parameters`, including MTU;
-metadata does not supply fallback injection settings.
-Loops and route flapping also require `target_interface` for their fabric
-neighbor. A loop next hop must be a configured, established neighbor before
-the temporary static route is applied.
-
-BGP update-source faults reference an absent source interface. A wrong source
-IP alone can still permit a passive FRR session, so validity requires the actual
-neighbor to leave Established while other configuration remains intact.
-
-```yaml
-metadata:
-  fault_catalog_version: 2
-episode:
-  episode_id: diagnosis
-  fault_type: route_filter_misconfig
-  target_device: leaf3
-  target_prefix: 192.168.2.0/30
-  duration_seconds: 30
-  parameters:
-    mechanism: import_filter
-    peer_ips: [10.1.3.1, 10.2.3.1, 10.3.3.1, 10.4.3.1]
-```
-
-Use neighbors from the generated manifest/configuration for the selected device.
-A complete import withdrawal covers every valid source; a path reduction covers
-only some sources. Independent policies preserve unrelated prefixes and the
-original `RM-ALLOW` attachment. The wrong static next hop must be another client
-on the root leaf/edge with IP forwarding disabled. Loop validity requires an
-observed forwarding cycle or TTL exhaustion.
-
-Link and route flapping share a cancellable controller, with profile-configured phases
-(default 10 seconds faulted and 10 seconds healthy), continuing until recovery.
-They use the same 30/42/66-second scale window as all other benchmark cases. Netem refuses an existing nondefault qdisc it cannot safely
-restore. Recovery restores owned state and compensates partial writes; failure
-quarantines the runtime and preserves evidence.
-
-Common scenario fields:
-
-- `target_device` for the device where the fault is applied;
-- `target_interface` for interface-scoped faults such as `link_down` and `mtu_mismatch`;
-- `target_prefix` for `blackhole_route`;
-- `parameters` for fault-specific values;
-- `metadata` for descriptive benchmark annotations.
-
-The authoritative built-in specs live under `netopsbench/platform/faults/builtin/`; injection and recovery handlers live under `netopsbench/platform/faults/handlers/`.
-
-## Simple custom fault
-
-Use `simple_fault()` for project-local extensions:
+Implement `inject(ctx)` and `recover(ctx)` and register the pack before starting the session. This example uses the callbacks from the runnable latency fault in `examples/faults/custom_fault_pack/`:
 
 ```python
-from netopsbench.sdk import NetOpsBench, FaultContext, simple_fault
+from examples.faults.custom_fault_pack.custom_fault import inject, recover
+from netopsbench.sdk import NetOpsBench, simple_fault
 
-def inject(ctx: FaultContext) -> dict:
-    return {"success": True, "device": ctx.target_device}
-
-def recover(ctx: FaultContext) -> dict:
-    return {"success": True}
-
-my_pack = simple_fault(
-    "my_latency",
-    inject=inject,
-    recover=recover,
-    requires_interface=True,
-    required_parameters=("delay_ms",),
-)
-
+pack = simple_fault("demo_custom_latency", inject=inject, recover=recover,
+                    requires_interface=True, required_parameters=("delay_ms",))
 with NetOpsBench(workspace=".") as bench:
-    bench.faults.register_pack(my_pack)
+    bench.faults.register_pack(pack)
+    # Run a scenario with episode.fault_type set to demo_custom_latency.
 ```
 
-Or register one fault directly:
-
-```python
-bench.faults.register_fault(
-    "my_latency",
-    inject,
-    recover,
-    requires_interface=True,
-    required_parameters=("delay_ms",),
-)
-```
-
-Once registered, reference it from scenario YAML with `fault_type: my_latency`.
+For a single fault, `bench.faults.register_fault(...)` accepts the same callbacks. Put the target device and interface on the episode and fault-specific values in `episode.parameters`. See [Methodology](/docs/run-benchmarks/methodology#test-suite) for the built-in catalog.
 
 ## Function contract
 
@@ -126,21 +36,6 @@ Recovery should be safe to call more than once when possible and should clean up
 ```bash
 PYTHONPATH=. python examples/04_custom_faults.py --vendor openai --repo-root .
 ```
-
-The example registers a custom latency fault:
-
-```python
-fault_pack = simple_fault(
-    "demo_custom_latency",
-    inject=inject,
-    recover=recover,
-    requires_interface=True,
-    required_parameters=("delay_ms",),
-    aliases=["demo_custom_delay"],
-)
-```
-
-Use this example to verify the extension mechanism. A research-quality fault pack should also validate parameters, define recovery behavior clearly, and test malformed input plus idempotent cleanup.
 
 ## Class-based packs
 

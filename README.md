@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="https://netx-lab.github.io/NetOpsBench/">Website</a> ·
+  <a href="https://netx-lab.github.io/NetOpsBench/#leaderboard">Leaderboard</a> ·
   <a href="https://netx-lab.github.io/NetOpsBench/docs/quickstart/">Quickstart</a> ·
   <a href="https://netx-lab.github.io/NetOpsBench/docs/build-your-agent/custom-agents/">Build Your Agent</a> ·
   <a href="https://huggingface.co/datasets/yyyyyt/netopsbench-trace">Trace Dataset</a>
@@ -41,10 +42,9 @@ It is built for researchers and engineers who want to compare LLM-backed, symbol
 ## News
 
 - **2026-08**: 🚀 **NetOpsBench v0.2.0** - Large-topology benchmark release.
-  - Add Xlarge CLOS and Fat-tree K=8/K=12 profiles, with 70 generated cases per large topology.
+  - Add Xlarge CLOS and Fat-tree K=8/K=12 profiles.
   - Replace per-client Python Pingmesh and iperf processes with the native Rust client agent for Pingmesh and background traffic.
   - Harden large-topology fault injection, recovery, observability, and exact runtime teardown.
-  - Publish a versioned DeepSeek validation snapshot across all seven supported scales. See the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx).
 - **2026-05**: 🎉 **Initial Release** - NetOpsBench is now available as an open arena for agentic network troubleshooting.
   - Provide public SDK with `run_scenario()` and `run_suite()` APIs to launch live network environments from Python.
   - Equip native MCP tools of complete observability utilities and pre-configured SONiC-VS network covering XS, Small, Medium and Large scales.
@@ -95,30 +95,7 @@ Scenario YAML files define the benchmark case: topology scale, traffic profile, 
 
 ## Benchmark Results
 
-NetOpsBench reports detection, fault type, device/interface localization, runtime, tool calls, and token usage so troubleshooting quality and operational cost can be compared together.
-
-| Scale | Topology | Switches | Clients | Cases |
-|---|---|---:|---:|---:|
-| XS | CLOS | 4 | 2 | 14 |
-| Small | CLOS | 6 | 8 | 15 |
-| Medium | CLOS | 12 | 16 | 28 |
-| Large | CLOS | 20 | 64 | 52 |
-| Xlarge | CLOS | 144 | 256 | 70 |
-| Fat-tree K=8 | Fat-tree | 80 | 128 | 70 |
-| Fat-tree K=12 | Fat-tree | 180 | 144 | 70 |
-| Fat-tree K=18 | Fat-tree | 405 | 324 | 70 |
-
-**Diagnosis score** is the mean end-to-end case score: healthy cases require the correct verdict, while fault cases receive localization credit only after the fault is detected. **Fault detection F1** measures the fault-versus-healthy decision independently.
-
-![Diagnosis score and Fault detection F1 across all seven NetOpsBench v0.2.0 topology scales](docs/public/assets/benchmark/fig_deepseek_v02_overview.svg)
-
-The largest validated Fat-tree profile provides a compact case-level view. Each square below is one K=12 case; detailed cross-topology observability analysis remains in the full results.
-
-![All 70 Fat-tree K=12 cases grouped by fault family and diagnosis outcome](docs/public/assets/benchmark/fig_deepseek_v02_k12_cases.svg)
-
-Read the [v0.2.0 release notes](docs/content/docs/releases/v0.2.0.mdx), [Benchmark Methodology](docs/content/docs/run-benchmarks/methodology.mdx), and [Benchmark Results](docs/content/docs/run-benchmarks/results.mdx) for the full validation snapshot and scoring definitions.
-
-The public [v0.2 trace release](https://huggingface.co/datasets/yyyyyt/netopsbench-trace/tree/main/releases/netopsbench-0.2) contains 319 validated DeepSeek Harbor/ATIF trajectories across XS through Fat-tree K=12. Aggregate metrics and immutable publication provenance are recorded in the [v0.2 result snapshot](docs/public/assets/benchmark/deepseek_v02_release.json).
+Compare agent diagnosis scores overall and by topology scale on the [NetOpsBench Leaderboard](https://netx-lab.github.io/NetOpsBench/#leaderboard).
 
 ## Learn More
 

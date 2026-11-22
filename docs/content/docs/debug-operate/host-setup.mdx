@@ -1,0 +1,38 @@
+---
+title: Host setup
+description: Docker access, offline Containerlab installation, and capacity checks for larger labs.
+---
+
+## Docker and privileges
+
+Install Docker Engine on the Linux host. If an administrator has granted access through the `docker` group, start a new login session and check `docker info` as the benchmark user. Docker socket access and permission to run Containerlab through non-interactive sudo are separate requirements. When running as root, set `NETOPSBENCH_NO_SUDO=1` to omit nested sudo.
+
+## Install Containerlab offline
+
+The runtime installer checks the SHA-256 digests of the archive and executable and verifies the version. On an offline Linux amd64 host with the official archive available locally, run:
+
+```bash
+python -m netopsbench.platform.runtime.build_tools \
+  --archive /path/to/containerlab_0.77.0_linux_amd64.tar.gz
+```
+
+Use the matching archive on arm64. To place the verified executable and installer manifest in a private directory, pass `--output DIR` to the installer and set `NETOPSBENCH_RUNTIME_TOOLS` to the same directory for execution. See [Quickstart](/docs/quickstart) for the client image build.
+
+## Check a larger deployment
+
+Each worker needs its own topology. Start with one worker and use effects mode to check injection, observation, and recovery without making model requests:
+
+```bash
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py --mode effects --scales xs
+```
+
+For K18, supply a measured capacity sample from the same runtime backend with a representative switch of at least 18 data ports:
+
+```bash
+PYTHONPATH=. python scripts/validate_pingmesh_scales.py \
+  --mode effects --scales fat-tree-k18 \
+  --capacity-sample /absolute/path/to/capacity-sample.json \
+  --output .netopsbench/k18-effects
+```
+
+For acceptance options, including resume and rebuild, run `PYTHONPATH=. python scripts/validate_pingmesh_scales.py --help`. For worker logs, buckets, or cleanup, see [Observability](/docs/debug-operate/observability).

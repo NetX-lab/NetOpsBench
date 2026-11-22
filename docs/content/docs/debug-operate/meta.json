@@ -1,4 +1,4 @@
 {
   "title": "Operations",
-  "pages": ["observability"]
+  "pages": ["host-setup", "observability"]
 }

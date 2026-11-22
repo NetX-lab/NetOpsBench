@@ -49,16 +49,4 @@ with NetOpsBench(workspace=".") as bench:
         incident.close()  # fault recovery occurs once
 ```
 
-The simulator is a local Python SDK. The standalone simulator HTTP service has
-been removed. Per-case authenticated HTTP MCP for diagnostic agents remains
-available and uses the same tool registry.
-
-`max_agent_seconds` is checked at action boundaries. It prevents a session
-from accepting additional tool or submit actions after its deadline; it does
-not attempt to terminate arbitrary user threads while an action is running.
-
-Large warm topologies may keep their native Pingmesh, BGP collector, and
-Telegraf processes active together. The simulator still rejects an incident
-when the active topology does not meet readiness or complete-coverage gates.
-See the observation-validity guidance in
-[Benchmark Methodology](/docs/run-benchmarks/methodology).
+The SDK checks `max_agent_seconds` at action boundaries. After the deadline it rejects further tool calls and diagnosis submissions.

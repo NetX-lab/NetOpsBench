@@ -1,10 +1,4 @@
 {
   "title": "Architecture",
-  "pages": [
-    "system-overview",
-    "runtime-audit",
-    "core-simplification",
-    "state-checked-recovery",
-    "recovery-v2-audit"
-  ]
+  "pages": ["system-overview", "state-checked-recovery"]
 }

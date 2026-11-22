@@ -1,158 +1,47 @@
 ---
 title: Running Benchmarks
-description: Run one scenario, suites, full scale benchmarks, and multi-scale batches.
+description: Choose the cases and worker count for a benchmark run.
 ---
 
-NetOpsBench has one execution path with several entrypoints. Start with one scenario while changing an agent, then move to suites and scale runs when the contract is stable.
+For a single case, follow [Quickstart](/docs/quickstart#run-the-xs-case). The examples below use the same reference agent and expect `OPENAI_API_KEY` in the environment.
 
-## Execution modes
+## Run a suite
 
-| Mode | Script or API | Use |
-|---|---|---|
-| One scenario | `examples/01_run_scenario.py` or `run_scenario(...)` | Environment validation, agent contract checks, one-case debugging. |
-| Small suite | `examples/02_run_suite.py` or `run_suite(...)` | Several selected cases with aggregate metrics. |
-| One full scale | `examples/03_run_scale_benchmark.py` | All generated scenarios for one topology scale. |
-| Multi-scale batch | `scripts/run_all_benchmarks.sh` | Repeated scale runs with logs and CSV summary. |
-
-Prepare scenario assets before these runs:
+The small-suite example selects three Medium cases and launches three workers. Prepare the scenarios first. Preparation writes topology and scenario assets. Deployment begins when you launch a session.
 
 ```bash
-# prepare benchmark scenarios for the six formal benchmark scales
-netopsbench benchmark prepare
+netopsbench benchmark prepare --scales medium --seed 42
+PYTHONPATH=. python examples/02_run_suite.py --vendor openai
 ```
 
-Use `--seed` when you need reproducible scenario generation, default seed is 42:
+For a custom selection, pass scenario paths to `bench.sessions.run_suite(...)`. See the [Python API guide](/docs/build-your-agent/python-api-guide#session-apis) for session options.
 
-```bash
-netopsbench benchmark prepare --scales medium,large --seed 42
-```
+## Run a full scale or multiple scales
 
-## One scenario
-
-```bash
-PYTHONPATH=. python examples/01_run_scenario.py --vendor <vendor>
-```
-
-The script selects one generated scenario and calls:
-
-```python
-run = bench.sessions.run_scenario(scenario=scenario, agent=agent)
-report = run.wait(raise_on_failure=True)
-```
-
-Use this mode when Docker, Containerlab, provider credentials, or the agent output schema are still changing.
-
-## Small suite
-
-```bash
-PYTHONPATH=. python examples/02_run_suite.py --vendor <vendor>
-```
-
-The script passes a list of scenarios and requests multiple workers:
-
-```python
-run = bench.sessions.run_suite(
-    scenarios=scenarios,
-    agent=agent,
-    scale="medium",
-    workers=3,
-)
-```
-
-Use a small suite to check whether an agent generalizes beyond one selected case before paying the cost of a full generated corpus.
-
-## Baseline handoff between cases
-
-Within one suite, each worker keeps its topology and traffic running. A case can hand its verified healthy window to the next case on that same worker. Healthy cases offer their observation window only after it passes the absolute health gate; fault cases offer the post-recovery validation window. Cleanup and the full worker health check must succeed before either can be reused.
-
-Recovery convergence, the validation window, snapshot queries and coverage retries share one deadline. The recovery budget comes from the profile's explicit `experiment.recovery_timeout_seconds`, independently of the observation window. If the remaining budget cannot cover a complete validation window, recovery remains unverified and the runtime is quarantined; a shortened window is never published as a healthy baseline.
-
-The next case always captures its own full observation window. A fresh baseline now uses one complete healthy capture and an absolute-health validation query. Reuse avoids that capture (42 seconds for K12), while observations are queried again. This changes baseline selection; performance comparisons should use the same handoff policy and case ordering.
-
-Handoff is rejected if the window ended more than 120 seconds ago, is too short, or the runtime containers, generated configuration, scale policy, traffic profile, or verified traffic plan have changed. A fresh capture and absolute-health validation are required after 600 seconds since the last fresh calibration. The worker owns one consumable candidate; a broken incident or failed cleanup clears it. This assumes exclusive ownership of the worker during the suite: do not edit live device configuration out of band while it runs.
-
-Only window timestamps are handed off. Telemetry is queried again, so late-arriving data remains visible. Baseline and observation queries overlap under a process-wide limit of four InfluxDB HTTP requests. Each raw case result records `baseline_preparation` (fresh/reused and reason) and `cleanup.baseline_handoff`.
-
-Use one `run_suite(...)` or `run_on_runtime_suite(...)` call for a batch. Separate `run_on_runtime_scenario(...)` calls create separate executors and do not share a baseline. No handoff survives the end of a suite.
-
-## Full scale run
+Each worker runs one case at a time in its own lab. The following command distributes all Medium cases across two labs:
 
 ```bash
 PYTHONPATH=. python examples/03_run_scale_benchmark.py \
-  --scale medium \
-  --workers 3 \
-  --vendor <vendor>
+  --scale medium --workers 2 --vendor openai
 ```
 
-`examples/03_run_scale_benchmark.py` discovers all generated scenario YAML files for the selected scale, then runs them with the same `run_suite(...)` API. This is the main input for comparing agents on a topology size.
-
-Scale choice changes both runtime cost and diagnosis difficulty:
-
-| Scale | Use |
-|---|---|
-| `xs` | Fastest feedback and provider validation. |
-| `medium` | Default formal benchmark scale. |
-| `large` | Stress test for runtime stability, observability volume, and agent efficiency. |
-| `xlarge` | 144-switch CLOS benchmark with 256 clients and 64 cases. |
-| `fat-tree-k8` | 80-switch, three-tier Fat-tree with 128 clients and 108 cases. |
-| `fat-tree-k12` | 180-switch, three-tier Fat-tree with 144 clients and 108 cases. |
-| `fat-tree-k18` | 405-switch, three-tier Fat-tree with 324 clients and 108 cases. |
-
-By default, the scale example uses 3 workers for xs, 2 for medium/large, and 1 for xlarge/Fat-tree, matching the batch shell script. An explicit `--workers` overrides this selection.
-
-Worker count controls concurrency. Each worker provisions its own lab resources. If Docker, Containerlab, or provider rate limits become unstable, reduce `--workers`.
-
-For Xlarge and Fat-tree, begin with one worker and confirm host capacity, baseline health, provider connectivity, and exact teardown before increasing concurrency:
+To run several scales, prepare each one and pass a space-separated list to the batch script:
 
 ```bash
-netopsbench benchmark prepare --scales xlarge,fat-tree-k8,fat-tree-k12,fat-tree-k18
-PYTHONPATH=. python examples/03_run_scale_benchmark.py \
-  --scale fat-tree-k12 --workers 1 --vendor deepseek
+netopsbench benchmark prepare --scales medium,large
+BENCH_VENDOR=openai BENCH_SCALES="medium large" bash scripts/run_all_benchmarks.sh
 ```
 
-Run one prepared large profile at a time:
+Use `BENCH_WORKERS_LARGE=2` to override the Large worker count. Start Xlarge and Fat-tree with one lab until you have measured [host capacity](/docs/debug-operate/host-setup#check-a-larger-deployment).
 
-```bash
-PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale xlarge --workers 1 --vendor deepseek
-PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale fat-tree-k8 --workers 1 --vendor deepseek
-PYTHONPATH=. python examples/03_run_scale_benchmark.py --scale fat-tree-k12 --workers 1 --vendor deepseek
-```
+## What happens between cases
 
-Preparing all three profiles does not deploy three labs. A lab is provisioned only for the selected run, and `workers=1` provisions one physical runtime worker.
+Each worker starts with a complete healthy Pingmesh baseline. With the default recovery policy it can use that baseline for **10 cases**. Before case 11 it calibrates again. A change to the runtime identity or traffic plan also requires a fresh baseline. Elapsed time alone does not expire it. Every case still collects its own observation window and reads the baseline telemetry again so late samples are included.
 
-## Multi-scale batches
+After a fault, the worker undoes the change, reads back the affected resources, and verifies network state twice. A retry that eventually succeeds triggers a full calibration. A failed restoration quarantines the worker. The agent's diagnosis timeout is a separate budget. See [State-checked Recovery](/docs/architecture/state-checked-recovery) for the checks and custom-fault behavior.
 
-```bash
-BENCH_VENDOR=<vendor> BENCH_SCALES="medium large" bash scripts/run_all_benchmarks.sh
-```
+## Reports and cleanup
 
-For long-running jobs:
+Session reports live in `.netopsbench/runs/<run-id>/report.json`. Multi-scale batches also write logs and a summary CSV under `scenario_results/`.
 
-```bash
-nohup bash scripts/run_all_benchmarks.sh &> benchmark_run.log &
-```
-
-Useful environment overrides:
-
-| Variable | Meaning |
-|---|---|
-| `BENCH_VENDOR` | Provider passed to `examples/03_run_scale_benchmark.py`. |
-| `BENCH_SCALES` | Space-separated scale list such as `medium large`. |
-| `BENCH_WORKERS_<SCALE>` | Worker count override for one scale, for example `BENCH_WORKERS_LARGE=2`. |
-| `BENCH_CLEAN_RUNS=1` | Explicitly remove previous `.netopsbench/runs/` artifacts before the batch. By default, previous reports and traces are preserved. |
-
-The script writes logs under `scenario_results/benchmark_logs_<timestamp>/`, records the run ids for the batch in `benchmark_runs_<timestamp>.jsonl`, and writes a CSV summary under `scenario_results/benchmark_summary_<timestamp>.csv`. Run artifacts use timestamp ids such as `run-20260605T124040Z`; use `netopsbench trace view` to sync trace-enabled runs into the local Harbor viewer cache and inspect saved traces.
-
-## Inspect reports and runtimes
-
-The CLI supports preparation, scenario checks, report inspection, and cleanup:
-
-```bash
-netopsbench scenario validate scenarios/generated/xs/generated_link_down_xs_001.yaml
-netopsbench result list
-netopsbench result show .netopsbench/runs/<run-id>/report.json
-netopsbench runtime list
-netopsbench runtime teardown <runtime-name>
-```
-
-Failed runs that preserve Containerlab resources should be inspected with [Operations](/docs/debug-operate/observability).
+The SDK tears down labs it provisions unless you set `keep_runtime=True`. When attaching to an existing runtime, the caller owns teardown. A retained runtime receives a final health calibration. For inspection and teardown commands, see [Operations](/docs/debug-operate/observability#cleanup).

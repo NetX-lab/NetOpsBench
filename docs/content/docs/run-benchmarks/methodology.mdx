@@ -63,27 +63,7 @@ these units across devices and pods instead of multiplying repeated cases.
 
 The six formal scales contain 516 cases. XS validates health, a fabric link,
 a spine outage and BGP authentication; its results are excluded from formal
-benchmark aggregates. `small` was removed without a conversion path. Historical
-results and runtimes remain under their owners' control.
-
-New raw results keep diagnosis, scoring and observation fields in the primary
-JSON. Large private baseline, fault and recovery route snapshots live in atomic
-`evidence/<attempt>/` gzip JSON artifacts; their references record paths,
-SHA-256 hashes and byte counts. Decode them with `json.load(gzip.open(path, "rt"))`.
-Execution and scoring still use the complete live snapshots. Existing results
-and diagnostic trajectories are never rewritten.
-
-Campaign checkpoints explicitly record whether a diagnosis completed. Resume
-uses that state and validity evidence, including valid zero-score diagnoses;
-it does not infer completion by reopening historical raw results. Effects cases
-require successful recovery before they are considered completed.
-
-`netopsbench benchmark prepare` generates the six benchmark profiles.
-Use `--scales xs` explicitly for validation. Omitted scale arguments in SDK
-scenario creation, topology generation and public examples default to `medium`.
-Custom profiles default to `purpose: benchmark`; `supported_scales()` still
-includes XS. Generation writes scenario YAML and `coverage.json` with selected
-roots, neighbors, prefixes and fixed-plan candidate/control witnesses.
+benchmark aggregates. The [Leaderboard](/#leaderboard) covers Medium through Fat-tree K=12, totaling 408 cases.
 
 The merged types require `episode.parameters.mechanism`:
 
@@ -103,138 +83,22 @@ parameters. Source ports do not prove which ECMP paths the probes traversed.
 
 ## Observation validity
 
-Pingmesh compares an explicit healthy baseline with the fault observation
-window. A path is reported as a latency spike when its median `rtt_avg`
-increases by at least 20 ms across the complete observation window. Peaks and
-individual ECMP port batches do not qualify. Packet loss requires both the
-configured percentage increase and at least three lost probes on that path;
-loss elsewhere in the same rack does not amplify weak evidence. Jitter remains
-available in the raw RTT samples but is not a formal anomaly. These rules are
-shared by built-in and custom topologies.
+Each case compares a complete healthy baseline with its own observation window. The fixed probe plan determines which clients, peers, and port batches must report. Missing or late data must pass the coverage and ingestion checks before the window can be used.
 
-The canonical packet-loss campaign applies 30% loss on one selected egress
-member. On redundant fabrics, ECMP can dilute the endpoint-visible symptom;
-the benchmark reports only the evidence actually measured and does not lower
-detector thresholds to force an anomaly. Large profiles use a three-second
-probe interval. Their fixed offline schedules require 66-second complete windows
-for Xlarge and 42 seconds for K8/K12/K18. Every rack pair participates; same-rack
-clients form a complete directed mesh, while cross-rack tasks use deterministic
-client matching. Xlarge and K18 split each rack-pair task between two clients.
-The plan audits all directed links through candidate shortest-path DAGs, including
-access links. This is topology coverage; source ports sample ECMP without proving
-which kernel forwarding paths were selected. Runtime coverage checks the exact
-planned peer/port-batch set and filters by `plan_id`.
-Offline placement and private effect validation share the same candidate-path
-DAG scope. Validation reuses already queried records for all fixed planned flows
-within that configuration's scope, instead of relying on a small witness sample.
-Records with any local send error cannot satisfy that coverage requirement;
-network packet loss still counts as an executed probe.
-All cases on a scale use one frozen experiment policy from the scale profile.
-The observation window is the greater of configured `observation_seconds` and
-the fixed plan's complete window: 30 seconds for XS/medium/large, 42 for
-K8/K12/K18, and 66 for Xlarge. Healthy, ordinary and periodic cases share this
-window; no fault-specific extension is applied. Early/steady observations are
-analysis slices of one continuous capture, with no benchmark stabilization gap.
-
-| Scale | New baseline / case / recovery health window (s) | Recovery total budget (s) |
+| Scale | Observation window | Recovery deadline |
 |---|---:|---:|
-| XS | 30 | 120 |
-| Medium | 30 | 120 |
-| Large | 30 | 180 |
-| Xlarge | 66 | 240 |
-| Fat-tree K=8 | 42 | 240 |
-| Fat-tree K=12 | 42 | 300 |
-| Fat-tree K=18 | 42 | 600 |
+| XS and Medium | 30 s | 120 s |
+| Large | 30 s | 180 s |
+| Xlarge | 66 s | 240 s |
+| Fat-tree K=8 | 42 s | 240 s |
+| Fat-tree K=12 | 42 s | 300 s |
+| Fat-tree K=18 | 42 s | 600 s |
 
-`netopsbench/models/scale_profiles.yaml` supplies the common policy and optional
-per-profile `experiment` overrides. Its common `observation_seconds: 30` is a
-minimum: the fixed plan raises it to 42 or 66 seconds where required. Changing
-these settings changes the profile digest; regenerate scenarios and start a new
-campaign. Explicit durations in custom SDK scenarios remain supported.
+A latency spike requires a median RTT increase of at least 20 ms. Packet loss requires the configured percentage increase and at least three lost probes on the same path. ECMP can keep endpoint probes healthy even when a route loses next hops. The platform checks fault effects separately from the symptoms supplied to the agent.
 
-A fresh baseline is captured once and validated using absolute health and full
-coverage. Recovery captures the same scale window and can hand that verified
-window to the next case; identity, age, recalibration and fresh-query rules still
-apply. Recovery budgets are explicit profile settings, shared by commands,
-background-controller shutdown, health probes, queries and retries.
+Periodic cases require evidence of a faulty, healthy, and faulty phase within the window. Route flapping also requires prefix withdrawal and readvertisement with the BGP session established. Incomplete evidence leaves the case invalid.
 
-Periodic faults default to 10 seconds faulty / 10 seconds healthy. Within the
-observation window, a case must prove fault → healthy → fault; route flapping
-also requires actual withdrawal/readvertisement evidence and an established
-session. Missing evidence invalidates the case instead of extending the window.
-For access outages, only structurally correct, actually recorded local send
-failures overlapping verified outage intervals may explain missing valid tasks.
-They remain invalid probe samples and the original full audit stays incomplete.
-Completely missing records, incorrect batches and errors during healthy periods
-invalidate the case. No runtime peer, port or schedule changes are made.
-Plan coverage and window ingestion readiness are checked separately. Existing
-`probe_cycle` records before and after the interval bound the rounds that must
-be present; the fixed plan supplies each round's expected targets, including
-empty rounds. Boundary rounds are checked in full, while only records inside
-the left-closed, right-open interval enter anomaly statistics. Late repeated
-tasks and missing fields cannot pass merely because plan coverage is complete.
-Queries and waits share the processing deadline without extending the window.
-Each read includes the boundary context and all required metric fields. The
-same returned rows prove ingestion readiness and supply the strictly sliced
-statistical window, avoiding a separate progress query. Source shards remain
-limited to 16 clients, with at most four concurrent HTTP requests per process.
-Observation waiting uses a monotonic deadline; UTC query bounds retain their
-fractional precision and fixed configured duration.
-
-Baseline handoff records component-level identity changes. An owned FRR startup
-file rewrite is accepted only after running and saved configuration checks;
-commands retain their order and nesting. The verified recovery window is bound
-to its stable recovered identity, including any verified device restart. The
-next case still checks identity, freshness and recalibration, then reads the
-window again rather than using cached telemetry.
-The 600-second recalibration period starts at the latest independently verified
-new healthy window; republishing an older window cannot renew it. The window
-must still be no more than 120 seconds old. A failed diagnosis or invalid fault
-effect does not invalidate a separately verified recovery window. Publication
-and rejection reasons are recorded without changing the preceding case result.
-
-Both bundled agents have a configured total diagnosis budget of 600 seconds,
-including setup, reasoning and tools. DeepSeek requests retain their individual
-120-second ceiling within the remaining total budget. Cancellation is followed
-by separately measured resource cleanup and fault recovery. Effects mode skips
-model diagnosis. Reports include per-case phase measurements and a
-`phase-timings.csv` artifact; changed experiment settings require a new campaign.
-The existing `recovery` phase also contains `steps` for fault restoration,
-convergence, window waiting, query/ingestion, identity checks and handoff. Query
-steps retain baseline/current ingestion timings and request-attempt counts
-separately: concurrent read durations must not be summed as wall time. These
-child measurements are also exported to `recovery-steps.csv`, leaving the
-existing `phase-timings.csv` columns and parent-phase totals unchanged.
-
-ACL validity requires rule hits and increased ordinary or DF probe loss. DF loss
-cannot establish ACL impact when local send errors or confirmed MTU drops explain
-it. These private effect checks do not change detector thresholds or scores.
-
-Background traffic must start its complete topology-derived flow matrix before the baseline is captured. A partial matrix is an infrastructure-invalid case, rather than a degraded observation presented to the agent.
-The profile's per-client PPS value is a hard ceiling. A smaller switch budget can reduce it; a larger switch budget cannot increase it. Xlarge and K18 cap background traffic at 50 PPS per client.
-The baseline is also invalid when coverage is incomplete, any path is
-unreachable, latency or network-MTU anomalies exist, or an unexplained local DF
-probe error occurs. A DF-only local send error is treated as a consequence of
-the measured path failure only when the same path and socket batch contains at
-least three lost ordinary RTT probes across the complete observation window and
-no other local error. Loss on another path or ECMP socket batch does not qualify.
-
-`mtu_or_fragmentation_suspect` is deliberately a symptom label, not a confirmed
-MTU root cause. In particular, an isolated DF-only symptom during link flapping
-still requires interface-MTU or multi-path evidence before an agent should
-diagnose `mtu_mismatch`.
-
-Each topology sends native Pingmesh batches through its topology-local
-Telegraf listener. Multiple warm topologies may therefore keep observability
-active together; readiness and complete coverage remain mandatory for every
-case. Host capacity is not hidden by a longer timeout or a topology-specific
-detector threshold.
-
-The 0.2 collector polls BGP every 10 seconds. On topologies with more than 128
-routing devices, every poll writes the collection index, state transitions,
-and all non-Established neighbors; stable complete-neighbor snapshots are
-written every 60 seconds. Use the tool's reported data freshness when
-interpreting BGP evidence.
+See [State-checked Recovery](/docs/architecture/state-checked-recovery) for baseline reuse and recovery checks.
 
 ## Scoring dimensions
 
@@ -287,7 +151,3 @@ The judge affects only fault-type classification. Verdict, device localization, 
 | `average_score` | Mean verdict-gated case score, shown publicly as **Diagnosis score**. Healthy cases require the correct verdict; fault cases receive localization credit only after the fault is detected. |
 | `avg_time_seconds` | Mean diagnosis latency per case. |
 | `avg_tool_calls` | Mean tool calls per case. |
-
-The scoring implementation lives in `netopsbench.evaluator.scorer` and session scoring helpers under `netopsbench.platform.session.scoring`.
-
-The large profiles and native client-agent lifecycle are documented in the [NetOpsBench v0.2.0 release notes](/docs/releases/v0.2.0).

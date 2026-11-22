@@ -66,18 +66,3 @@ def test_release_figure_header_has_visible_line_spacing() -> None:
     plt.close(fig)
 
     assert title_box.y0 - subtitle_box.y1 >= 10
-
-
-def test_results_table_matches_release_snapshot() -> None:
-    release = plot_results._load_release_data(plot_results.DEFAULT_RELEASE_DATA)
-    results_page = (ROOT / "docs/content/docs/run-benchmarks/results.mdx").read_text(encoding="utf-8")
-    for row in plot_results._release_scale_rows(release):
-        source = release["scales"].get(row["key"]) or release["large_topologies"][row["key"]]
-        expected = (
-            f"| {row['label'].replace('K=', 'Fat-tree K=') if row['architecture'] == 'Fat-tree' else row['label']} "
-            f"| {row['cases']} | {row['diagnosis_score']:.1f} | {row['detection_f1']:.1f} "
-            f"| {100 * float(source['device_localization_rate']):.1f} "
-            f"| {100 * float(source['interface_localization_rate']):.1f} "
-            f"| {float(source['avg_input_tokens']) / 1000:.1f} | {float(source['avg_agent_seconds']):.1f} |"
-        )
-        assert expected in results_page
