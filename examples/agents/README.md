@@ -6,6 +6,7 @@ This directory contains the official public agent examples for NetOpsBench.
 
 - `minimal_deepagent/agent.py` — a runnable DeepAgent example with MCP tools and multiple provider presets
 - `codex_agent/agent.py` — native `codex exec` with episode MCP tools and an isolated Python/shell container; see [setup and acceptance](codex_agent/README.md)
+- `antigravity_agent.py` — native Antigravity CLI with episode MCP tools and structured diagnosis output
 
 ## File roles
 
@@ -63,5 +64,6 @@ For `examples/01_run_scenario.py`, choose provider via CLI argument:
 - `PYTHONPATH=. python examples/01_run_scenario.py --vendor openai`
 - `PYTHONPATH=. python examples/01_run_scenario.py --vendor minimax`
 - `PYTHONPATH=. python examples/01_run_scenario.py --agent codex --scenario scenarios/generated/medium/generated_healthy_network_medium_001.yaml` (install `.[codex]` and sign in with the pinned native CLI)
+- `PYTHONPATH=. python examples/01_run_scenario.py --agent antigravity --scenario /path/to/migrated/generated_healthy_network_xs_001.yaml` (install `.[agent]`, Linux Bubblewrap, and `agy` 1.5.14). See the [Antigravity setup and XS migration](../../docs/content/docs/build-your-agent/custom-agents.mdx#native-antigravity).
 
 These examples are references for application code, not required internal platform machinery.

@@ -135,6 +135,95 @@ def test_secret_redaction_and_proxy_private_destination_rejection(monkeypatch):
         validate_destination("chatgpt.com:443")
 
 
+def test_custom_provider_uses_isolated_key_and_responses_without_secret_arguments(tmp_path, monkeypatch):
+    import examples.agents.codex_agent.agent as module
+
+    store = tmp_path / "glm-auth"
+    store.mkdir()
+    (store / "auth.json").write_text('{"OPENAI_API_KEY":"private-glm-key"}')
+    monkeypatch.setattr(module, "ensure_image", lambda **kw: "image")
+    monkeypatch.setattr(module, "image_content_identity", lambda image: "content")
+    agent = CodexAgent(
+        model="glm-5.3-flash",
+        base_url="https://open.bigmodel.cn/api/v1",
+        model_provider="glm",
+        auth_store=store,
+        structured_output=False,
+    )
+    assert agent.preflight()["provider"] == "glm"
+    args = agent.cli_args({"url": "http://192.0.2.1/mcp"})
+    assert 'model_provider="netopsbench_external"' in args
+    assert 'model_providers.netopsbench_external.wire_api="responses"' in args
+    assert "model_providers.netopsbench_external.requires_openai_auth=true" in args
+    assert "private-glm-key" not in " ".join(args)
+    assert "--output-schema" not in args
+    assert not agent._refresh_from_host
+    (store / "auth.json").write_text('{"tokens":{"access_token":"host-chatgpt-token"}}')
+    with pytest.raises(ValueError, match="isolated API-key"):
+        agent.preflight()
+    (store / "auth.json").unlink()
+    with pytest.raises(ValueError, match="auth.json"):
+        agent.preflight()
+    assert not (store / "auth.json").exists()
+
+
+@pytest.mark.parametrize(
+    "base_url", ["http://example.com/v1", "https://user:secret@example.com/v1", "https://example.com:8443/v1"]
+)
+def test_custom_provider_rejects_unsafe_endpoints(base_url, tmp_path):
+    with pytest.raises(ValueError, match="HTTPS endpoint"):
+        CodexAgent(base_url=base_url, auth_store=tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", [None, '{"tokens":{"access_token":"host-token"}}'])
+async def test_custom_provider_checks_credentials_again_before_starting_container(monkeypatch, tmp_path, replacement):
+    import examples.agents.codex_agent.agent as module
+
+    class Container:
+        def __init__(self, image, auth_store):
+            self.auth_store = auth_store
+
+        def open(self):
+            pytest.fail("Invalid credentials must not reach a diagnostic container")
+
+        def close(self):
+            pass
+
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"OPENAI_API_KEY":"provider-key"}')
+    monkeypatch.setattr(module, "DiagnosticContainer", Container)
+    monkeypatch.setattr(module, "ensure_image", lambda **kwargs: "image")
+    monkeypatch.setattr(module, "image_content_identity", lambda image: "content")
+    agent = CodexAgent(base_url="https://example.com", auth_store=tmp_path, artifacts_dir=tmp_path / "traces")
+    agent.preflight()
+    if replacement is None:
+        auth.unlink()
+    else:
+        auth.write_text(replacement)
+    result = await agent.diagnose(DiagnosticContext("case", {}, {}, tools=SimpleNamespace()))
+    assert not result.success
+    expected = "auth.json" if replacement is None else "isolated API-key"
+    assert expected in result.reasoning
+    assert (auth.read_text() if auth.exists() else None) == replacement
+
+
+def test_custom_provider_relay_allowlist_is_explicit_and_still_denies_private_addresses(monkeypatch):
+    with pytest.raises(ValueError, match="Destination denied"):
+        validate_destination("open.bigmodel.cn:443")
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+    )
+    assert validate_destination("open.bigmodel.cn:443", {"open.bigmodel.cn"})[0] == "open.bigmodel.cn"
+    with pytest.raises(ValueError, match="Destination denied"):
+        validate_destination("api.openai.com:443", {"open.bigmodel.cn"})
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+    )
+    with pytest.raises(ValueError, match="Non-public"):
+        validate_destination("open.bigmodel.cn:443", {"open.bigmodel.cn"})
+
+
 def test_private_credential_values_are_redacted_including_account_identity(tmp_path):
     from examples.agents.codex_agent.runtime import credentials
 

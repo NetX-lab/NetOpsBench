@@ -11,6 +11,20 @@ The bundled `examples.agents.CodexAgent` connects the native Codex CLI to this c
 
 Each diagnosis runs in a fresh container with anonymous observations, episode-scoped MCP tools and Python/shell access. The container cannot access the repository, scenario answers, Docker socket or management network directly. Only private authentication persists between cases. Defaults are `gpt-6.1-sol`, effort `xhigh`, 600 seconds and 40 MCP calls; constructor options and recorded runtime artifacts make these settings explicit. See `examples/agents/codex_agent/README.md` for image building, isolation and acceptance commands.
 
+## Native Antigravity
+
+On Linux, install `pip install -e '.[agent]'`, Bubblewrap (`bwrap`), and the [Antigravity CLI](https://antigravity.google/docs/cli/tutorial/). The example was tested with `agy` 1.5.14. Set `GEMINI_API_KEY` in the environment for automated runs. The adapter can also read an existing Antigravity sign-in for local testing. Review [Google's headless usage guidance](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching) before using a personal account in an integration.
+
+```bash
+xs_scenario_dir="$(mktemp -d)/migrated"
+netopsbench scenario migrate scenarios/generated/xs/generated_healthy_network_xs_001.yaml \
+  --out "$xs_scenario_dir"
+PYTHONPATH=. python examples/01_run_scenario.py --agent antigravity \
+  --scenario "$xs_scenario_dir/generated_healthy_network_xs_001.yaml"
+```
+
+The adapter starts a fresh CLI workspace for each case, passes the episode MCP endpoint and diagnosis schema, and records the CLI's token usage. Shell commands and file tools are denied. Bubblewrap isolates the filesystem, while the CLI uses the host network and its HTTP proxy settings. In Python, wrap `examples.agents.AntigravityAgent()` with `bench.agents.wrap()` and optionally choose a model available through your authentication method.
+
 ## Agent contract
 
 ```python

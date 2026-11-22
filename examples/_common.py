@@ -56,6 +56,10 @@ def discover_generated_scenarios(repo: Path, scale: str) -> list[Path]:
 
 
 def agent_class(backend: str):
+    if backend == "antigravity":
+        from examples.agents import AntigravityAgent
+
+        return AntigravityAgent
     if backend == "codex":
         from examples.agents import CodexAgent
 
@@ -113,9 +117,9 @@ def build_arg_parser(
     if with_vendor:
         parser.add_argument(
             "--agent",
-            choices=["deepagent", "codex"],
+            choices=["deepagent", "codex", "antigravity"],
             default="deepagent",
-            help="Diagnostic runtime: bundled DeepAgent or native isolated Codex CLI.",
+            help="Diagnostic runtime: bundled DeepAgent, native Codex CLI, or native Antigravity CLI.",
         )
         parser.add_argument(
             "--vendor",
@@ -141,5 +145,5 @@ def build_arg_parser(
 def print_agent_banner(label: str, vendor: str, raw_agent: Any) -> None:
     """Print the standard ``vendor / model`` banner used by every example."""
     model = getattr(raw_agent, "model", "?")
-    vendor = "codex" if raw_agent.__class__.__name__ == "CodexAgent" else vendor
+    vendor = {"CodexAgent": "codex", "AntigravityAgent": "google"}.get(type(raw_agent).__name__, vendor)
     print(f"  {label}: vendor={vendor}  model={model}")

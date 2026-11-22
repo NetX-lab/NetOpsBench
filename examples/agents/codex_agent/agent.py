@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from examples.agents.diagnosis import SYSTEM_GUIDANCE, DiagnosisOutput, build_result, build_user_prompt
 from netopsbench.models.profiles import default_experiment_profile
@@ -117,7 +118,31 @@ class CodexAgent:
         max_tool_calls=40,
         auth_store=None,
         artifacts_dir=None,
+        base_url=None,
+        model_provider=None,
+        model_catalog=None,
+        structured_output=True,
     ):
+        if base_url is not None:
+            parsed = urlsplit(base_url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.port not in (None, 443)
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("Custom provider requires an HTTPS endpoint on port 443")
+            if auth_store is None:
+                raise ValueError("Custom provider requires a dedicated API-key auth_store")
+        elif model_provider is not None or model_catalog is not None:
+            raise ValueError("Custom provider options require base_url")
+        self.base_url = base_url
+        self.model_provider = model_provider or ("external" if base_url else "codex")
+        self.model_catalog = Path(model_catalog).resolve() if model_catalog is not None else None
+        self.structured_output = structured_output
         self.name, self.model, self.reasoning_effort = name, model, reasoning_effort
         self.service_tier = "default"
         self.cli_version, self.image = cli_version, image
@@ -132,8 +157,25 @@ class CodexAgent:
         self._image_id = None
         self._image_content_sha256 = None
 
+    def _external_api_key(self):
+        try:
+            auth = json.loads((self.auth_store / "auth.json").read_text())
+        except FileNotFoundError:
+            raise ValueError("Custom provider requires auth.json with OPENAI_API_KEY") from None
+        key = auth.get("OPENAI_API_KEY") if isinstance(auth, dict) else None
+        if not isinstance(key, str) or not key.strip() or auth.get("tokens"):
+            raise ValueError("Custom provider requires isolated API-key credentials, not ChatGPT credentials")
+        return key
+
     def preflight(self):
-        credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
+        if self.base_url:
+            self._external_api_key()
+        else:
+            credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
+        if self.model_catalog:
+            catalog = json.loads(self.model_catalog.read_text())
+            if not any(row.get("slug") == self.model for row in catalog.get("models", [])):
+                raise ValueError("Model catalog does not contain the requested model")
         self._image_id = ensure_image(image=self.image, version=self.cli_version)
         self._image_content_sha256 = image_content_identity(self._image_id)
         return {
@@ -145,6 +187,9 @@ class CodexAgent:
             "service_tier": self.service_tier,
             "timeout_seconds": self.timeout_seconds,
             "max_mcp_calls": self.max_tool_calls,
+            "provider": self.model_provider,
+            "base_url": self.base_url,
+            "structured_output": self.structured_output,
         }
 
     def cli_args(self, endpoint):
@@ -164,9 +209,9 @@ class CodexAgent:
             "/workspace",
             "--model",
             self.model,
-            "--output-schema",
-            "/input/schema.json",
         ]
+        if self.structured_output:
+            args.extend(["--output-schema", "/input/schema.json"])
         config = {
             "model_reasoning_effort": self.reasoning_effort,
             "service_tier": self.service_tier,
@@ -177,6 +222,18 @@ class CodexAgent:
             "mcp_servers.netopsbench.required": True,
             "mcp_servers.netopsbench.enabled_tools": [tool["name"] for tool in tool_schemas()],
         }
+        if self.base_url:
+            config.update(
+                model_provider="netopsbench_external",
+                **{
+                    "model_providers.netopsbench_external.name": self.model_provider,
+                    "model_providers.netopsbench_external.base_url": self.base_url,
+                    "model_providers.netopsbench_external.wire_api": "responses",
+                    "model_providers.netopsbench_external.requires_openai_auth": True,
+                },
+            )
+        if self.model_catalog:
+            config["model_catalog_json"] = "/input/models.json"
         for feature in (
             "fast_mode",
             "ultrafast_mode",
@@ -252,7 +309,9 @@ class CodexAgent:
     async def _execute(self, context, prompt):
         metadata = {
             "runtime": "codex-cli+isolated-shell+mcp",
-            "provider": "codex",
+            "provider": self.model_provider,
+            "base_url": self.base_url,
+            "structured_output": self.structured_output,
             "model": self.model,
             "cli_version": self.cli_version,
             "reasoning_effort": self.reasoning_effort,
@@ -261,6 +320,11 @@ class CodexAgent:
             "timeout_seconds": self.timeout_seconds,
         }
         events = CodexEvents(context.trace)
+        if not self.structured_output:
+            prompt += (
+                "\nYour final assistant message must contain only a JSON object, without Markdown fences, "
+                "matching this schema: " + json.dumps(strict_output_schema())
+            )
         container = DiagnosticContainer(self.image, self.auth_store)
         self._containers.add(container)
         directory = self.artifacts_dir / uuid.uuid4().hex
@@ -278,17 +342,25 @@ class CodexAgent:
             metadata["image_id"] = self._image_id
             metadata["image_content_sha256"] = self._image_content_sha256
             container.image = self._image_id
-            secrets = credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
             auth_temporary = tempfile.TemporaryDirectory(prefix="netopsbench-codex-auth-")
             container.auth_store = Path(auth_temporary.name)
-            shutil.copyfile(self.auth_store / "auth.json", container.auth_store / "auth.json")
-            (container.auth_store / "auth.json").chmod(0o600)
+            case_auth = container.auth_store / "auth.json"
+            if self.base_url:
+                key = self._external_api_key()
+                secrets = [key]
+                case_auth.write_text(json.dumps({"OPENAI_API_KEY": key}))
+            else:
+                secrets = credentials(self.auth_store, refresh_from_host=self._refresh_from_host)
+                shutil.copyfile(self.auth_store / "auth.json", case_auth)
+            case_auth.chmod(0o600)
             open_task = asyncio.create_task(asyncio.to_thread(container.open))
             await asyncio.shield(open_task)
             with tempfile.TemporaryDirectory(prefix="netopsbench-codex-input-") as temporary:
                 inputs = Path(temporary)
                 inputs.chmod(0o755)
                 (inputs / "schema.json").write_text(json.dumps(strict_output_schema()))
+                if self.model_catalog:
+                    shutil.copyfile(self.model_catalog, inputs / "models.json")
                 (inputs / "observation.json").write_text(
                     json.dumps(
                         {
@@ -299,7 +371,12 @@ class CodexAgent:
                         default=str,
                     )
                 )
-                with openai_proxy(container.gateway) as proxy_port:
+                proxy = (
+                    openai_proxy(container.gateway, allowed_hosts={urlsplit(self.base_url).hostname})
+                    if self.base_url
+                    else openai_proxy(container.gateway)
+                )
+                with proxy as proxy_port:
                     async with session_mcp(
                         context, host=container.gateway, max_tool_calls=self.max_tool_calls
                     ) as endpoint:
@@ -425,7 +502,7 @@ class CodexAgent:
         if auth_temporary is not None:
             try:
                 refreshed = container.auth_store / "auth.json"
-                if refreshed.exists():
+                if not self.base_url and refreshed.exists():
                     from netopsbench.platform.utils.files import atomic_write_json
 
                     auth = json.loads(refreshed.read_text())

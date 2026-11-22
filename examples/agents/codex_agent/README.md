@@ -39,6 +39,40 @@ version, image, deadline, MCP budget, auth store and trace directory are explici
 constructor options. DeepAgent retains its existing provider configuration and
 graph budget; the reports record the different capabilities and budgets.
 
+Custom model providers can use the same native CLI loop through an HTTPS
+Responses-compatible endpoint:
+
+```python
+agent = CodexAgent(
+    model="glm-5.3-flash",
+    reasoning_effort="high",
+    model_provider="glm",
+    base_url="https://open.bigmodel.cn/api/v1",
+    auth_store=".netopsbench/private/glm-auth",
+    model_catalog="/absolute/path/to/models.json",
+    structured_output=False,
+)
+```
+
+Create the dedicated private store with directory permissions `0700` and an
+`auth.json` file with permissions `0600`, containing
+`{"OPENAI_API_KEY": "<provider API key>"}`. This is Codex's API-key storage
+format; the key belongs to the configured provider. Custom endpoints reject
+ChatGPT credentials and never seed their store from the host login. The key is
+not included in CLI arguments or reports. Only the configured provider hostname
+is allowed through that session's relay; private addresses remain blocked.
+
+`model_catalog` optionally supplies Codex model metadata; its `models` list
+must contain the requested model's `slug`. `structured_output=False` omits the
+API-side JSON Schema constraint for providers where it prevents tool calls.
+The final message must still be JSON and pass the same local `DiagnosisOutput`
+validation. Both settings are explicit and recorded alongside the provider.
+Run `await agent.check_connection()` before deploying a lab: this requires a
+real MCP call, a successful shell call, and a valid final diagnosis.
+
+See the provider's [Codex integration documentation](https://docs.bigmodel.cn/cn/coding-plan/tool/codex)
+and OpenAI's [gateway compatibility requirements](https://learn.chatgpt.com/docs/enterprise/gateway-compatibility).
+
 Each case starts a fresh ephemeral CLI session and temporary CLI state directory.
 Only refreshed `auth.json` persists in `.netopsbench/private/codex-auth/`; the
 host login directory, configuration, skills and history are never mounted.

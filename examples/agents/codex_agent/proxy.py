@@ -1,4 +1,4 @@
-"""Small CONNECT relay: only explicitly allowed public OpenAI endpoints."""
+"""Small CONNECT relay restricted to explicitly allowed public model endpoints."""
 
 import base64
 import http.client
@@ -14,9 +14,9 @@ from urllib.parse import urlsplit
 ALLOWED_HOSTS = frozenset({"chatgpt.com", "api.openai.com", "auth.openai.com"})
 
 
-def validate_destination(authority):
+def validate_destination(authority, allowed_hosts=ALLOWED_HOSTS):
     host, port = authority.rsplit(":", 1)
-    if host not in ALLOWED_HOSTS or port != "443":
+    if host not in allowed_hosts or port != "443":
         raise ValueError("Destination denied")
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
@@ -32,7 +32,7 @@ class ConnectHandler(socketserver.StreamRequestHandler):
             request = self.rfile.readline(8192).decode("ascii").strip().split()
             if len(request) != 3 or request[0] != "CONNECT":
                 raise ValueError("Only CONNECT is supported")
-            host, address = validate_destination(request[1])
+            host, address = validate_destination(request[1], self.server.allowed_hosts)
             for _ in range(100):
                 if self.rfile.readline(8192) in (b"\r\n", b"\n", b""):
                     break
@@ -77,12 +77,13 @@ class ConnectHandler(socketserver.StreamRequestHandler):
 
 
 @contextmanager
-def openai_proxy(host):
+def openai_proxy(host, *, allowed_hosts=ALLOWED_HOSTS):
     class Server(socketserver.ThreadingTCPServer):
         daemon_threads = True
         allow_reuse_address = True
 
     server = Server((host, 0), ConnectHandler)
+    server.allowed_hosts = frozenset(allowed_hosts)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
