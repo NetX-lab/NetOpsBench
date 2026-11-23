@@ -120,6 +120,19 @@
   font-weight: 650;
 }
 
+.modelName {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  vertical-align: middle;
+}
+
+.modelName img {
+  flex: none;
+  object-fit: contain;
+}
+
 .harness {
   display: block;
   margin-top: 2px;
@@ -153,7 +166,6 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #3264cc;
 }
 
 @media (max-width: 860px) {

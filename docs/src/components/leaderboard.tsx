@@ -5,29 +5,25 @@ import { ArrowDown, ArrowDownUp, ArrowUp } from 'lucide-react';
 
 import {
   leaderboardCaseCount,
-  leaderboardEntries,
+  formatLeaderboardScore,
+  leaderboardColumns,
+  leaderboardProviderColors,
   leaderboardScales,
   leaderboardScore,
+  rankLeaderboard,
   type ScoreColumn,
 } from '@/lib/leaderboard';
 
 import styles from './leaderboard.module.css';
-
-const columns = [{ id: 'overall', label: 'Overall', cases: leaderboardCaseCount }, ...leaderboardScales] as const;
-
-function percent(score: number) {
-  return `${(score * 100).toFixed(2)}%`;
-}
+import { LeaderboardChart } from './leaderboard-chart';
+import { LeaderboardModelName } from './leaderboard-model-name';
 
 export function Leaderboard() {
   const [sort, setSort] = useState<{ column: ScoreColumn; ascending: boolean }>({
     column: 'overall',
     ascending: false,
   });
-  const entries = [...leaderboardEntries].sort((a, b) => {
-    const difference = leaderboardScore(a, sort.column) - leaderboardScore(b, sort.column);
-    return sort.ascending ? difference : -difference;
-  });
+  const entries = rankLeaderboard(sort.column, sort.ascending);
 
   return (
     <section className={styles.section} id="leaderboard" aria-labelledby="leaderboard-title">
@@ -36,13 +32,14 @@ export function Leaderboard() {
         <p className={styles.intro}>
           Diagnosis scores across {leaderboardCaseCount} cases and {leaderboardScales.length} network scales.
         </p>
+        <LeaderboardChart onRankChange={(column) => setSort({ column, ascending: false })} />
         <p className={styles.scrollHint}>Scroll across the table to see all five scales.</p>
         <div className={styles.tableScroll} role="region" tabIndex={0} aria-label="Leaderboard scores">
           <table className={styles.table}>
             <thead>
               <tr>
                 <th scope="col" className={styles.identity}>Model / Harness</th>
-                {columns.map(({ id, label, cases }) => {
+                {leaderboardColumns.map(({ id, label, cases }) => {
                   const selected = sort.column === id;
                   const SortIcon = selected ? (sort.ascending ? ArrowUp : ArrowDown) : ArrowDownUp;
                   return (
@@ -64,7 +61,9 @@ export function Leaderboard() {
               {entries.map((entry) => (
                 <tr key={entry.id}>
                   <th scope="row" className={styles.identity}>
-                    <span className={styles.model}>{entry.model}</span>
+                    <span className={styles.model}>
+                      <LeaderboardModelName model={entry.model} provider={entry.provider} />
+                    </span>
                     <span className={styles.harness}>
                       {entry.harness}
                       {entry.paper && (
@@ -74,16 +73,18 @@ export function Leaderboard() {
                       )}
                     </span>
                   </th>
-                  {columns.map(({ id }) => {
+                  {leaderboardColumns.map(({ id }) => {
                     const score = leaderboardScore(entry, id);
+                    const percent = formatLeaderboardScore(score);
                     return id === 'overall' ? (
                       <td key={id} className={styles.overall}>
-                        <strong>{percent(score)}</strong>
+                        <strong>{percent}</strong>
                         <span className={styles.track} aria-hidden="true">
-                          <span className={styles.fill} style={{ width: percent(score) }} />
+                          <span className={styles.fill}
+                            style={{ width: percent, backgroundColor: leaderboardProviderColors[entry.provider] }} />
                         </span>
                       </td>
-                    ) : <td key={id}>{percent(score)}</td>;
+                    ) : <td key={id}>{percent}</td>;
                   })}
                 </tr>
               ))}
