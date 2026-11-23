@@ -104,16 +104,6 @@ export const leaderboardEntries: readonly Entry[] = [
     counts: { medium: [38, 12, 11, 3], large: [35, 15, 11, 3], xlarge: [34, 15, 8, 7],
       k8: [48, 24, 26, 10], k12: [49, 22, 29, 8] },
   },
-  {
-    id: 'tsguard-gpt',
-    model: 'GPT-6.1-sol',
-    provider: 'openai',
-    harness: 'TSGuard',
-    paper: { label: 'FSE 2026', url: 'https://doi.org/10.1145/3797149' },
-    source: 'projection',
-    counts: { medium: [39, 2, 23], large: [39, 1, 24], xlarge: [34, 4, 26],
-      k8: [51, 8, 49], k12: [49, 9, 50] },
-  },
 ];
 
 export const leaderboardCaseCount = leaderboardScales.reduce((sum, scale) => sum + scale.cases, 0);

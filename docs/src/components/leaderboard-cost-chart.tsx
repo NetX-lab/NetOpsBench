@@ -33,7 +33,8 @@ const span = Math.log10(costTicks.at(-1) ?? 1) - low;
 const costX = (cost: number) => 100 * (Math.log10(cost) - low) / span;
 const points = pricedRuns.map((run) => ({
   ...run,
-  label: run.model === 'GPT-6.1-sol' ? `${run.model} · ${run.harness}` : run.model,
+  label: pricedRuns.some((other) => other.id !== run.id && other.model === run.model)
+    ? `${run.model} · ${run.harness}` : run.model,
   x: costX(run.mean), y: 100 * (1 - run.score),
 }));
 

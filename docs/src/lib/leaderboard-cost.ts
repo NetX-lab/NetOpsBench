@@ -14,12 +14,10 @@ const usageByRun: Record<string, UsageByScale> = {
   'codex-gpt': { medium: [64, 64, 12557365, 199749], large: [64, 64, 17379041, 266517], xlarge: [64, 62, 17017413, 211494], k8: [108, 107, 31816189, 433866], k12: [108, 102, 31007470, 392973] },
   'codex-glm': { medium: [26, 26, 3939358, 100315], large: [29, 29, 5014409, 103237], k8: [36, 34, 8410372, 196824], k12: [59, 56, 13145043, 280056] },
   'react-deepseek-pro': { medium: [64, 64, 13630618, 199203], large: [64, 64, 16246682, 199461], xlarge: [64, 60, 20548008, 192248], k8: [108, 107, 46819399, 463853], k12: [108, 105, 43062637, 385350] },
-  'tsguard-gpt': { medium: [17, 17, 4146301, 210836], large: [8, 8, 2079819, 83790], k8: [12, 12, 4078399, 141850] },
 };
 
 const openAi = 'https://developers.openai.com/api/docs/pricing';
 const deepSeek = 'https://api-docs.deepseek.com/quick_start/pricing/';
-const sol = { input: 2, output: 10, currency: 'USD', source: openAi } as const;
 
 type Price = { input: number; output: number; currency: 'USD' | 'CNY'; source: string };
 
@@ -27,14 +25,13 @@ type Price = { input: number; output: number; currency: 'USD' | 'CNY'; source: s
 // OpenAI Standard short-context, DeepSeek peak, Alibaba Cloud Beijing, and Z.ai USD.
 const prices: Record<string, Price> = {
   'codex-gpt-astra': { input: 8, output: 40, currency: 'USD', source: openAi },
-  'codex-gpt': sol,
+  'codex-gpt': { input: 2, output: 10, currency: 'USD', source: openAi },
   'codex-qwen4-max': { input: 10, output: 30, currency: 'CNY', source: 'https://help.aliyun.com/en/model-studio/qwen4-max' },
   'codex-kimi-k3-1-pro': { input: 13, output: 68, currency: 'CNY', source: 'https://help.aliyun.com/en/model-studio/kimi-k3-1-pro' },
   'codex-gpt-terra': { input: 1, output: 5, currency: 'USD', source: 'https://developers.openai.com/api/docs/models/gpt-6.1-terra' },
   'codex-deepseek-flash': { input: 0.3, output: 1.2, currency: 'USD', source: deepSeek },
   'codex-glm': { input: 0.15, output: 0.5, currency: 'USD', source: 'https://docs.z.ai/guides/overview/pricing' },
   'react-deepseek-pro': { input: 1.32, output: 3.96, currency: 'USD', source: deepSeek },
-  'tsguard-gpt': sol,
 };
 
 // https://www.federalreserve.gov/releases/h10/20261116/
