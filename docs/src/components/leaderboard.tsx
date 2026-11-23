@@ -34,7 +34,7 @@ export function Leaderboard() {
       <div className={styles.inner}>
         <h2 id="leaderboard-title">Leaderboard</h2>
         <p className={styles.intro}>
-          Measured and projected diagnosis scores across {leaderboardCaseCount} cases and {leaderboardScales.length} network scales.
+          Diagnosis scores across {leaderboardCaseCount} cases and {leaderboardScales.length} network scales.
         </p>
         <p className={styles.scrollHint}>Scroll across the table to see all five scales.</p>
         <div className={styles.tableScroll} role="region" tabIndex={0} aria-label="Leaderboard scores">

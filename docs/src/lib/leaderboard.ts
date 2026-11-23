@@ -22,6 +22,14 @@ type Entry = {
 // the outcome counts describe the projection rather than individual executions.
 export const leaderboardEntries: readonly Entry[] = [
   {
+    id: 'codex-gpt-astra',
+    model: 'GPT-6.2-astra',
+    harness: 'Codex',
+    source: 'subset',
+    counts: { medium: [3, 1, 3, 0, 57], large: [5, 0, 3, 0, 56], xlarge: [5, 1, 5, 6, 47],
+      k8: [11, 0, 10, 14, 73], k12: [9, 0, 18, 11, 70] },
+  },
+  {
     id: 'codex-gpt',
     model: 'GPT-6.1-sol',
     harness: 'Codex',
