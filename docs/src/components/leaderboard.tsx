@@ -16,6 +16,7 @@ import {
 
 import styles from './leaderboard.module.css';
 import { LeaderboardChart } from './leaderboard-chart';
+import { LeaderboardCostChart } from './leaderboard-cost-chart';
 import { LeaderboardModelName } from './leaderboard-model-name';
 
 export function Leaderboard() {
@@ -91,6 +92,7 @@ export function Leaderboard() {
             </tbody>
           </table>
         </div>
+        <LeaderboardCostChart />
       </div>
     </section>
   );
