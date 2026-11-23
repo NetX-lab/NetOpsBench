@@ -1,21 +1,25 @@
 import './globals.css';
 
 import { RootProvider } from 'fumadocs-ui/provider/next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 import { withBasePath } from '@/lib/base-path';
 
-const sans = Inter({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
+const sans = localFont({
+  src: './fonts/inter-latin.woff2',
+  weight: '100 900',
+  display: 'swap',
   variable: '--font-sans',
 });
 
-const mono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
+const mono = localFont({
+  src: './fonts/jetbrains-mono-latin.woff2',
+  weight: '100 800',
+  display: 'swap',
+  adjustFontFallback: false,
+  fallback: ['ui-monospace', 'monospace'],
   variable: '--font-mono',
 });
 
